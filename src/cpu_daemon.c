@@ -1,0 +1,338 @@
+/*
+ * daemon.c - 离线 GPU 压缩后台程序
+ *
+ * 用法：
+ *   gpu_compress_daemon [-r] [-d] <directory>
+ *
+ *   -r    递归扫描子目录
+ *   -d    以守护进程方式运行（周期性扫描）
+ *
+ * 工作流程：
+ *   1. 扫描目录，发现后缀不是 .gpuc_tmp 的普通文件
+ *   2. 打开文件，检查是否为 RAW 状态
+ *   3. 逐块读取 → GPU 压缩 → 写入临时文件
+ *   4. 用 rename 原子替换原文件
+ */
+
+#define _GNU_SOURCE
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <dirent.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <fcntl.h>
+#include <errno.h>
+#include <stdint.h>
+#include <time.h>
+#include <signal.h>
+#include <libgen.h>
+
+#include "file_header.h"
+#include "gpu_compress_api.h"
+int cpu_compress_init(void);
+void cpu_compress_fini(void);
+int cpu_compress_128k(const uint8_t *in, uint8_t *out, size_t out_cap);
+
+#define TMP_SUFFIX   ".gpuc_tmp"
+#define SCAN_INTERVAL_SEC  60
+
+static volatile int g_running = 1;
+
+static void sigint_handler(int sig) {
+    (void)sig;
+    g_running = 0;
+}
+
+/* 检查文件名是否以 suffix 结尾 */
+static int ends_with(const char *str, const char *suffix) {
+    size_t len = strlen(str);
+    size_t slen = strlen(suffix);
+    if (len < slen) return 0;
+    return strcmp(str + len - slen, suffix) == 0;
+}
+
+/* 判断文件是否为 RAW 状态 */
+static int is_raw_file(const char *path) {
+    int fd = open(path, O_RDONLY);
+    if (fd < 0) return 0;
+
+    struct gpuc_header hdr;
+    ssize_t n = read(fd, &hdr, sizeof(hdr));
+    close(fd);
+
+    if (n != (ssize_t)sizeof(hdr)) return 0;
+    return gpuc_is_header(&hdr) && hdr.state == GPUC_STATE_RAW;
+}
+
+/*
+ * 压缩单个文件
+ *
+ * 步骤：
+ *   1. 读取原文件 header 和数据
+ *   2. 创建临时文件
+ *   3. 逐块 GPU 压缩，写入临时文件（保持 128KB 逻辑对齐）
+ *   4. 回填 header 和块索引表
+ *   5. rename 替换
+ */
+static int compress_one_file(const char *path) {
+    int fd_src = open(path, O_RDONLY);
+    if (fd_src < 0) {
+        perror("open src");
+        return -1;
+    }
+
+    struct gpuc_header old_hdr;
+    if (read(fd_src, &old_hdr, sizeof(old_hdr)) != (ssize_t)sizeof(old_hdr)) {
+        close(fd_src);
+        return -1;
+    }
+    if (!gpuc_is_header(&old_hdr) || old_hdr.state != GPUC_STATE_RAW) {
+        close(fd_src);
+        return -1;
+    }
+
+    off64_t phys_size = lseek64(fd_src, 0, SEEK_END);
+    if (phys_size <= (off64_t)old_hdr.header_size) {
+        close(fd_src);
+        return -1;
+    }
+
+    off64_t data_size = phys_size - old_hdr.header_size;
+    uint32_t num_blocks = gpuc_num_blocks((uint64_t)data_size);
+
+    printf("[daemon] Compressing: %s (%ld bytes, %u blocks)\n",
+           path, (long)data_size, num_blocks);
+
+    /* 分配块索引表 */
+    struct gpuc_block_entry *blocks =
+        (struct gpuc_block_entry *)calloc(num_blocks, sizeof(*blocks));
+    if (!blocks) {
+        close(fd_src);
+        return -1;
+    }
+
+    /* 创建临时文件 */
+    char tmp_path[PATH_MAX + 16];
+    snprintf(tmp_path, sizeof(tmp_path), "%s%s", path, TMP_SUFFIX);
+    int fd_tmp = open(tmp_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd_tmp < 0) {
+        perror("open tmp");
+        free(blocks);
+        close(fd_src);
+        return -1;
+    }
+
+    /* 构建新 header */
+    struct gpuc_header new_hdr;
+    memset(&new_hdr, 0, sizeof(new_hdr));
+    new_hdr.magic = GPUC_MAGIC;
+    new_hdr.version = GPUC_VERSION;
+    new_hdr.orig_size = (uint64_t)data_size;
+    new_hdr.block_size = GPUC_BLOCK_SIZE;
+    new_hdr.num_blocks = num_blocks;
+    new_hdr.state = GPUC_STATE_COMPRESSED;
+    new_hdr.comp_algo = GPUC_ALGO_SGLZ;
+    new_hdr.header_size = sizeof(new_hdr) + num_blocks * sizeof(*blocks);
+    new_hdr.mtime = (uint64_t)time(NULL);
+
+    /* 先写入 header 占位（最后回填） */
+    if (write(fd_tmp, &new_hdr, sizeof(new_hdr)) != (ssize_t)sizeof(new_hdr)) {
+        goto fail;
+    }
+    if (write(fd_tmp, blocks, num_blocks * sizeof(*blocks)) !=
+        (ssize_t)(num_blocks * sizeof(*blocks))) {
+        goto fail;
+    }
+
+    /* 压缩缓冲区 */
+    uint8_t *in_buf = NULL;
+    uint8_t *out_buf = NULL;
+    in_buf = (uint8_t *)malloc(GC_BLOCK_SIZE);
+    out_buf = (uint8_t *)malloc(GC_NCHUNKS * GC_SLOT_SIZE);
+    if (!in_buf || !out_buf) {
+        goto fail;
+    }
+
+    off64_t phys_off = (off64_t)new_hdr.header_size;
+    off64_t src_data_off = (off64_t)old_hdr.header_size;
+
+    for (uint32_t i = 0; i < num_blocks; i++) {
+        size_t to_read = GC_BLOCK_SIZE;
+        if (src_data_off + (off64_t)to_read > phys_size)
+            to_read = (size_t)(phys_size - src_data_off);
+
+        ssize_t nr = pread64(fd_src, in_buf, to_read, src_data_off);
+        if (nr != (ssize_t)to_read) {
+            fprintf(stderr, "[daemon] pread failed at block %u\n", i);
+            goto fail;
+        }
+
+        /* GPU 压缩 */
+        int comp_ret = cpu_compress_128k(in_buf, out_buf, GC_NCHUNKS * GC_SLOT_SIZE);
+
+        blocks[i].orig_len = (uint32_t)to_read;
+        blocks[i].offset = (uint64_t)phys_off;
+
+        if (comp_ret > 0 && comp_ret < (int)to_read) {
+            /* 压缩成功：将 slot 布局转换为紧凑格式写入 */
+            int file_pos = 0;
+            for (int j = 0; j < GC_NCHUNKS; j++) {
+                uint16_t slot_len = *(uint16_t *)(out_buf + j * GC_SLOT_SIZE);
+                if (slot_len == 0xFFFF) slot_len = 2 + GC_CHUNK_SIZE;
+                if (slot_len < 2 || slot_len > GC_SLOT_SIZE) {
+                    fprintf(stderr, "[daemon] Invalid slot_len %u at block %u chunk %d\n",
+                            slot_len, i, j);
+                    goto fail;
+                }
+                if (write(fd_tmp, out_buf + j * GC_SLOT_SIZE, slot_len) != slot_len) {
+                    goto fail;
+                }
+                file_pos += slot_len;
+            }
+            blocks[i].comp_len = (uint32_t)file_pos;
+        } else {
+            /* 未压缩或压缩失败：存储原始数据 */
+            blocks[i].comp_len = (uint32_t)to_read;
+            if (write(fd_tmp, in_buf, to_read) != (ssize_t)to_read) {
+                goto fail;
+            }
+        }
+
+        /* 保持 128KB 逻辑对齐：用 lseek 制造空洞 */
+        off64_t next_phys_off = phys_off + GPUC_BLOCK_SIZE;
+        off64_t cur_end = lseek64(fd_tmp, 0, SEEK_CUR);
+        if (cur_end < next_phys_off) {
+            lseek64(fd_tmp, next_phys_off - 1, SEEK_SET);
+            if (write(fd_tmp, "", 1) != 1) { /* ignore */ }
+        }
+        phys_off = next_phys_off;
+        src_data_off += to_read;
+    }
+
+    /* 回填块索引表 */
+    lseek64(fd_tmp, sizeof(new_hdr), SEEK_SET);
+    if (write(fd_tmp, blocks, num_blocks * sizeof(*blocks)) !=
+        (ssize_t)(num_blocks * sizeof(*blocks))) {
+        goto fail;
+    }
+
+    /* 回填 header */
+    lseek64(fd_tmp, 0, SEEK_SET);
+    if (write(fd_tmp, &new_hdr, sizeof(new_hdr)) != (ssize_t)sizeof(new_hdr)) {
+        goto fail;
+    }
+
+    close(fd_src);
+    close(fd_tmp);
+    free(in_buf);
+    free(out_buf);
+    free(blocks);
+
+    /* 原子替换 */
+    if (rename(tmp_path, path) != 0) {
+        perror("rename");
+        unlink(tmp_path);
+        return -1;
+    }
+
+    printf("[daemon] Done: %s\n", path);
+    return 0;
+
+fail:
+    close(fd_src);
+    close(fd_tmp);
+    if (in_buf) free(in_buf);
+    if (out_buf) free(out_buf);
+    free(blocks);
+    unlink(tmp_path);
+    return -1;
+}
+
+/* 扫描目录 */
+static void scan_directory(const char *dirpath, int recursive) {
+    DIR *dir = opendir(dirpath);
+    if (!dir) {
+        perror("opendir");
+        return;
+    }
+
+    struct dirent *entry;
+    while ((entry = readdir(dir)) != NULL) {
+        if (entry->d_name[0] == '.') continue;
+        if (ends_with(entry->d_name, TMP_SUFFIX)) continue;
+
+        char fullpath[PATH_MAX];
+        snprintf(fullpath, sizeof(fullpath), "%s/%s", dirpath, entry->d_name);
+
+        struct stat st;
+        if (stat(fullpath, &st) != 0) continue;
+
+        if (S_ISDIR(st.st_mode) && recursive) {
+            scan_directory(fullpath, recursive);
+        } else if (S_ISREG(st.st_mode)) {
+            if (is_raw_file(fullpath)) {
+                compress_one_file(fullpath);
+            }
+        }
+    }
+
+    closedir(dir);
+}
+
+static void print_usage(const char *prog) {
+    printf("Usage: %s [-r] [-d] <directory>\n", prog);
+    printf("  -r    Recursive scan\n");
+    printf("  -d    Daemon mode (periodic scan every %d seconds)\n", SCAN_INTERVAL_SEC);
+}
+
+int main(int argc, char **argv) {
+    int recursive = 0;
+    int daemon_mode = 0;
+    const char *directory = NULL;
+
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-r") == 0) {
+            recursive = 1;
+        } else if (strcmp(argv[i], "-d") == 0) {
+            daemon_mode = 1;
+        } else if (argv[i][0] == '-') {
+            print_usage(argv[0]);
+            return 1;
+        } else {
+            directory = argv[i];
+        }
+    }
+
+    if (!directory) {
+        print_usage(argv[0]);
+        return 1;
+    }
+
+    /* 初始化 GPU */
+    if (cpu_compress_init() != 0) {
+        fprintf(stderr, "Failed to initialize GPU compression\n");
+        return 1;
+    }
+
+    signal(SIGINT, sigint_handler);
+    signal(SIGTERM, sigint_handler);
+
+    if (daemon_mode) {
+        printf("[daemon] Starting in daemon mode, scanning every %d seconds\n",
+               SCAN_INTERVAL_SEC);
+        while (g_running) {
+            scan_directory(directory, recursive);
+            for (int i = 0; i < SCAN_INTERVAL_SEC && g_running; i++) {
+                sleep(1);
+            }
+        }
+        printf("[daemon] Shutting down\n");
+    } else {
+        scan_directory(directory, recursive);
+    }
+
+    cpu_compress_fini();
+    return 0;
+}

@@ -1,0 +1,29 @@
+# Build artifacts
+bin/
+*.o
+*.so
+*.a
+*.out
+
+# CUDA
+*.ptx
+*.cubin
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# Editor
+.vscode/
+*.swp
+*.swo
+*~
+
+# Test outputs
+*.json
+*.log
+
+# Temporary files
+tmp/
+temp/
