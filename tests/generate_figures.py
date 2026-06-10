@@ -87,7 +87,64 @@ def plot_mem_pressure():
     print('Saved', os.path.join(OUTDIR, 'mem_pressure_scan.png'))
 
 
+def plot_random_read_small_bs():
+    """Bar chart for small block size random read."""
+    bs = ['4k', '16k', '64k', '128k']
+    iops = [810.5, 830.8, 778.7, 741.0]
+    lat = [1232.5, 1202.5, 1281.7, 1345.0]
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(10, 4.5))
+
+    ax1.bar(bs, iops, color='#1f77b4', edgecolor='black')
+    ax1.set_ylabel('IOPS', fontsize=11)
+    ax1.set_xlabel('Block Size', fontsize=11)
+    ax1.set_title('Random Read IOPS', fontsize=12)
+    ax1.set_ylim(0, 1000)
+    for i, v in enumerate(iops):
+        ax1.text(i, v + 15, f'{v:.0f}', ha='center', fontsize=9)
+
+    ax2.bar(bs, lat, color='#ff7f0e', edgecolor='black')
+    ax2.set_ylabel('Latency (us)', fontsize=11)
+    ax2.set_xlabel('Block Size', fontsize=11)
+    ax2.set_title('Random Read Avg Latency', fontsize=12)
+    ax2.set_ylim(0, 1600)
+    for i, v in enumerate(lat):
+        ax2.text(i, v + 20, f'{v:.0f}', ha='center', fontsize=9)
+
+    fig.suptitle('GPU Compressed Random Read with Small Block Sizes', fontsize=13)
+    fig.tight_layout()
+    fig.savefig(os.path.join(OUTDIR, 'random_read_small_bs.png'), dpi=150)
+    print('Saved', os.path.join(OUTDIR, 'random_read_small_bs.png'))
+
+
+def plot_mmap_size_sweep():
+    """Line chart for mmap read with different file sizes."""
+    sizes = ['64M', '256M', '512M', '1G']
+    x = range(len(sizes))
+    base = [58.1, 161.1, 264.2, 445.5]
+    raw = [60.2, 165.7, 199.1, 450.6]
+    comp = [420.9, 1263.3, 2414.5, 4688.6]
+
+    fig, ax = plt.subplots(figsize=(8, 5))
+    ax.plot(x, base, marker='o', label='Baseline', linewidth=2)
+    ax.plot(x, raw, marker='s', label='Hook RAW', linewidth=2)
+    ax.plot(x, comp, marker='^', label='GPU Compressed', linewidth=2)
+    ax.set_xticks(x)
+    ax.set_xticklabels(sizes)
+    ax.set_xlabel('File Size', fontsize=11)
+    ax.set_ylabel('mmap Read Time (ms)', fontsize=11)
+    ax.set_title('mmap Read Time vs File Size', fontsize=12)
+    ax.legend()
+    ax.grid(True, linestyle='--', alpha=0.5)
+
+    fig.tight_layout()
+    fig.savefig(os.path.join(OUTDIR, 'mmap_size_sweep.png'), dpi=150)
+    print('Saved', os.path.join(OUTDIR, 'mmap_size_sweep.png'))
+
+
 if __name__ == '__main__':
     plot_ablation()
     plot_batch_size()
     plot_mem_pressure()
+    plot_random_read_small_bs()
+    plot_mmap_size_sweep()

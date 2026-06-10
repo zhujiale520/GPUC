@@ -52,8 +52,9 @@ job = d['jobs'][0]['read']
 bw_mb = job['bw'] / 1024
 iops = job['iops']
 lat_us = job['lat_ns']['mean'] / 1000.0
-lat_p95 = job['lat_ns']['percentile']['95.000000'] / 1000.0
-lat_p99 = job['lat_ns']['percentile']['99.000000'] / 1000.0
+perc = job['lat_ns'].get('percentile', {})
+lat_p95 = perc.get('95.000000', 0) / 1000.0
+lat_p99 = perc.get('99.000000', 0) / 1000.0
 err = job.get('error', 0)
 print(f"{'Duration:':<20} 30 min")
 print(f"{'Read bandwidth:':<20} {bw_mb:.1f} MB/s")
