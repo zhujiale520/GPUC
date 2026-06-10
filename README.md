@@ -171,10 +171,29 @@ ftruncate / truncate / sendfile
 │   ├── cpu_daemon.c         # CPU 版 Daemon
 │   └── gpu_compress.cuh     # CUDA 内部头文件
 ├── tests/
-│   ├── benchmark_comprehensive.sh  # 全面性能基准测试
-│   ├── benchmark_fio.sh           # fio 基准测试
-│   ├── test_inline.sh             # 小文件内联测试
-│   ├── test_integration.sh        # 集成测试
+│   ├── benchmark_comprehensive.sh      # 全面性能基准测试
+│   ├── benchmark_fio.sh               # fio 基准测试
+│   ├── ablation_study.sh              # 消融实验（逐项关闭优化）
+│   ├── batch_size_sweep.sh            # Batch Size 敏感性扫描
+│   ├── real_workload_study.sh         # 真实数据 workload 测试
+│   ├── first_io_latency.sh            # Hook 首次 I/O 延迟测试
+│   ├── metadata_perf.sh               # stat/ls/find 性能测试
+│   ├── massive_small_files.sh         # 海量小文件批量场景
+│   ├── power_efficiency.sh            # GPU 解压能耗效率测试
+│   ├── mem_pressure_scan.sh           # GPU 显存压力扫描
+│   ├── odirect_read.sh                # O_DIRECT 压缩读测试
+│   ├── write_read_consistency.sh      # 写后读一致性验证
+│   ├── long_term_stability.sh         # 30 分钟长时间稳定性测试
+│   ├── random_read_small_bs.sh        # 小 bs 随机读测试
+│   ├── mmap_size_sweep.sh             # mmap 不同文件大小测试
+│   ├── multithread_jobs32.sh          # 32 线程并发扩展性测试
+│   ├── write_path_overhead.sh         # 写路径 overhead 测试
+│   ├── gpu_compute_load_decompress.sh # GPU 计算负载下解压测试
+│   ├── daemon_concurrent_safety.sh    # Daemon 并发安全验证
+│   ├── btrfs_compare.sh               # btrfs zstd 对比（需 root）
+│   ├── generate_figures.py            # 自动生成实验图表
+│   ├── test_inline.sh                 # 小文件内联测试
+│   ├── test_integration.sh            # 集成测试
 │   └── test_mixed_compressibility.sh  # 混合可压缩性测试
 ├── docs/
 │   ├── architecture.md      # 架构文档
