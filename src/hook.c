@@ -93,6 +93,10 @@ __attribute__((weak)) void gpu_tls_free_pinned(void *ptr) {
 #define tls_alloc(buf, sz)  do { buf = (uint8_t *)malloc(sz); } while(0)
 #define tls_free(buf)       do { free(buf); buf = NULL; } while(0)
 #else
+#ifdef GPUC_NO_PINNED
+#define tls_alloc(buf, sz)  do { buf = (uint8_t *)malloc(sz); } while(0)
+#define tls_free(buf)       do { free(buf); buf = NULL; } while(0)
+#else
 #define tls_alloc(buf, sz)  \
     do { \
         if (gpu_tls_alloc_pinned((void **)&(buf), (sz)) != 0) { \
@@ -103,6 +107,7 @@ __attribute__((weak)) void gpu_tls_free_pinned(void *ptr) {
     do { \
         if (buf) { gpu_tls_free_pinned(buf); buf = NULL; } \
     } while(0)
+#endif
 #endif
 
 /* ============================================================
@@ -374,7 +379,14 @@ static int ensure_tls_buffers(void) {
  *  批量解压 TLS 缓冲区（支持一次解压多个 128KB 块）
  * ============================================================ */
 
+/* 支持编译时覆盖：make ABLATION_FLAGS="-DMAX_BATCH_BLOCKS=8" */
+#ifndef MAX_BATCH_BLOCKS
+#ifdef GPUC_NO_BATCH
+#define MAX_BATCH_BLOCKS 1
+#else
 #define MAX_BATCH_BLOCKS 16
+#endif
+#endif
 
 static __thread uint8_t *g_tls_batch_comp_bufs = NULL;
 static __thread uint8_t *g_tls_batch_decomp_bufs = NULL;
@@ -415,7 +427,11 @@ static int ensure_batch_tls_buffers(void) {
  *  双缓冲流水线 TLS（overlap I/O with GPU compute）
  * ============================================================ */
 
+#ifdef GPUC_NO_PIPELINE
+#define NUM_PIPELINES 1
+#else
 #define NUM_PIPELINES 2
+#endif
 
 static __thread uint8_t *g_tls_pipe_comp_bufs[NUM_PIPELINES] = {NULL, NULL};
 static __thread uint8_t *g_tls_pipe_decomp_bufs[NUM_PIPELINES] = {NULL, NULL};
@@ -500,6 +516,10 @@ static struct gpuc_iouring g_iouring = { -1, {0}, NULL, NULL, NULL, 0, 0, NULL, 
 
 static int gpuc_iouring_init(unsigned int entries) {
     if (g_iouring.initialized) return 0;
+#ifdef GPUC_NO_IOURING
+    (void)entries;
+    return -1;
+#else
     memset(&g_iouring.params, 0, sizeof(g_iouring.params));
     g_iouring.ring_fd = syscall(__NR_io_uring_setup, entries, &g_iouring.params);
     if (g_iouring.ring_fd < 0) return -1;
@@ -536,6 +556,7 @@ static int gpuc_iouring_init(unsigned int entries) {
 
     g_iouring.initialized = 1;
     return 0;
+#endif
 }
 
 static void gpuc_iouring_fini(void) {
@@ -647,6 +668,11 @@ static ssize_t read_compressed(int fd, fd_info_t *info, void *buf, size_t count)
 
     /* ---- 自适应 read-ahead：检测顺序/随机访问 ---- */
     uint32_t first_block = (uint32_t)(start / GPUC_BLOCK_SIZE);
+#ifdef GPUC_NO_READAHEAD
+    (void)first_block;
+    info->seq_count = 0;
+    info->ra_max_blocks = 0;
+#else
     if (info->last_read_block > 0 &&
         (first_block == info->last_read_block || first_block == info->last_read_block + 1)) {
         info->seq_count++;
@@ -658,6 +684,7 @@ static ssize_t read_compressed(int fd, fd_info_t *info, void *buf, size_t count)
         info->seq_count = 0;
         info->ra_max_blocks = 0;
     }
+#endif
 
     int pipe_id = 0;
     int has_submitted = 0;
@@ -665,23 +692,6 @@ static ssize_t read_compressed(int fd, fd_info_t *info, void *buf, size_t count)
     size_t orig_count = count;
 
     while (count > 0) {
-        first_block = (uint32_t)(start / GPUC_BLOCK_SIZE);
-        off64_t first_block_off = start % GPUC_BLOCK_SIZE;
-        if (first_block >= info->hdr.num_blocks) break;
-
-        uint32_t last_block = (uint32_t)((start + count - 1) / GPUC_BLOCK_SIZE);
-        if (last_block >= info->hdr.num_blocks) last_block = info->hdr.num_blocks - 1;
-        int user_nblocks = (int)(last_block - first_block + 1);
-        if (user_nblocks > MAX_BATCH_BLOCKS) user_nblocks = MAX_BATCH_BLOCKS;
-
-        /* 自适应 over-read */
-        int decompress_nblocks = user_nblocks;
-        if (decompress_nblocks < info->ra_max_blocks) {
-            uint32_t over_last = first_block + info->ra_max_blocks - 1;
-            if (over_last >= info->hdr.num_blocks) over_last = info->hdr.num_blocks - 1;
-            decompress_nblocks = (int)(over_last - first_block + 1);
-        }
-
         /* 如果有已提交的 batch，先消费它 */
         if (has_submitted) {
             int prev = 1 - pipe_id;
@@ -733,6 +743,25 @@ static ssize_t read_compressed(int fd, fd_info_t *info, void *buf, size_t count)
             has_submitted = 0;
             if (count == 0) break;
         }
+
+        /* 消费后再计算当前 batch 的参数 */
+        first_block = (uint32_t)(start / GPUC_BLOCK_SIZE);
+        off64_t first_block_off = start % GPUC_BLOCK_SIZE;
+        if (first_block >= info->hdr.num_blocks) break;
+
+        uint32_t last_block = (uint32_t)((start + count - 1) / GPUC_BLOCK_SIZE);
+        if (last_block >= info->hdr.num_blocks) last_block = info->hdr.num_blocks - 1;
+        int user_nblocks = (int)(last_block - first_block + 1);
+        if (user_nblocks > MAX_BATCH_BLOCKS) user_nblocks = MAX_BATCH_BLOCKS;
+
+        /* 自适应 over-read */
+        int decompress_nblocks = user_nblocks;
+        if (decompress_nblocks < info->ra_max_blocks) {
+            uint32_t over_last = first_block + info->ra_max_blocks - 1;
+            if (over_last >= info->hdr.num_blocks) over_last = info->hdr.num_blocks - 1;
+            decompress_nblocks = (int)(over_last - first_block + 1);
+        }
+        if (decompress_nblocks > MAX_BATCH_BLOCKS) decompress_nblocks = MAX_BATCH_BLOCKS;
 
         /* 准备当前 batch（CPU pread / io_uring，与上一个 batch 的 GPU 解压重叠） */
         g_tls_pipe_first_block[pipe_id] = first_block;
@@ -938,15 +967,6 @@ static ssize_t read_compressed_at(int fd, fd_info_t *info, void *buf, size_t cou
     int has_submitted = 0;
 
     while (count > 0) {
-        uint32_t first_block = (uint32_t)(start / GPUC_BLOCK_SIZE);
-        off64_t first_block_off = start % GPUC_BLOCK_SIZE;
-        if (first_block >= info->hdr.num_blocks) break;
-
-        uint32_t last_block = (uint32_t)((start + count - 1) / GPUC_BLOCK_SIZE);
-        if (last_block >= info->hdr.num_blocks) last_block = info->hdr.num_blocks - 1;
-        int nblocks = (int)(last_block - first_block + 1);
-        if (nblocks > MAX_BATCH_BLOCKS) nblocks = MAX_BATCH_BLOCKS;
-
         /* 消费上一个已提交的 batch */
         if (has_submitted) {
             int prev = 1 - pipe_id;
@@ -979,6 +999,16 @@ static ssize_t read_compressed_at(int fd, fd_info_t *info, void *buf, size_t cou
             has_submitted = 0;
             if (count == 0) break;
         }
+
+        /* 消费后再计算当前 batch 的参数 */
+        uint32_t first_block = (uint32_t)(start / GPUC_BLOCK_SIZE);
+        off64_t first_block_off = start % GPUC_BLOCK_SIZE;
+        if (first_block >= info->hdr.num_blocks) break;
+
+        uint32_t last_block = (uint32_t)((start + count - 1) / GPUC_BLOCK_SIZE);
+        if (last_block >= info->hdr.num_blocks) last_block = info->hdr.num_blocks - 1;
+        int nblocks = (int)(last_block - first_block + 1);
+        if (nblocks > MAX_BATCH_BLOCKS) nblocks = MAX_BATCH_BLOCKS;
 
         /* 准备当前 batch（io_uring / pread64） */
         g_tls_pipe_first_block[pipe_id] = first_block;
