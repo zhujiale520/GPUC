@@ -142,9 +142,38 @@ def plot_mmap_size_sweep():
     print('Saved', os.path.join(OUTDIR, 'mmap_size_sweep.png'))
 
 
+def plot_multithread_scalability():
+    """Line chart for multithread scalability."""
+    jobs = [1, 2, 4, 8, 16, 32]
+    base_zero = [456.3, 604.4, 1098.0, 1985.0, 3768.1, 18003.3]
+    gpuc_zero = [466.3, 587.3, 1090.9, 1991.8, 3797.7, 269.4]
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+    ax.plot(jobs, base_zero, marker='o', linewidth=2, markersize=8, label='Baseline zero')
+    ax.plot(jobs, gpuc_zero, marker='s', linewidth=2, markersize=8, label='GPU Compressed zero')
+    ax.set_xlabel('Number of Threads (jobs)', fontsize=11)
+    ax.set_ylabel('Read Bandwidth (MB/s)', fontsize=11)
+    ax.set_title('Multithread Scalability: Baseline vs GPU Compressed', fontsize=12)
+    ax.set_xticks(jobs)
+    ax.set_ylim(0, 20000)
+    ax.legend()
+    ax.grid(True, linestyle='--', alpha=0.5)
+
+    # Annotate the drop at jobs=32
+    ax.annotate('GPUC collapses at jobs=32\n(267 MB/s)',
+                xy=(32, 269.4), xytext=(20, 5000),
+                arrowprops=dict(arrowstyle='->', color='red'),
+                fontsize=10, color='red')
+
+    fig.tight_layout()
+    fig.savefig(os.path.join(OUTDIR, 'multithread_scalability.png'), dpi=150)
+    print('Saved', os.path.join(OUTDIR, 'multithread_scalability.png'))
+
+
 if __name__ == '__main__':
     plot_ablation()
     plot_batch_size()
     plot_mem_pressure()
     plot_random_read_small_bs()
     plot_mmap_size_sweep()
+    plot_multithread_scalability()
