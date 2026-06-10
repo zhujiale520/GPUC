@@ -17,20 +17,43 @@
 sudo apt-get update
 sudo apt-get install -y build-essential g++ gcc
 sudo apt-get install -y nvidia-driver-xxx nvidia-cuda-toolkit
-sudo apt-get install -y fio python3 bc
+sudo apt-get install -y fio python3 bc xxd linux-headers-$(uname -r)
 
 # 验证 CUDA
 nvcc --version
 nvidia-smi
 ```
 
-### 1.3 编译项目
+### 1.3 新主机环境检查
+
+项目提供一键环境检查脚本，自动检测 GPU 架构、CUDA 版本、依赖完整性：
+
+```bash
+bash scripts/check_env.sh
+```
+
+输出示例：
+```
+--- GPU / CUDA 检测 ---
+[PASS] NVIDIA GPU detected: Tesla V100-SXM2-32GB, 7.0
+[INFO] Makefile will use: -arch=sm_70
+[PASS] nvcc: 12.8, V12.8.61
+...
+环境检查全部通过，可以执行 'make all && make test'
+```
+
+### 1.4 编译项目
 
 ```bash
 cd gpu_compress
 make clean
 make all
 ```
+
+说明：
+- Makefile **自动检测 GPU 计算能力**（通过 `nvidia-smi`），无需手动修改 `-arch=sm_70`
+- 若自动检测失败，可手动指定：`make GPU_ARCH=75`
+- 若无可用的 GPU，仍可编译纯 CPU 目标：`make bin/libcpuhook.so bin/cpu_compress_daemon`
 
 产物说明：
 | 文件 | 说明 |

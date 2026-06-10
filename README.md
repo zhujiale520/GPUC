@@ -20,28 +20,38 @@
 
 ---
 
-## 快速开始
+## 快速开始（新主机）
 
 ```bash
-# 1. 编译
+# 1. 环境检查（自动检测 GPU、CUDA、依赖项）
+bash scripts/check_env.sh
+
+# 2. 编译（Makefile 自动检测 GPU 计算能力）
 make clean && make all
 
-# 2. 运行单元测试
+# 3. 运行单元测试 + 集成测试
 make test
 
-# 3. 创建测试文件并压缩
+# 4. 一键 DEMO（写入 → 压缩 → 透明读取 → MD5 校验）
+bash scripts/demo.sh
+
+# 5. fio 性能基准测试
+bash tests/benchmark_fio.sh
+```
+
+### 手动分步体验
+
+```bash
+# 创建测试文件并压缩
 export LD_PRELOAD="$PWD/bin/libgpuhook.so"
 dd if=/dev/zero of=/tmp/test.bin bs=1M count=100
 unset LD_PRELOAD
 ./bin/gpu_compress_daemon /tmp/
 
-# 4. 透明读取压缩文件
+# 透明读取压缩文件
 export LD_PRELOAD="$PWD/bin/libgpuhook.so"
 dd if=/tmp/test.bin of=/dev/null bs=1M
 unset LD_PRELOAD
-
-# 5. fio 性能基准测试
-bash tests/benchmark_fio.sh
 ```
 
 ---
@@ -170,6 +180,10 @@ ftruncate / truncate / sendfile
 │   ├── architecture.md      # 架构文档
 │   ├── architecture.png     # 架构图
 │   └── deployment.md        # 部署文档
+├── scripts/
+│   ├── check_env.sh         # 新主机环境检查
+│   ├── demo.sh              # 一键演示
+│   └── monitor_resources.sh # 资源监控
 ├── Makefile
 └── README.md
 ```
