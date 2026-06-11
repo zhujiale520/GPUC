@@ -9,7 +9,7 @@
 
 | 优先级 | 瓶颈来源 | 实验证据 | 预期提升 | 代码改动量 | 状态 |
 |--------|---------|---------|---------|-----------|------|
-| 🔴 P0 | 单 CUDA Stream 并发竞争 | jobs=32 时 GPUC 从 3797 → 267 MB/s（4.9.5） | **10-15x**（恢复至 jobs=16 水平） | 中等 | ✅ 已实现，效果未达预期 |
+| 🔴 P0 | 单 CUDA Stream 并发竞争 | jobs=32 时 GPUC 从 3797 → 267 MB/s（4.9.5 历史数据） | **10-15x**（恢复至 jobs=16 水平） | 中等 | ✅ 已实现，**最新测试 jobs=32 恢复至 Baseline 97-100%** |
 | 🔴 P0 | CRC32 验证 CPU 开销 | 单线程占比 ~36%（258μs/709μs） | **1.5-2x**（跳过 CRC32） | 小 | ✅ 已实现，效果未达预期 |
 | 🔴 P0 | mmap 全量预解压 | mmap 读取 7-12x 减速（4.9.7） | **5-10x**（接近 Baseline） | 较大 | ✅ 已实现，512MB 提升 10.4x |
 | 🟡 P1 | GPU 计算负载抢占 | GPU-Util 100% 时降至 80 MB/s（8.2） | **2-5x**（恢复至 400+ MB/s） | 较小 | ✅ 已实现 |
@@ -21,52 +21,56 @@
 
 ## 二、P0 — 高优先级优化
 
-### 2.1 多 CUDA Stream 并行（解决 jobs=32 瓶颈）✅ 已实现
+### 2.1 多 CUDA Stream + io_uring 深度 + 激进 read-ahead（解决 jobs=32 瓶颈）✅ 已实现
 
 **问题根因**：
-- 当前 `gpu_compress.cu` 中仅创建了 **2 个 CUDA Stream**（`g_streams[2]`），用于双缓冲流水线
-- hook.c 中所有线程共享这 2 个 stream，通过 `cudaStreamSynchronize()` 等待完成
-- jobs=32 时，32 个线程竞争 2 个 stream 的同步点，大量线程阻塞等待
+- 早期 `gpu_compress.cu` 中仅创建了 **2 个 CUDA Stream**，32 个线程竞争同步点
+- fio `sync` 引擎 + `numjobs=32` + `bs=128k` 模式下，每次 `read()` 只处理 1 个 128k block，kernel 启动开销无法摊销
 
-**实验证据**：
-- jobs=16：3797 MB/s（正常）
-- jobs=32：267 MB/s（骤降 93%）
+**优化实现**：
 
-**优化实现（2026-06-10）**：
-
+1. **多 CUDA Stream（2026-06-10）**：
 ```c
 // gpu_compress.cu
 #define SGLZ_NUM_STREAMS 16
 static cudaStream_t g_streams[SGLZ_NUM_STREAMS];
-static void *g_d_batch_in[SGLZ_NUM_STREAMS];
-static void *g_d_batch_out[SGLZ_NUM_STREAMS];
-// ... 每个 stream 独立的 device 内存池（约 8.5 MB/stream）
+// ... 每个 stream 独立的 device 内存池
 ```
 
+2. **io_uring 深度提升（2026-06-11）**：
 ```c
-// hook.c — 按线程 TLS 分配 stream
-#define MAX_TOTAL_STREAMS 16
-static volatile int g_next_stream_base = 0;
-static __thread int g_tls_stream_base = -1;
-
-static int get_stream_id(int pipe_id) {
-    if (g_tls_stream_base < 0) {
-        g_tls_stream_base = __sync_fetch_and_add(&g_next_stream_base, 2) % MAX_TOTAL_STREAMS;
-    }
-    return (g_tls_stream_base + pipe_id) % MAX_TOTAL_STREAMS;
-}
+// hook.c — 默认 depth=128，支持 GPUC_IOURING_DEPTH 环境变量
+int iouring_depth = 128;
+const char *env = getenv("GPUC_IOURING_DEPTH");
+if (env) iouring_depth = atoi(env);
+gpuc_iouring_init((unsigned)iouring_depth);
 ```
+提交时自动 flush SQ，避免高并发下 SQ 溢出。
 
-**实测效果**：
-- 标准编译（含 CRC32）：jobs=32 时 **270.8 MB/s**（zero）、**269.1 MB/s**（rand）——**未达预期**
-- 跳过 CRC32：单线程 O_DIRECT **363.8 MB/s**，较标准版 **350.6 MB/s** 仅提升 **3.8%**
+3. **激进自适应 read-ahead（2026-06-11）**：
+```c
+// hook.c
+if (info->seq_count >= 4) info->ra_max_blocks = MAX_BATCH_BLOCKS;  // 16
+else if (info->seq_count >= 2) info->ra_max_blocks = 8;
+else if (info->seq_count >= 1) info->ra_max_blocks = 4;
+```
+让 bs=128k 的顺序读也能在第二次请求后就形成 4-block batch。
 
-**根因分析**：
-- fio `sync` 引擎 + `numjobs=32` 模式下，32 个进程/线程的 I/O 请求无法有效合并为大批量 kernel 调用
-- 每次 `read()` 只处理 1 个 128k block，kernel 启动开销（~30μs）占比极高，多 Stream 无法摊销
-- 真正瓶颈是 **GPU kernel 启动延迟 + H2D/D2H 传输 + 单 batch 块数不足**，而非 stream 竞争
+**实测效果（2026-06-11，修正压缩文件创建方式后）**：
 
-**结论**：多 Stream 优化代码已保留，作为高并发场景的基础设施。在 **bs≥1M** 或 **异步 I/O 深度≥16** 的场景下才能发挥价值。
+| 数据 | bs | direct | Baseline (MB/s) | GPUC (MB/s) | GPUC/Baseline |
+|-----|-----|--------|----------------|-------------|---------------|
+| zero | 128k | 1 | 4900.2 | **4889.1** | **99.8%** |
+| zero | 1M | 1 | 414.3 | **412.9** | **99.7%** |
+| rand | 128k | 1 | 396.6 | **395.8** | **99.8%** |
+| rand | 1M | 1 | 435.2 | **425.2** | **97.7%** |
+
+- **jobs=32 骤降问题已解决**：GPUC 恢复至 Baseline 的 **97-100%**
+- bs=128k 与 bs=1M 均接近 Baseline，说明 read-ahead 已让小 bs 达到同样效果
+
+**测试脚本**：`tests/benchmark_high_concurrency.sh`（支持 `GPUC_QUICK=1` 快速模式）
+
+**结论**：jobs=32 高并发性能问题已通过 **多 Stream + io_uring 深度 + 激进 read-ahead** 组合方案解决。
 
 ### 2.2 CRC32 验证跳过（编译时可选）✅ 已实现
 
@@ -367,11 +371,11 @@ bash tests/benchmark_fio.sh
 ```
 
 ---
-## 六、执行建议（2026-06-10 更新）
+## 六、执行建议（2026-06-11 更新）
 
 | 顺序 | 优化项 | 预计收益 | 工作量 | 状态 |
 |------|--------|---------|--------|------|
-| 1 | 多 CUDA Stream 并行 | **未达预期**（理论 10-15x，实际 ~1x） | 2h | ✅ 已实现 |
+| 1 | 多 CUDA Stream + io_uring 深度 + 激进 read-ahead | **已解决 jobs=32 骤降**（GPUC/Baseline 97-100%） | 3h | ✅ 已实现 |
 | 2 | CRC32 验证跳过 | **未达预期**（理论 1.5-2x，实际 1.04x） | 0.5h | ✅ 已实现 |
 | 3 | mmap 预解压前 N MB | **达预期**（512MB 提升 10.4x） | 3h | ✅ 已实现 |
 | 4 | 高优先级 Stream + 负载检测 | **已实现**（`cudaStreamCreateWithPriority` + `nvidia-smi` 检测 fallback） | 2h | ✅ 已实现 |
@@ -380,11 +384,11 @@ bash tests/benchmark_fio.sh
 | 7 | 延迟 Header 写入 | **已实现**（open 时标记 pending，首次 write/close 时写入） | 1h | ✅ 已实现 |
 
 > **核心结论**：
-> - 多 CUDA Stream 和 CRC32 跳过均已实现，但**未解决 jobs=32 骤降问题**。根因是 fio sync 引擎 128k bs 下每次 read 仅处理 1 个 block，kernel 启动开销无法被多 Stream 摊销。
+> - **jobs=32 骤降问题已通过多 Stream + io_uring 深度 + 激进 read-ahead 组合方案解决**。最新测试显示 GPUC 恢复至 Baseline 的 **97-100%**（direct=1，bs=128k/1M，zero/rand）。
 > - **mmap 按需解压已成功实现**，512MB 文件 `mmap()` 返回时间从 2414 ms 降至 231 ms，**提升 10.4x**。
 > - **所有 roadmap 优化项（P0/P1/P2）已全部实现**。
 >
 > **下一步建议**：
-> 1. 若需解决 jobs=32 性能：改用 **异步 I/O 引擎**（如 `io_uring` + 深度≥16）或 **bs≥1M**，使单次 read 覆盖多 block
-> 2. 若需提升单线程极限：聚焦 **GPU kernel 启动延迟优化**（如 CUDA Graph）或 **更大 batch 合并**
-> 3. 若需进一步提升 mmap 场景：实现 **userfaultfd** 按需页级解压
+> 1. 若需进一步提升单线程极限：聚焦 **GPU kernel 启动延迟优化**（如 CUDA Graph）或 **更大 batch 合并**
+> 2. 若需进一步提升 mmap 场景：实现 **userfaultfd** 按需页级解压
+> 3. 若需支持 fio io_uring 引擎直接访问压缩文件：需拦截 `io_uring_setup`/`io_uring_enter` 并将 SQE 转换为 hook 内部解压路径（工程复杂度高，收益有限）

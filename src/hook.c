@@ -659,8 +659,25 @@ static void gpuc_iouring_fini(void) {
     g_iouring.ring_fd = -1;
 }
 
+static int gpuc_iouring_flush_sq(int to_submit) {
+    if (!g_iouring.initialized || to_submit <= 0) return 0;
+    return syscall(__NR_io_uring_enter, g_iouring.ring_fd, (unsigned)to_submit, 0, 0, NULL, 0);
+}
+
+static int gpuc_iouring_sq_space(void) {
+    if (!g_iouring.initialized) return 0;
+    unsigned head = *g_iouring.sq_head;
+    unsigned tail = *g_iouring.sq_tail;
+    return (int)(g_iouring.sq_mask + 1 - (tail - head));
+}
+
 static int gpuc_iouring_submit_pread(int fd, void *buf, size_t len, off64_t off) {
     if (!g_iouring.initialized) return -1;
+    /* 若 SQ 即将满，先 flush 已提交的请求，避免覆盖未完成的 SQE */
+    if (gpuc_iouring_sq_space() < 2) {
+        int flush = (int)(*g_iouring.sq_tail - *g_iouring.sq_head);
+        if (gpuc_iouring_flush_sq(flush) < 0) return -1;
+    }
     unsigned tail = *g_iouring.sq_tail;
     unsigned index = tail & g_iouring.sq_mask;
     struct io_uring_sqe *sqe = &g_iouring.sqes[index];
@@ -770,9 +787,9 @@ static ssize_t read_compressed(int fd, fd_info_t *info, void *buf, size_t count)
     if (info->last_read_block > 0 &&
         (first_block == info->last_read_block || first_block == info->last_read_block + 1)) {
         info->seq_count++;
-        if (info->seq_count >= 8) info->ra_max_blocks = MAX_BATCH_BLOCKS;
-        else if (info->seq_count >= 4) info->ra_max_blocks = 8;
-        else if (info->seq_count >= 2) info->ra_max_blocks = 4;
+        if (info->seq_count >= 4) info->ra_max_blocks = MAX_BATCH_BLOCKS;
+        else if (info->seq_count >= 2) info->ra_max_blocks = 8;
+        else if (info->seq_count >= 1) info->ra_max_blocks = 4;
         else info->ra_max_blocks = 0;
     } else {
         info->seq_count = 0;
@@ -1445,8 +1462,14 @@ void __attribute__((constructor(101))) hook_init(void) {
 #endif
 
     /* 初始化 io_uring（批量异步 I/O），失败静默 fallback 到 pread64 */
-    if (gpuc_iouring_init(32) == 0) {
-        if (!quiet) fprintf(stderr, "[HOOK] io_uring: async I/O enabled\n");
+    int iouring_depth = 128;
+    const char *iouring_depth_env = getenv("GPUC_IOURING_DEPTH");
+    if (iouring_depth_env) {
+        int env_depth = atoi(iouring_depth_env);
+        if (env_depth >= 16 && env_depth <= 4096) iouring_depth = env_depth;
+    }
+    if (gpuc_iouring_init((unsigned)iouring_depth) == 0) {
+        if (!quiet) fprintf(stderr, "[HOOK] io_uring: async I/O enabled (depth=%d)\n", iouring_depth);
     }
 }
 
