@@ -433,6 +433,19 @@ static int ensure_batch_tls_buffers(void) {
 #define NUM_PIPELINES 2
 #endif
 
+/* 多 CUDA Stream 并发：每个线程分配 2 个独立 stream（双缓冲） */
+#define MAX_TOTAL_STREAMS 16
+static volatile int g_next_stream_base = 0;
+static __thread int g_tls_stream_base = -1;
+
+static int get_stream_id(int pipe_id) {
+    if (g_tls_stream_base < 0) {
+        int base = __sync_fetch_and_add(&g_next_stream_base, NUM_PIPELINES);
+        g_tls_stream_base = base % MAX_TOTAL_STREAMS;
+    }
+    return (g_tls_stream_base + pipe_id) % MAX_TOTAL_STREAMS;
+}
+
 static __thread uint8_t *g_tls_pipe_comp_bufs[NUM_PIPELINES] = {NULL, NULL};
 static __thread uint8_t *g_tls_pipe_decomp_bufs[NUM_PIPELINES] = {NULL, NULL};
 static __thread uint8_t *g_tls_pipe_out_ptrs[NUM_PIPELINES][MAX_BATCH_BLOCKS];
@@ -697,16 +710,18 @@ static ssize_t read_compressed(int fd, fd_info_t *info, void *buf, size_t count)
             int prev = 1 - pipe_id;
 
             if (g_tls_pipe_n_compressed[prev] > 0) {
-                g_backend_decompress_batch_compact_wait(prev,
+                g_backend_decompress_batch_compact_wait(get_stream_id(prev),
                     g_tls_pipe_n_compressed[prev],
                     g_tls_pipe_out_ptrs[prev],
                     g_tls_pipe_out_lens[prev]);
             }
 
+#ifndef GPUC_NO_VERIFY_CRC
             if (verify_batch_crc(info, prev, g_tls_pipe_first_block[prev],
                                  g_tls_pipe_nblocks[prev]) != 0) {
                 return (total_read > 0) ? (ssize_t)total_read : -1;
             }
+#endif
 
             for (int i = 0; i < g_tls_pipe_user_nblocks[prev] && count > 0; i++) {
                 uint32_t bid = g_tls_pipe_first_block[prev] + i;
@@ -853,7 +868,7 @@ static ssize_t read_compressed(int fd, fd_info_t *info, void *buf, size_t count)
                     g_tls_pipe_comp_bufs[pipe_id], g_tls_pipe_total_compact_len[pipe_id],
                     g_tls_pipe_chunk_offsets[pipe_id],
                     g_tls_pipe_out_lens[pipe_id],
-                    pipe_id);
+                    get_stream_id(pipe_id));
             } else if (g_backend_decompress_batch_compact) {
                 /* async 不可用，fallback 到同步 */
                 g_backend_decompress_batch_compact(
@@ -872,15 +887,17 @@ static ssize_t read_compressed(int fd, fd_info_t *info, void *buf, size_t count)
     if (has_submitted) {
         int last = 1 - pipe_id;
         if (g_tls_pipe_n_compressed[last] > 0) {
-            g_backend_decompress_batch_compact_wait(last,
+            g_backend_decompress_batch_compact_wait(get_stream_id(last),
                 g_tls_pipe_n_compressed[last],
                 g_tls_pipe_out_ptrs[last],
                 g_tls_pipe_out_lens[last]);
         }
+#ifndef GPUC_NO_VERIFY_CRC
         if (verify_batch_crc(info, last, g_tls_pipe_first_block[last],
                              g_tls_pipe_nblocks[last]) != 0) {
             return (total_read > 0) ? (ssize_t)total_read : -1;
         }
+#endif
         for (int i = 0; i < g_tls_pipe_user_nblocks[last] && count > 0; i++) {
             uint32_t bid = g_tls_pipe_first_block[last] + i;
             off64_t block_off = (bid == g_tls_pipe_first_block[last])
@@ -972,16 +989,18 @@ static ssize_t read_compressed_at(int fd, fd_info_t *info, void *buf, size_t cou
             int prev = 1 - pipe_id;
 
             if (g_tls_pipe_n_compressed[prev] > 0) {
-                g_backend_decompress_batch_compact_wait(prev,
+                g_backend_decompress_batch_compact_wait(get_stream_id(prev),
                     g_tls_pipe_n_compressed[prev],
                     g_tls_pipe_out_ptrs[prev],
                     g_tls_pipe_out_lens[prev]);
             }
 
+#ifndef GPUC_NO_VERIFY_CRC
             if (verify_batch_crc(info, prev, g_tls_pipe_first_block[prev],
                                  g_tls_pipe_nblocks[prev]) != 0) {
                 return (total_read > 0) ? (ssize_t)total_read : -1;
             }
+#endif
 
             for (int i = 0; i < g_tls_pipe_user_nblocks[prev] && count > 0; i++) {
                 uint32_t bid = g_tls_pipe_first_block[prev] + i;
@@ -1099,7 +1118,7 @@ static ssize_t read_compressed_at(int fd, fd_info_t *info, void *buf, size_t cou
                     g_tls_pipe_comp_bufs[pipe_id], g_tls_pipe_total_compact_len[pipe_id],
                     g_tls_pipe_chunk_offsets[pipe_id],
                     g_tls_pipe_out_lens[pipe_id],
-                    pipe_id);
+                    get_stream_id(pipe_id));
             } else if (g_backend_decompress_batch_compact) {
                 g_backend_decompress_batch_compact(
                     g_tls_pipe_n_compressed[pipe_id],
@@ -1117,15 +1136,17 @@ static ssize_t read_compressed_at(int fd, fd_info_t *info, void *buf, size_t cou
     if (has_submitted) {
         int last = 1 - pipe_id;
         if (g_tls_pipe_n_compressed[last] > 0) {
-            g_backend_decompress_batch_compact_wait(last,
+            g_backend_decompress_batch_compact_wait(get_stream_id(last),
                 g_tls_pipe_n_compressed[last],
                 g_tls_pipe_out_ptrs[last],
                 g_tls_pipe_out_lens[last]);
         }
+#ifndef GPUC_NO_VERIFY_CRC
         if (verify_batch_crc(info, last, g_tls_pipe_first_block[last],
                              g_tls_pipe_nblocks[last]) != 0) {
             return (total_read > 0) ? (ssize_t)total_read : -1;
         }
+#endif
         for (int i = 0; i < g_tls_pipe_user_nblocks[last] && count > 0; i++) {
             uint32_t bid = g_tls_pipe_first_block[last] + i;
             off64_t block_off = (bid == g_tls_pipe_first_block[last])

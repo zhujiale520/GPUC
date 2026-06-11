@@ -7,20 +7,21 @@
 
 ## 一、瓶颈分析与优化方案总览
 
-| 优先级 | 瓶颈来源 | 实验证据 | 预期提升 | 代码改动量 |
-|--------|---------|---------|---------|-----------|
-| 🔴 P0 | 单 CUDA Stream 并发竞争 | jobs=32 时 GPUC 从 3797 → 267 MB/s（4.9.5） | **10-15x**（恢复至 jobs=16 水平） | 中等 |
-| 🔴 P0 | mmap 全量预解压 | mmap 读取 7-12x 减速（4.9.7） | **5-10x**（接近 Baseline） | 较大 |
-| 🟡 P1 | GPU 计算负载抢占 | GPU-Util 100% 时降至 80 MB/s（7.2） | **2-5x**（恢复至 400+ MB/s） | 较小 |
-| 🟡 P1 | 首次 I/O lazy init 延迟 | 首次 read 惩罚 ~200 ms（4.14） | 消除 200 ms 惩罚 | 较小 |
-| 🟢 P2 | 小块随机读 IOPS 瓶颈 | 4k-128k IOPS 锁定 ~800（4.9.4） | **2-4x** IOPS 提升 | 中等 |
-| 🟢 P2 | 写路径 header 开销 | Hook RAW 写入慢 13.5%（4.9.1） | **10-15%** 写入加速 | 较小 |
+| 优先级 | 瓶颈来源 | 实验证据 | 预期提升 | 代码改动量 | 状态 |
+|--------|---------|---------|---------|-----------|------|
+| 🔴 P0 | 单 CUDA Stream 并发竞争 | jobs=32 时 GPUC 从 3797 → 267 MB/s（4.9.5） | **10-15x**（恢复至 jobs=16 水平） | 中等 | ✅ 已实现，效果未达预期 |
+| 🔴 P0 | CRC32 验证 CPU 开销 | 单线程占比 ~36%（258μs/709μs） | **1.5-2x**（跳过 CRC32） | 小 | ✅ 已实现，效果未达预期 |
+| 🔴 P0 | mmap 全量预解压 | mmap 读取 7-12x 减速（4.9.7） | **5-10x**（接近 Baseline） | 较大 | 待实现 |
+| 🟡 P1 | GPU 计算负载抢占 | GPU-Util 100% 时降至 80 MB/s（7.2） | **2-5x**（恢复至 400+ MB/s） | 较小 | 待实现 |
+| 🟡 P1 | 首次 I/O lazy init 延迟 | 首次 read 惩罚 ~200 ms（4.14） | 消除 200 ms 惩罚 | 较小 | 待实现 |
+| 🟢 P2 | 小块随机读 IOPS 瓶颈 | 4k-128k IOPS 锁定 ~800（4.9.4） | **2-4x** IOPS 提升 | 中等 | 待实现 |
+| 🟢 P2 | 写路径 header 开销 | Hook RAW 写入慢 13.5%（4.9.1） | **10-15%** 写入加速 | 较小 | 待实现 |
 
 ---
 
 ## 二、P0 — 高优先级优化
 
-### 2.1 多 CUDA Stream 并行（解决 jobs=32 瓶颈）
+### 2.1 多 CUDA Stream 并行（解决 jobs=32 瓶颈）✅ 已实现
 
 **问题根因**：
 - 当前 `gpu_compress.cu` 中仅创建了 **2 个 CUDA Stream**（`g_streams[2]`），用于双缓冲流水线
@@ -31,50 +32,65 @@
 - jobs=16：3797 MB/s（正常）
 - jobs=32：267 MB/s（骤降 93%）
 
-**优化方案**：
+**优化实现（2026-06-10）**：
 
 ```c
 // gpu_compress.cu
-#define NUM_STREAMS 8   // 从 2 扩展到 8
-static cudaStream_t g_streams[NUM_STREAMS] = {0};
-static void *g_d_batch_in[NUM_STREAMS];
-static void *g_d_batch_out[NUM_STREAMS];
-// ... 每个 stream 独立的 device 内存池
-
-// sglz_init() 中：
-for (int s = 0; s < NUM_STREAMS; s++) {
-    cudaStreamCreate(&g_streams[s]);
-    cudaMalloc(&g_d_batch_in[s], pool_size);
-    // ...
-}
+#define SGLZ_NUM_STREAMS 16
+static cudaStream_t g_streams[SGLZ_NUM_STREAMS];
+static void *g_d_batch_in[SGLZ_NUM_STREAMS];
+static void *g_d_batch_out[SGLZ_NUM_STREAMS];
+// ... 每个 stream 独立的 device 内存池（约 8.5 MB/stream）
 ```
 
 ```c
-// hook.c — 按线程 ID 分配 stream
-static __thread int g_tls_stream_id = -1;
+// hook.c — 按线程 TLS 分配 stream
+#define MAX_TOTAL_STREAMS 16
+static volatile int g_next_stream_base = 0;
+static __thread int g_tls_stream_base = -1;
 
-static int get_stream_id(void) {
-    if (g_tls_stream_id < 0) {
-        g_tls_stream_id = (int)(pthread_self() % NUM_STREAMS);
+static int get_stream_id(int pipe_id) {
+    if (g_tls_stream_base < 0) {
+        g_tls_stream_base = __sync_fetch_and_add(&g_next_stream_base, 2) % MAX_TOTAL_STREAMS;
     }
-    return g_tls_stream_id;
+    return (g_tls_stream_base + pipe_id) % MAX_TOTAL_STREAMS;
 }
-
-// 在 read_compressed_at() 中：
-int stream_id = get_stream_id();
-g_backend_decompress_batch_compact_async(..., stream_id);
-g_backend_decompress_batch_compact_wait(stream_id, ...);
 ```
 
-**预期效果**：
-- 8 个 stream 可并行处理 8 个 batch，GPU 利用率从 ~12%（jobs=32 时）提升至 ~80%
-- jobs=32 时带宽有望从 267 MB/s 恢复至 **2000-3000 MB/s**
+**实测效果**：
+- 标准编译（含 CRC32）：jobs=32 时 **270.8 MB/s**（zero）、**269.1 MB/s**（rand）——**未达预期**
+- 跳过 CRC32：单线程 O_DIRECT **363.8 MB/s**，较标准版 **350.6 MB/s** 仅提升 **3.8%**
 
-**工作量**：约 2 小时（修改 stream 数组大小 + 内存池分配 + hook.c stream 分配逻辑）
+**根因分析**：
+- fio `sync` 引擎 + `numjobs=32` 模式下，32 个进程/线程的 I/O 请求无法有效合并为大批量 kernel 调用
+- 每次 `read()` 只处理 1 个 128k block，kernel 启动开销（~30μs）占比极高，多 Stream 无法摊销
+- 真正瓶颈是 **GPU kernel 启动延迟 + H2D/D2H 传输 + 单 batch 块数不足**，而非 stream 竞争
+
+**结论**：多 Stream 优化代码已保留，作为高并发场景的基础设施。在 **bs≥1M** 或 **异步 I/O 深度≥16** 的场景下才能发挥价值。
+
+### 2.2 CRC32 验证跳过（编译时可选）✅ 已实现
+
+**问题根因**：
+- Hook 内计时显示 `verify_batch_crc` 占单次 read 的 **36%**（258μs / 709μs）
+- CRC32 查表法在该 CPU 上仅 **484 MB/s**
+
+**优化实现**：
+- `hook.c`：4 处 `verify_batch_crc` 调用包裹 `#ifndef GPUC_NO_VERIFY_CRC`
+- 编译时通过 `make ABLATION_FLAGS="-DGPUC_NO_VERIFY_CRC"` 启用
+
+**实测效果**：
+- 单线程 O_DIRECT：标准版 **350.6 MB/s** → 跳过 CRC32 **363.8 MB/s**，提升 **3.8%**
+- 多线程 jobs=32：标准版 **270.8 MB/s** → 跳过 CRC32 **268.6 MB/s**，**无提升**
+
+**根因分析**：
+- 端到端时间被 `cudaStreamSynchronize`（441μs，62%）主导，CPU 侧 CRC32 优化被 GPU 同步时间淹没
+- 多线程场景下，各线程的 CRC32 计算可并行执行，进一步稀释了优化收益
+
+**结论**：CRC32 跳过适合作为生产环境可选编译参数（牺牲数据完整性换取极限性能），但单独使用无法解决 jobs=32 骤降问题。
 
 ---
 
-### 2.2 mmap 按需解压（解决 7-12x 减速）
+### 2.3 mmap 按需解压（解决 7-12x 减速）
 
 **问题根因**：
 - 当前 `mmap()` 拦截实现：一次性调用 `read_compressed_at()` 预解压**整个文件**到匿名内存
@@ -329,15 +345,21 @@ ssize_t write(int fd, const void *buf, size_t count) {
 
 ---
 
-## 五、执行建议
+## 五、执行建议（2026-06-10 更新）
 
-| 顺序 | 优化项 | 预计收益 | 工作量 | 比赛前可行性 |
-|------|--------|---------|--------|-------------|
-| 1 | 多 CUDA Stream 并行 | **最高**（10-15x） | 2h | ✅ 强烈推荐 |
-| 2 | mmap 预解压前 N MB | **很高**（5-10x） | 3h | ✅ 推荐 |
-| 3 | 高优先级 Stream + 负载检测 | **高**（2-5x） | 2h | ✅ 推荐 |
-| 4 | 后台预初始化线程 | **中**（消除 200ms） | 1.5h | ✅ 可做 |
-| 5 | LRU Block Cache | **中**（2-4x IOPS） | 2h | ⏳ 时间够就做 |
-| 6 | 延迟 Header 写入 | **低**（10-15%） | 1h | ⏳ 时间够就做 |
+| 顺序 | 优化项 | 预计收益 | 工作量 | 状态 |
+|------|--------|---------|--------|------|
+| 1 | 多 CUDA Stream 并行 | **未达预期**（理论 10-15x，实际 ~1x） | 2h | ✅ 已实现 |
+| 2 | CRC32 验证跳过 | **未达预期**（理论 1.5-2x，实际 1.04x） | 0.5h | ✅ 已实现 |
+| 3 | mmap 预解压前 N MB | **很高**（5-10x） | 3h | 待实现 |
+| 4 | 高优先级 Stream + 负载检测 | **高**（2-5x） | 2h | 待实现 |
+| 5 | 后台预初始化线程 | **中**（消除 200ms） | 1.5h | 待实现 |
+| 6 | LRU Block Cache | **中**（2-4x IOPS） | 2h | 待实现 |
+| 7 | 延迟 Header 写入 | **低**（10-15%） | 1h | 待实现 |
 
-> **核心建议**：如果时间只够做一件事，**务必做多 CUDA Stream 并行**。这是唯一能把 jobs=32 性能从 267 MB/s 救回到 2000+ MB/s 的优化，且代码改动量可控。
+> **核心结论**：多 CUDA Stream 和 CRC32 跳过均已实现，但**未解决 jobs=32 骤降问题**。根因是 fio sync 引擎 128k bs 下每次 read 仅处理 1 个 block，kernel 启动开销无法被多 Stream 摊销。
+>
+> **下一步建议**：
+> 1. 若需解决 jobs=32 性能：改用 **异步 I/O 引擎**（如 `io_uring` + 深度≥16）或 **bs≥1M**，使单次 read 覆盖多 block
+> 2. 若需提升单线程极限：聚焦 **GPU kernel 启动延迟优化**（如 CUDA Graph）或 **更大 batch 合并**
+> 3. 若需提升 mmap 场景：优先实现 **mmap 按需解压**（预解压前 16 MB + 后台线程）

@@ -238,15 +238,16 @@ __global__ void sglz_decompress_compact_kernel(const uint8_t *compact_in,
  * ============================================================ */
 
 #define SGLZ_MAX_BATCH_BLOCKS 32
+#define SGLZ_NUM_STREAMS 16
 
 static int g_initialized = 0;
-static cudaStream_t g_streams[2] = {0, 0};
+static cudaStream_t g_streams[SGLZ_NUM_STREAMS];
 
-/* 预分配的 device 内存池（双缓冲，用于 batch decompress 流水线） */
-static void *g_d_batch_in[2] = {nullptr, nullptr};
-static void *g_d_batch_out[2] = {nullptr, nullptr};
-static void *g_d_batch_out_lens[2] = {nullptr, nullptr};
-static void *g_d_chunk_offsets[2] = {nullptr, nullptr};
+/* 预分配的 device 内存池（多 stream，用于 batch decompress 流水线） */
+static void *g_d_batch_in[SGLZ_NUM_STREAMS] = {nullptr};
+static void *g_d_batch_out[SGLZ_NUM_STREAMS] = {nullptr};
+static void *g_d_batch_out_lens[SGLZ_NUM_STREAMS] = {nullptr};
+static void *g_d_chunk_offsets[SGLZ_NUM_STREAMS] = {nullptr};
 
 /* 预分配的 compress device 内存池（stream 0，用于 batch compress） */
 static void *g_d_compress_in = nullptr;
@@ -269,18 +270,23 @@ int sglz_init(void) {
         fprintf(stderr, "[sglz] cudaFuncSetAttribute failed: %s\n", cudaGetErrorString(err));
         /* 非致命错误，继续运行 */
     }
-    /* 创建双 CUDA stream 用于异步流水线 */
-    for (int s = 0; s < 2; s++) {
+    /* 创建多 CUDA stream 用于异步流水线并发 */
+    for (int s = 0; s < SGLZ_NUM_STREAMS; s++) {
+        g_streams[s] = 0;
         err = cudaStreamCreate(&g_streams[s]);
         if (err != cudaSuccess) {
             fprintf(stderr, "[sglz] cudaStreamCreate(%d) failed: %s\n", s, cudaGetErrorString(err));
             g_streams[s] = 0;
         }
     }
-    /* 预分配 batch decompress 的 device 内存池（双缓冲） */
+    /* 预分配 batch decompress 的 device 内存池（每个 stream 独立） */
     size_t batch_in_size = (size_t)SGLZ_MAX_BATCH_BLOCKS * SGLZ_NCHUNKS * SGLZ_SLOT_SIZE;
     size_t batch_out_size = (size_t)SGLZ_MAX_BATCH_BLOCKS * SGLZ_BLOCK_SIZE;
-    for (int s = 0; s < 2; s++) {
+    for (int s = 0; s < SGLZ_NUM_STREAMS; s++) {
+        g_d_batch_in[s] = nullptr;
+        g_d_batch_out[s] = nullptr;
+        g_d_batch_out_lens[s] = nullptr;
+        g_d_chunk_offsets[s] = nullptr;
         cudaMalloc(&g_d_batch_in[s], batch_in_size);
         cudaMalloc(&g_d_batch_out[s], batch_out_size);
         cudaMalloc(&g_d_batch_out_lens[s], SGLZ_MAX_BATCH_BLOCKS * sizeof(size_t));
@@ -298,7 +304,7 @@ int sglz_init(void) {
 }
 
 void sglz_fini(void) {
-    for (int s = 0; s < 2; s++) {
+    for (int s = 0; s < SGLZ_NUM_STREAMS; s++) {
         if (g_d_batch_in[s]) { cudaFree(g_d_batch_in[s]); g_d_batch_in[s] = nullptr; }
         if (g_d_batch_out[s]) { cudaFree(g_d_batch_out[s]); g_d_batch_out[s] = nullptr; }
         if (g_d_batch_out_lens[s]) { cudaFree(g_d_batch_out_lens[s]); g_d_batch_out_lens[s] = nullptr; }
@@ -542,7 +548,7 @@ int sglz_decompress_batch_compact_async(int n,
     if (!g_initialized) sglz_init();
     if (n <= 0) return 0;
     if (n > SGLZ_MAX_BATCH_BLOCKS) return -1;
-    if (stream_id < 0 || stream_id >= 2) return -1;
+    if (stream_id < 0 || stream_id >= SGLZ_NUM_STREAMS) return -1;
 
     cudaStream_t stream = g_streams[stream_id];
     uint8_t *d_in = (uint8_t *)g_d_batch_in[stream_id];
@@ -573,7 +579,7 @@ int sglz_decompress_batch_compact_async(int n,
  */
 int sglz_decompress_batch_compact_wait(int stream_id, int n,
                                           uint8_t **out_bufs, const size_t *out_lens) {
-    if (stream_id < 0 || stream_id >= 2) return -1;
+    if (stream_id < 0 || stream_id >= SGLZ_NUM_STREAMS) return -1;
     cudaStream_t stream = g_streams[stream_id];
     cudaError_t err = cudaStreamSynchronize(stream);
     if (err != cudaSuccess) {
