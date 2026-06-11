@@ -36,6 +36,7 @@
 #include <stdint.h>
 #include <errno.h>
 #include <stdarg.h>
+#include <time.h>
 
 #include "file_header.h"
 #include "gpu_compress_api.h"
@@ -184,6 +185,61 @@ static void ensure_backend_init(void) {
 }
 
 /* ============================================================
+ *  后台预初始化线程：constructor 阶段提前启动 CUDA init，
+ *  使长生命周期应用的首次 I/O 无需等待 200ms。
+ * ============================================================ */
+static volatile int g_preinit_done = 0;
+
+static void *preinit_thread(void *arg) {
+    (void)arg;
+    /* 延迟 100ms，避免 constructor 阶段 CUDA 驱动尚未就绪 */
+    struct timespec ts = {0, 100000000};
+    nanosleep(&ts, NULL);
+    if (gpu_compress_init() == 0) {
+        g_backend_initialized = 1;
+    } else {
+        /* 清理可能部分创建的资源，让前台线程稍后重试 */
+        gpu_compress_fini();
+    }
+    g_preinit_done = 1;
+    return NULL;
+}
+
+static void spawn_preinit_thread(void) {
+    pthread_t t;
+    if (pthread_create(&t, NULL, preinit_thread, NULL) == 0) {
+        pthread_detach(t);
+    }
+}
+
+/* ============================================================
+ *  GPU 负载检测：高负载时自动 fallback CPU 后端
+ * ============================================================ */
+#ifndef GPUC_NO_FALLBACK
+static __thread int g_tls_use_cpu = 0;
+static __thread time_t g_tls_last_check = 0;
+
+static int should_cpu_fallback(void) {
+    time_t now = time(NULL);
+    if (now != g_tls_last_check) {
+        FILE *f = popen("nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits", "r");
+        if (f) {
+            int util = 0;
+            if (fscanf(f, "%d", &util) == 1) {
+                g_tls_use_cpu = (util > 80);
+            }
+            pclose(f);
+        }
+        g_tls_last_check = now;
+    }
+    return g_tls_use_cpu;
+}
+#endif
+
+typedef int (*decomp_async_fn_t)(int, const uint8_t *, size_t, const int *, const size_t *, int);
+typedef int (*decomp_wait_fn_t)(int, int, uint8_t **, const size_t *);
+
+/* ============================================================
  *  辅助：判断 fd 是否为普通文件（只 hook 普通文件）
  * ============================================================ */
 static int is_regular_file(int fd) {
@@ -214,6 +270,12 @@ typedef struct {
     uint32_t last_read_block; /* 上次读取的结束 block */
     int seq_count;            /* 连续顺序读取计数 */
     int ra_max_blocks;        /* 当前预读窗口大小 */
+    /* block cache：缓存最近读取的一个 block，加速小块随机读 */
+    uint32_t cache_block_id;
+    uint8_t *cache_buf;
+    int cache_valid;
+    /* 延迟 header 写入：open 时标记 pending，首次 write/close 时实际写入 */
+    int header_pending;
 } fd_info_t;
 
 static fd_info_t *g_fd_table[MAX_FD];
@@ -244,6 +306,7 @@ static void clear_fd_info(int fd) {
     if (g_fd_table[fd]) {
         free(g_fd_table[fd]->blocks);
         free(g_fd_table[fd]->ra_buf);
+        free(g_fd_table[fd]->cache_buf);
         free(g_fd_table[fd]);
         g_fd_table[fd] = NULL;
     }
@@ -342,12 +405,23 @@ static int write_raw_header(int fd, fd_info_t *info) {
 
     ssize_t n = real_write(fd, &hdr, sizeof(hdr));
     if (n != (ssize_t)sizeof(hdr)) return -1;
+    info->header_pending = 0;
+    return 0;
+}
+
+/* 延迟写入 pending 的 RAW header */
+static int flush_raw_header(int fd, fd_info_t *info) {
+    if (!info->header_pending) return 0;
+    ssize_t n = real_write(fd, &info->hdr, sizeof(info->hdr));
+    if (n != (ssize_t)sizeof(info->hdr)) return -1;
+    info->header_pending = 0;
     return 0;
 }
 
 static off64_t get_logical_size(fd_info_t *info) {
     if (!info->has_header) return info->phys_size;
     if (info->is_compressed) return (off64_t)info->hdr.orig_size;
+    if (info->header_pending) return info->phys_size;  /* header 尚未写入，逻辑大小等于物理大小 */
     return info->phys_size - (off64_t)info->hdr.header_size;
 }
 
@@ -647,6 +721,13 @@ static ssize_t read_compressed(int fd, fd_info_t *info, void *buf, size_t count)
     }
 
     ensure_backend_init();
+#ifndef GPUC_NO_FALLBACK
+    int use_cpu = should_cpu_fallback();
+#else
+    int use_cpu = 0;
+#endif
+    decomp_async_fn_t decomp_async = use_cpu ? cpu_decompress_batch_compact_async : g_backend_decompress_batch_compact_async;
+    decomp_wait_fn_t  decomp_wait  = use_cpu ? cpu_decompress_batch_compact_wait  : g_backend_decompress_batch_compact_wait;
     if (ensure_tls_buffers() != 0 || ensure_batch_tls_buffers() != 0 || ensure_pipe_buffers() != 0) {
         errno = ENOMEM;
         return -1;
@@ -699,6 +780,19 @@ static ssize_t read_compressed(int fd, fd_info_t *info, void *buf, size_t count)
     }
 #endif
 
+    /* ---- block cache：单 block 随机读加速 ---- */
+    {
+        uint32_t last_block_cache = (uint32_t)((start + count - 1) / GPUC_BLOCK_SIZE);
+        if (first_block == last_block_cache && info->cache_valid && info->cache_block_id == first_block) {
+            off64_t block_off = start % GPUC_BLOCK_SIZE;
+            size_t to_copy = GPUC_BLOCK_SIZE - (size_t)block_off;
+            if (to_copy > count) to_copy = count;
+            memcpy(out_ptr, info->cache_buf + block_off, to_copy);
+            info->cur_offset = start + (off64_t)to_copy;
+            return (ssize_t)to_copy;
+        }
+    }
+
     int pipe_id = 0;
     int has_submitted = 0;
     off64_t orig_start = start;
@@ -710,7 +804,7 @@ static ssize_t read_compressed(int fd, fd_info_t *info, void *buf, size_t count)
             int prev = 1 - pipe_id;
 
             if (g_tls_pipe_n_compressed[prev] > 0) {
-                g_backend_decompress_batch_compact_wait(get_stream_id(prev),
+                decomp_wait(get_stream_id(prev),
                     g_tls_pipe_n_compressed[prev],
                     g_tls_pipe_out_ptrs[prev],
                     g_tls_pipe_out_lens[prev]);
@@ -862,8 +956,8 @@ static ssize_t read_compressed(int fd, fd_info_t *info, void *buf, size_t count)
 
         /* 提交当前 batch GPU async */
         if (g_tls_pipe_n_compressed[pipe_id] > 0) {
-            if (g_backend_decompress_batch_compact_async) {
-                g_backend_decompress_batch_compact_async(
+            if (decomp_async) {
+                decomp_async(
                     g_tls_pipe_n_compressed[pipe_id],
                     g_tls_pipe_comp_bufs[pipe_id], g_tls_pipe_total_compact_len[pipe_id],
                     g_tls_pipe_chunk_offsets[pipe_id],
@@ -887,7 +981,7 @@ static ssize_t read_compressed(int fd, fd_info_t *info, void *buf, size_t count)
     if (has_submitted) {
         int last = 1 - pipe_id;
         if (g_tls_pipe_n_compressed[last] > 0) {
-            g_backend_decompress_batch_compact_wait(get_stream_id(last),
+            decomp_wait(get_stream_id(last),
                 g_tls_pipe_n_compressed[last],
                 g_tls_pipe_out_ptrs[last],
                 g_tls_pipe_out_lens[last]);
@@ -930,6 +1024,24 @@ static ssize_t read_compressed(int fd, fd_info_t *info, void *buf, size_t count)
         }
     }
 
+    /* block cache：单 block 读取时缓存结果 */
+    if (has_submitted) {
+        int last_pipe = 1 - pipe_id;
+        uint32_t last_block = (uint32_t)((orig_start + orig_count - 1) / GPUC_BLOCK_SIZE);
+        if (first_block == last_block && g_tls_pipe_user_nblocks[last_pipe] > 0) {
+            if (!info->cache_buf) {
+                info->cache_buf = (uint8_t *)malloc(GPUC_BLOCK_SIZE);
+            }
+            if (info->cache_buf) {
+                info->cache_block_id = first_block;
+                memcpy(info->cache_buf,
+                       g_tls_pipe_decomp_bufs[last_pipe] + (first_block - g_tls_pipe_first_block[last_pipe]) * GPUC_BLOCK_SIZE,
+                       GPUC_BLOCK_SIZE);
+                info->cache_valid = 1;
+            }
+        }
+    }
+
     info->last_read_block = (uint32_t)((orig_start + orig_count - 1) / GPUC_BLOCK_SIZE);
     info->cur_offset = start;
     return (ssize_t)total_read;
@@ -945,7 +1057,7 @@ static ssize_t read_raw(int fd, fd_info_t *info, void *buf, size_t count) {
     if (info->cur_offset + (off64_t)count > log_size)
         count = (size_t)(log_size - info->cur_offset);
 
-    off64_t phys_off = info->cur_offset + (off64_t)info->hdr.header_size;
+    off64_t phys_off = info->cur_offset + (info->header_pending ? 0 : (off64_t)info->hdr.header_size);
     ssize_t ret = real_pread64(fd, buf, count, phys_off);
     if (ret > 0) info->cur_offset += ret;
     return ret;
@@ -967,6 +1079,13 @@ static ssize_t read_compressed_at(int fd, fd_info_t *info, void *buf, size_t cou
     }
 
     ensure_backend_init();
+#ifndef GPUC_NO_FALLBACK
+    int use_cpu = should_cpu_fallback();
+#else
+    int use_cpu = 0;
+#endif
+    decomp_async_fn_t decomp_async = use_cpu ? cpu_decompress_batch_compact_async : g_backend_decompress_batch_compact_async;
+    decomp_wait_fn_t  decomp_wait  = use_cpu ? cpu_decompress_batch_compact_wait  : g_backend_decompress_batch_compact_wait;
     if (ensure_tls_buffers() != 0 || ensure_batch_tls_buffers() != 0 || ensure_pipe_buffers() != 0) {
         errno = ENOMEM;
         return -1;
@@ -980,6 +1099,17 @@ static ssize_t read_compressed_at(int fd, fd_info_t *info, void *buf, size_t cou
     uint8_t *out_ptr = (uint8_t *)buf;
     size_t total_read = 0;
 
+    /* ---- block cache：单 block 随机读加速 ---- */
+    uint32_t first_block_at = (uint32_t)(start / GPUC_BLOCK_SIZE);
+    uint32_t last_block_at = (uint32_t)((start + count - 1) / GPUC_BLOCK_SIZE);
+    if (first_block_at == last_block_at && info->cache_valid && info->cache_block_id == first_block_at) {
+        off64_t block_off = start % GPUC_BLOCK_SIZE;
+        size_t to_copy = GPUC_BLOCK_SIZE - (size_t)block_off;
+        if (to_copy > count) to_copy = count;
+        memcpy(out_ptr, info->cache_buf + block_off, to_copy);
+        return (ssize_t)to_copy;
+    }
+
     int pipe_id = 0;
     int has_submitted = 0;
 
@@ -989,7 +1119,7 @@ static ssize_t read_compressed_at(int fd, fd_info_t *info, void *buf, size_t cou
             int prev = 1 - pipe_id;
 
             if (g_tls_pipe_n_compressed[prev] > 0) {
-                g_backend_decompress_batch_compact_wait(get_stream_id(prev),
+                decomp_wait(get_stream_id(prev),
                     g_tls_pipe_n_compressed[prev],
                     g_tls_pipe_out_ptrs[prev],
                     g_tls_pipe_out_lens[prev]);
@@ -1111,9 +1241,10 @@ static ssize_t read_compressed_at(int fd, fd_info_t *info, void *buf, size_t cou
             g_tls_pipe_n_compressed[pipe_id]++;
         }
 
+        /* 提交当前 batch GPU async */
         if (g_tls_pipe_n_compressed[pipe_id] > 0) {
-            if (g_backend_decompress_batch_compact_async) {
-                g_backend_decompress_batch_compact_async(
+            if (decomp_async) {
+                decomp_async(
                     g_tls_pipe_n_compressed[pipe_id],
                     g_tls_pipe_comp_bufs[pipe_id], g_tls_pipe_total_compact_len[pipe_id],
                     g_tls_pipe_chunk_offsets[pipe_id],
@@ -1136,7 +1267,7 @@ static ssize_t read_compressed_at(int fd, fd_info_t *info, void *buf, size_t cou
     if (has_submitted) {
         int last = 1 - pipe_id;
         if (g_tls_pipe_n_compressed[last] > 0) {
-            g_backend_decompress_batch_compact_wait(get_stream_id(last),
+            decomp_wait(get_stream_id(last),
                 g_tls_pipe_n_compressed[last],
                 g_tls_pipe_out_ptrs[last],
                 g_tls_pipe_out_lens[last]);
@@ -1158,6 +1289,23 @@ static ssize_t read_compressed_at(int fd, fd_info_t *info, void *buf, size_t cou
             start += to_copy;
             count -= to_copy;
             total_read += to_copy;
+        }
+    }
+
+    /* block cache：单 block 读取时缓存结果 */
+    if (has_submitted) {
+        int last_pipe = 1 - pipe_id;
+        if (first_block_at == last_block_at && g_tls_pipe_user_nblocks[last_pipe] > 0) {
+            if (!info->cache_buf) {
+                info->cache_buf = (uint8_t *)malloc(GPUC_BLOCK_SIZE);
+            }
+            if (info->cache_buf) {
+                info->cache_block_id = first_block_at;
+                memcpy(info->cache_buf,
+                       g_tls_pipe_decomp_bufs[last_pipe] + (first_block_at - g_tls_pipe_first_block[last_pipe]) * GPUC_BLOCK_SIZE,
+                       GPUC_BLOCK_SIZE);
+                info->cache_valid = 1;
+            }
         }
     }
 
@@ -1291,6 +1439,8 @@ void __attribute__((constructor(101))) hook_init(void) {
             fprintf(stderr, "[HOOK] Backend selected: GPU (CUDA offload, lazy init)\n");
             g_backend_msg_done = 1;
         }
+        /* 启动后台线程提前初始化 GPU，长生命周期应用首次 I/O 可降至 <10ms */
+        spawn_preinit_thread();
     }
 #endif
 
@@ -1334,8 +1484,19 @@ int open(const char *pathname, int flags, ...) {
     info->phys_size = get_phys_size(fd);
 
     if (info->phys_size == 0) {
-        write_raw_header(fd, info);
-        info->phys_size = get_phys_size(fd);
+        /* 延迟写入 header：只初始化结构体，等首次 write/close 时实际写入 */
+        struct gpuc_header hdr;
+        memset(&hdr, 0, sizeof(hdr));
+        hdr.magic = GPUC_MAGIC;
+        hdr.version = GPUC_VERSION;
+        hdr.block_size = GPUC_BLOCK_SIZE;
+        hdr.state = GPUC_STATE_RAW;
+        hdr.comp_algo = GPUC_ALGO_SGLZ;
+        hdr.header_size = sizeof(hdr);
+        info->hdr = hdr;
+        info->has_header = 1;
+        info->is_compressed = 0;
+        info->header_pending = 1;
     } else if (info->phys_size >= (off64_t)sizeof(struct gpuc_header)) {
         read_header(fd, info);
     }
@@ -1432,6 +1593,14 @@ ssize_t write(int fd, const void *buf, size_t count) {
         return -1;
     }
 
+    /* 延迟 header 写入：首次 write 时先写入 pending 的 header */
+    if (info->header_pending) {
+        if (flush_raw_header(fd, info) != 0) {
+            errno = EIO;
+            return -1;
+        }
+    }
+
     off64_t phys_off = info->cur_offset + (off64_t)info->hdr.header_size;
     ssize_t ret = real_pwrite64(fd, buf, count, phys_off);
     if (ret > 0) {
@@ -1470,7 +1639,7 @@ off_t lseek(int fd, off_t offset, int whence) {
     info->cur_offset = new_off;
 
     /* 同步底层物理偏移（部分程序依赖内核中的文件偏移） */
-    off64_t phys_off = new_off + (off64_t)info->hdr.header_size;
+    off64_t phys_off = new_off + (info->header_pending ? 0 : (off64_t)info->hdr.header_size);
     real_lseek64(fd, phys_off, SEEK_SET);
 
     return (off_t)new_off;
@@ -1504,7 +1673,7 @@ off64_t lseek64(int fd, off64_t offset, int whence) {
     }
     info->cur_offset = new_off;
 
-    off64_t phys_off = new_off + (off64_t)info->hdr.header_size;
+    off64_t phys_off = new_off + (info->header_pending ? 0 : (off64_t)info->hdr.header_size);
     real_lseek64(fd, phys_off, SEEK_SET);
 
     return new_off;
@@ -1514,6 +1683,10 @@ int close(int fd) {
     if (g_hooks_disabled) {
         if (!real_close) { errno = EBADF; return -1; }
         return real_close(fd);
+    }
+    fd_info_t *info = get_fd_info(fd);
+    if (info && info->header_pending) {
+        flush_raw_header(fd, info);
     }
     clear_fd_info(fd);
     return real_close(fd);
@@ -1724,6 +1897,12 @@ ssize_t pwrite64(int fd, const void *buf, size_t count, off64_t offset) {
     if (!info || !info->has_header) {
         return real_pwrite64(fd, buf, count, offset);
     }
+    if (info->header_pending) {
+        if (flush_raw_header(fd, info) != 0) {
+            errno = EIO;
+            return -1;
+        }
+    }
     off64_t phys_off = offset + (off64_t)info->hdr.header_size;
     return real_pwrite64(fd, buf, count, phys_off);
 }
@@ -1772,6 +1951,13 @@ ssize_t writev(int fd, const struct iovec *iov, int iovcnt) {
     fd_info_t *info = get_fd_info(fd);
     if (!info || !info->has_header) {
         return real_writev(fd, iov, iovcnt);
+    }
+    /* 延迟 header 写入 */
+    if (info->header_pending) {
+        if (flush_raw_header(fd, info) != 0) {
+            errno = EIO;
+            return -1;
+        }
     }
     /* RAW 文件：底层偏移已由 lseek 同步，直接透传 */
     return real_writev(fd, iov, iovcnt);

@@ -12,10 +12,10 @@
 | 🔴 P0 | 单 CUDA Stream 并发竞争 | jobs=32 时 GPUC 从 3797 → 267 MB/s（4.9.5） | **10-15x**（恢复至 jobs=16 水平） | 中等 | ✅ 已实现，效果未达预期 |
 | 🔴 P0 | CRC32 验证 CPU 开销 | 单线程占比 ~36%（258μs/709μs） | **1.5-2x**（跳过 CRC32） | 小 | ✅ 已实现，效果未达预期 |
 | 🔴 P0 | mmap 全量预解压 | mmap 读取 7-12x 减速（4.9.7） | **5-10x**（接近 Baseline） | 较大 | ✅ 已实现，512MB 提升 10.4x |
-| 🟡 P1 | GPU 计算负载抢占 | GPU-Util 100% 时降至 80 MB/s（7.2） | **2-5x**（恢复至 400+ MB/s） | 较小 | 待实现 |
-| 🟡 P1 | 首次 I/O lazy init 延迟 | 首次 read 惩罚 ~200 ms（4.14） | 消除 200 ms 惩罚 | 较小 | 待实现 |
-| 🟢 P2 | 小块随机读 IOPS 瓶颈 | 4k-128k IOPS 锁定 ~800（4.9.4） | **2-4x** IOPS 提升 | 中等 | 待实现 |
-| 🟢 P2 | 写路径 header 开销 | Hook RAW 写入慢 13.5%（4.9.1） | **10-15%** 写入加速 | 较小 | 待实现 |
+| 🟡 P1 | GPU 计算负载抢占 | GPU-Util 100% 时降至 80 MB/s（8.2） | **2-5x**（恢复至 400+ MB/s） | 较小 | ✅ 已实现 |
+| 🟡 P1 | 首次 I/O lazy init 延迟 | 首次 read 惩罚 ~200 ms（4.14） | 消除 200 ms 惩罚 | 较小 | ✅ 已实现 |
+| 🟢 P2 | 小块随机读 IOPS 瓶颈 | 4k-128k IOPS 锁定 ~800（4.9.4） | **2-4x** IOPS 提升 | 中等 | ✅ 已实现 |
+| 🟢 P2 | 写路径 header 开销 | Hook RAW 写入慢 13.5%（4.9.1） | **10-15%** 写入加速 | 较小 | ✅ 已实现 |
 
 ---
 
@@ -154,7 +154,7 @@ void *mmap(...) {
 
 ## 三、P1 — 中优先级优化
 
-### 3.1 高优先级 CUDA Stream（解决 GPU 负载抢占）
+### 3.1 高优先级 CUDA Stream + 负载自动 fallback（解决 GPU 负载抢占）✅ 已实现
 
 **问题根因**：
 - GPU-Util 100% 时，其他 CUDA 任务抢占了解压 kernel 的执行时间
@@ -164,39 +164,15 @@ void *mmap(...) {
 - GPU 空闲：458 MB/s
 - GPU-Util 100%（1.4 GB 显存）：80 MB/s（下降 82%）
 
-**优化方案**：
+**优化实现（2026-06-11）**：
 
-```c
-// gpu_compress.cu
-int leastPriority, greatestPriority;
-cudaDeviceGetStreamPriorityRange(&leastPriority, &greatestPriority);
+1. **高优先级 Stream**：`gpu_compress.cu` 中 `sglz_init()` 使用 `cudaStreamCreateWithPriority(&g_streams[s], cudaStreamDefault, greatestPriority)` 创建最高优先级 stream，减少被其他 CUDA 任务抢占的概率。
 
-// 创建高优先级 stream（数值越小优先级越高）
-cudaStreamCreateWithPriority(&g_streams[s], cudaStreamDefault, greatestPriority);
-```
+2. **GPU 负载检测**：`hook.c` 中 `should_cpu_fallback()` 每秒通过 `nvidia-smi` 检测 GPU 利用率，>80% 时返回 true。
 
-**配合策略**：实时 GPU 负载检测 + 自动 fallback
-
-```c
-// hook.c — 检测 GPU 利用率
-static int gpu_utilization_high(void) {
-    static time_t last_check = 0;
-    static int last_util = 0;
-    time_t now = time(NULL);
-    if (now - last_check > 1) {  // 每秒检测一次
-        FILE *f = popen("nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits", "r");
-        if (f) { fscanf(f, "%d", &last_util); pclose(f); }
-        last_check = now;
-    }
-    return last_util > 80;  // >80% 认为高负载
-}
-
-// 在 read_compressed_at() 开头：
-if (gpu_utilization_high()) {
-    // 自动 fallback 到 CPU 后端
-    return cpu_decompress_path(...);
-}
-```
+3. **自动 fallback**：`read_compressed()` 和 `read_compressed_at()` 中，通过局部函数指针 `decomp_async`/`decomp_wait` 动态选择后端：
+   - GPU 空闲时使用 GPU 后端（`g_backend_*`）
+   - GPU 高负载时使用 CPU 后端（`cpu_decompress_batch_compact_async/wait`）
 
 **预期效果**：
 - 高优先级 stream：GPU-Util 100% 时带宽有望从 80 恢复至 **200-300 MB/s**
@@ -206,7 +182,7 @@ if (gpu_utilization_high()) {
 
 ---
 
-### 3.2 后台预初始化线程（解决首次 I/O 200ms 惩罚）
+### 3.2 后台预初始化线程（解决首次 I/O 200ms 惩罚）✅ 已实现
 
 **问题根因**：
 - `cudaSetDevice()` + `cudaStreamCreate()` + `cudaMalloc()`（~6 MB 显存池）累计约 200 ms
@@ -216,42 +192,31 @@ if (gpu_utilization_high()) {
 - GPU 路径首次 read：~200 ms
 - CPU 路径首次 read：~30-55 ms
 
-**优化方案**：
+**优化实现（2026-06-11）**：
 
 ```c
 // hook.c — constructor 中启动后台预初始化线程
-static pthread_once_t g_preinit_once = PTHREAD_ONCE_INIT;
 static volatile int g_preinit_done = 0;
 
 static void *preinit_thread(void *arg) {
     (void)arg;
-    ensure_backend_init();  // 提前完成 CUDA init
+    struct timespec ts = {0, 100000000};  // 延迟 100ms，避免 CUDA 驱动未就绪
+    nanosleep(&ts, NULL);
+    if (gpu_compress_init() == 0) {
+        g_backend_initialized = 1;
+    } else {
+        gpu_compress_fini();  // 清理部分资源，让前台线程重试
+    }
     g_preinit_done = 1;
     return NULL;
 }
-
-static void spawn_preinit(void) {
-    pthread_t t;
-    pthread_create(&t, NULL, preinit_thread, NULL);
-    pthread_detach(t);
-}
-
-void __attribute__((constructor(101))) hook_init(void) {
-    // ... 原有逻辑 ...
-    pthread_once(&g_preinit_once, spawn_preinit);
-}
-
-// 在 ensure_backend_init() 中：
-if (!g_preinit_done) {
-    // 后台线程还没完成，但当前线程不能等 200ms
-    // 方案 A：直接 fallback CPU，等后台完成后再切 GPU
-    // 方案 B：阻塞等待（保持现有行为）
-}
 ```
+
+`hook_init()` 中选择 GPU 后端后，调用 `spawn_preinit_thread()` 启动后台线程。长生命周期应用首次 I/O 到来时，CUDA init 通常已完成，`ensure_backend_init()` 直接返回。
 
 **预期效果**：
 - 长生命周期应用（数据库、后台服务）：首次 I/O 降至 **<10 ms**（与 CPU 路径持平）
-- 短生命周期命令（ls/cat）：仍需 fallback CPU 或接受延迟
+- 短生命周期命令（ls/cat）：后台线程可能尚未完成，仍由 `ensure_backend_init()` 处理
 
 **工作量**：约 1.5 小时
 
@@ -259,47 +224,30 @@ if (!g_preinit_done) {
 
 ## 四、P2 — 低优先级优化
 
-### 4.1 LRU Block Cache（解决小块随机读 IOPS 瓶颈）
+### 4.1 LRU Block Cache（解决小块随机读 IOPS 瓶颈）✅ 已实现
 
 **问题根因**：
 - 4k 随机读仍需解压整个 128k block，然后裁剪
 - IOPS 被锁定在 ~800，与 bs 大小无关
 
-**优化方案**：
+**优化实现（2026-06-11）**：
+
+采用 **per-fd 单 block cache**（内存开销小，每个 fd 最多 128KB）：
 
 ```c
-// hook.c — 简单的 per-fd LRU cache
-#define BLOCK_CACHE_SIZE 4  // 缓存最近 4 个 block
-
 typedef struct {
-    uint32_t block_id;
-    uint8_t *data;  // GPUC_BLOCK_SIZE 字节
-    int valid;
-} block_cache_entry_t;
-
-struct fd_info {
     // ... 原有字段 ...
-    block_cache_entry_t block_cache[BLOCK_CACHE_SIZE];
-    int cache_next_evict;
-};
-
-// 在 read_compressed_at() 中：
-// 1. 先查 cache
-for (int i = 0; i < BLOCK_CACHE_SIZE; i++) {
-    if (info->block_cache[i].valid && info->block_cache[i].block_id == first_block) {
-        memcpy(out_ptr, info->block_cache[i].data + first_block_off, to_copy);
-        // cache hit!
-        return ...;
-    }
-}
-// 2. cache miss 时解压并放入 cache
-// ... 解压后 ...
-int slot = info->cache_next_evict % BLOCK_CACHE_SIZE;
-info->block_cache[slot].block_id = first_block;
-memcpy(info->block_cache[slot].data, decompressed_block, GPUC_BLOCK_SIZE);
-info->block_cache[slot].valid = 1;
-info->cache_next_evict++;
+    uint32_t cache_block_id;
+    uint8_t *cache_buf;
+    int cache_valid;
+} fd_info_t;
 ```
+
+在 `read_compressed()` 和 `read_compressed_at()` 中：
+1. 若只读取单个 block（`first_block == last_block`）且 cache 命中，直接 `memcpy` 返回
+2. Batch 解压完成后，若单 block 读取，将解压结果拷贝到 `cache_buf`
+
+`clear_fd_info()` 中释放 `cache_buf`。
 
 **预期效果**：
 - 随机读有局部性时（如数据库 B-tree 页）：IOPS 从 800 提升至 **2000-3000**
@@ -309,38 +257,33 @@ info->cache_next_evict++;
 
 ---
 
-### 4.2 延迟 Header 写入（降低写路径开销）
+### 4.2 延迟 Header 写入（降低写路径开销）✅ 已实现
 
 **问题根因**：
 - `open()` 时立即写入 56 字节 RAW header，导致额外的磁盘 I/O
 - Hook RAW 写入比 Baseline 慢 13.5%
 
-**优化方案**：
+**优化实现（2026-06-11）**：
 
 ```c
-// hook.c — 延迟 header 写入
-struct fd_info {
+typedef struct {
     // ... 原有字段 ...
-    int header_pending;  // header 尚未写入磁盘
-};
+    int header_pending;
+} fd_info_t;
 
-int open(...) {
-    // ... 原有逻辑 ...
-    // 不立即写 header，只标记 pending
-    info->header_pending = 1;
-    return fd;
-}
-
-ssize_t write(int fd, const void *buf, size_t count) {
-    fd_info_t *info = get_fd_info(fd);
-    if (info && info->header_pending) {
-        // 首次写入时，先写 header，再写数据
-        real_pwrite64(fd, &info->hdr, sizeof(info->hdr), 0);
-        info->header_pending = 0;
-    }
-    // ... 原有写入逻辑 ...
+static int flush_raw_header(int fd, fd_info_t *info) {
+    if (!info->header_pending) return 0;
+    ssize_t n = real_write(fd, &info->hdr, sizeof(info->hdr));
+    if (n != sizeof(info->hdr)) return -1;
+    info->header_pending = 0;
+    return 0;
 }
 ```
+
+- `open()`：新文件标记 `header_pending = 1`，不立即写入 header
+- `write()` / `pwrite64()` / `writev()`：首次写入时先 `flush_raw_header()`
+- `close()`：若 `header_pending` 仍为 1，关闭前写入 header
+- `lseek()` / `get_logical_size()`：`header_pending` 为 1 时物理偏移不加 header_size
 
 **预期效果**：
 - 只 open 不 write 的文件（如 `touch`）：零 header 开销
@@ -431,16 +374,17 @@ bash tests/benchmark_fio.sh
 | 1 | 多 CUDA Stream 并行 | **未达预期**（理论 10-15x，实际 ~1x） | 2h | ✅ 已实现 |
 | 2 | CRC32 验证跳过 | **未达预期**（理论 1.5-2x，实际 1.04x） | 0.5h | ✅ 已实现 |
 | 3 | mmap 预解压前 N MB | **达预期**（512MB 提升 10.4x） | 3h | ✅ 已实现 |
-| 4 | 高优先级 Stream + 负载检测 | **高**（2-5x） | 2h | 待实现 |
-| 5 | 后台预初始化线程 | **中**（消除 200ms） | 1.5h | 待实现 |
-| 6 | LRU Block Cache | **中**（2-4x IOPS） | 2h | 待实现 |
-| 7 | 延迟 Header 写入 | **低**（10-15%） | 1h | 待实现 |
+| 4 | 高优先级 Stream + 负载检测 | **已实现**（`cudaStreamCreateWithPriority` + `nvidia-smi` 检测 fallback） | 2h | ✅ 已实现 |
+| 5 | 后台预初始化线程 | **已实现**（constructor 启动后台线程，延迟 100ms 后 CUDA init） | 1.5h | ✅ 已实现 |
+| 6 | LRU Block Cache | **已实现**（per-fd 单 block cache，加速小块随机读） | 2h | ✅ 已实现 |
+| 7 | 延迟 Header 写入 | **已实现**（open 时标记 pending，首次 write/close 时写入） | 1h | ✅ 已实现 |
 
 > **核心结论**：
 > - 多 CUDA Stream 和 CRC32 跳过均已实现，但**未解决 jobs=32 骤降问题**。根因是 fio sync 引擎 128k bs 下每次 read 仅处理 1 个 block，kernel 启动开销无法被多 Stream 摊销。
 > - **mmap 按需解压已成功实现**，512MB 文件 `mmap()` 返回时间从 2414 ms 降至 231 ms，**提升 10.4x**。
+> - **所有 roadmap 优化项（P0/P1/P2）已全部实现**。
 >
 > **下一步建议**：
 > 1. 若需解决 jobs=32 性能：改用 **异步 I/O 引擎**（如 `io_uring` + 深度≥16）或 **bs≥1M**，使单次 read 覆盖多 block
 > 2. 若需提升单线程极限：聚焦 **GPU kernel 启动延迟优化**（如 CUDA Graph）或 **更大 batch 合并**
-> 3. 若需提升 GPU 共享场景：实现 **高优先级 CUDA Stream + 负载自动 fallback**
+> 3. 若需进一步提升 mmap 场景：实现 **userfaultfd** 按需页级解压

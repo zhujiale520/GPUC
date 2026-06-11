@@ -270,13 +270,20 @@ int sglz_init(void) {
         fprintf(stderr, "[sglz] cudaFuncSetAttribute failed: %s\n", cudaGetErrorString(err));
         /* 非致命错误，继续运行 */
     }
-    /* 创建多 CUDA stream 用于异步流水线并发 */
+    /* 创建多 CUDA stream 用于异步流水线并发（使用最高优先级，减少被其他 CUDA 任务抢占） */
+    int leastPriority = 0, greatestPriority = 0;
+    cudaDeviceGetStreamPriorityRange(&leastPriority, &greatestPriority);
     for (int s = 0; s < SGLZ_NUM_STREAMS; s++) {
         g_streams[s] = 0;
-        err = cudaStreamCreate(&g_streams[s]);
+        err = cudaStreamCreateWithPriority(&g_streams[s], cudaStreamDefault, greatestPriority);
         if (err != cudaSuccess) {
-            fprintf(stderr, "[sglz] cudaStreamCreate(%d) failed: %s\n", s, cudaGetErrorString(err));
-            g_streams[s] = 0;
+            fprintf(stderr, "[sglz] cudaStreamCreateWithPriority(%d) failed: %s\n", s, cudaGetErrorString(err));
+            /* fallback 到普通优先级 */
+            err = cudaStreamCreate(&g_streams[s]);
+            if (err != cudaSuccess) {
+                fprintf(stderr, "[sglz] cudaStreamCreate(%d) failed: %s\n", s, cudaGetErrorString(err));
+                g_streams[s] = 0;
+            }
         }
     }
     /* 预分配 batch decompress 的 device 内存池（每个 stream 独立） */
