@@ -297,54 +297,37 @@ static int flush_raw_header(int fd, fd_info_t *info) {
 
 ---
 
-## 五、未完成实验（从 experiment_optimization_plan.md 迁移）
+## 五、补充实验（均已实现）
 
-> 以下实验尚未完成，评估完成后可增强报告说服力和评审竞争力。
+> 以下实验脚本均已实现，对应结果写入 `实验结果报告.md` 各章节及附录 A。
 
-### 5.1 元数据操作性能测试（stat/ls/find）
+### 5.1 元数据操作性能测试（stat/ls/find）✅ 已实现
 
-**背景**：Hook 拦截了 `__fxstat`/`__xstat`/`__lxstat`，每次需要 `open → read header → close`，大目录下影响显著。
+**脚本**：`tests/metadata_perf.sh`
 
-**实验设计**：
-```bash
-# 创建 10000 个压缩文件
-mkdir /tmp/metatest
-for i in $(seq 1 10000); do
-    LD_PRELOAD=./bin/libgpuhook.so dd if=/dev/zero of=/tmp/metatest/f$i bs=4K count=1 status=none
-done
-# 测试 ls -l 耗时，对比无 hook 基线
-time ls -l /tmp/metatest | wc -l
-```
+**实验设计**：创建 10000 个压缩文件，测试 `ls`/`find`/`stat` 在 hook 下的耗时。
 
-**预期产出**：Hook 对 `ls`/`find`/`stat` 的延迟影响量化数据，展示 CPU fallback 的必要性。
+**报告章节**：4.15
 
-### 5.2 海量小文件批量场景
+### 5.2 海量小文件批量场景 ✅ 已实现
 
-**背景**：Inline 测试仅单文件延迟，缺少批量创建/读取/压缩全链路数据。
+**脚本**：`tests/massive_small_files.sh`
 
-**实验设计**：
-- 创建 10000 个 512B 小文件
-- 测试 daemon 批量压缩耗时
-- 测试批量 `cat` 读取耗时
-- 对比：无 hook / Hook RAW / Hook INLINE
+**实验设计**：创建 10000 个 512B 小文件，测试 daemon 批量压缩与批量读取。
 
-**预期产出**：10000 文件全链路性能对比表（创建/读取/压缩/空间占用）。
+**报告章节**：4.16
 
-### 5.3 能耗效率对比（GPU vs CPU）
+### 5.3 能耗效率对比（GPU vs CPU）✅ 已实现
 
-**背景**：GPU 功耗高于 CPU 但吞吐高，需验证 GPU 方案的 W/GB 效率是否占优。
+**脚本**：`tests/power_efficiency.sh`
 
-**实验设计**：
-```bash
-nvidia-smi --query-gpu=power.draw --format=csv -l 1 > gpu_power.log &
-# 运行解压任务，同步采样 CPU 功耗
-```
+**实验设计**：`nvidia-smi` 采样 GPU 功耗，计算 GPU 解压能效（W/GB/s）。
 
-**预期产出**：GPU vs CPU 解压的 GB/J 能效比值，若 GPU 更优则是大赛亮点。
+**报告章节**：4.17
 
-### 5.4 与业界方案对比（ZFS/btrfs）
+### 5.4 与业界方案对比（ZFS/btrfs）✅ 已实现
 
-**背景**：缺少与成熟文件系统级压缩方案的量化对比。
+**脚本**：`tests/btrfs_compare.sh`（需 root 权限与 btrfs 工具）
 
 **建议对比维度**：
 | 方案 | 压缩率 | 顺序读带宽 | 侵入性 | 依赖 |
@@ -353,21 +336,21 @@ nvidia-smi --query-gpu=power.draw --format=csv -l 1 > gpu_power.log &
 | ZFS lz4 | ~6% | ~500 MB/s | 需格式化 | 内核态 |
 | btrfs zstd | ~5% | ~450 MB/s | 需格式化 | 内核态 |
 
-> 若环境装不了 ZFS/btrfs，可用文献数据。
+**报告章节**：4.22 / 对比表
 
-### 5.5 实验复现指南（附录）
+### 5.5 实验复现指南（附录）✅ 已实现
 
-**内容**：在报告末尾增加环境准备、编译命令、复现各实验的脚本清单。
+**位置**：`实验结果报告.md` 附录 A
+
+**内容**：环境准备、编译命令、复现各实验的脚本清单。
 
 ```markdown
 ## 附录 A：实验复现指南
 ### 编译
 make clean && make all
-### 复现 Table 4.9.2（顺序读性能）
+### 复现核心实验
 bash tests/benchmark_fio.sh
-### 复现 Ablation Study
 make clean && make ABLATION_FLAGS="-DGPUC_NO_VERIFY_CRC" all
-bash tests/benchmark_fio.sh
 ```
 
 ---
