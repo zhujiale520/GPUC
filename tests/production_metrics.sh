@@ -159,16 +159,32 @@ test_cpu_usage() {
 import re
 data = {}
 with open('$mpstat_out') as f:
+    header = None
     for line in f:
         line = line.strip()
-        if not line or line.startswith('Average'):
+        if not line or line.startswith('Average') or line.startswith('Linux'):
             continue
         parts = line.split()
-        if len(parts) < 4 or not re.match(r'^\d+(\.\d+)?$', parts[-3]):
+        # 识别 header 行
+        if header is None and 'CPU' in parts and '%usr' in parts:
+            header = parts
             continue
-        cpu = parts[1]
-        usr = float(parts[-5]) if re.match(r'^\d+(\.\d+)?$', parts[-5]) else 0.0
-        sys = float(parts[-4]) if re.match(r'^\d+(\.\d+)?$', parts[-4]) else 0.0
+        if header is None:
+            continue
+        try:
+            cpu_idx = header.index('CPU')
+            usr_idx = header.index('%usr')
+            sys_idx = header.index('%sys')
+        except ValueError:
+            continue
+        if len(parts) <= max(cpu_idx, usr_idx, sys_idx):
+            continue
+        cpu = parts[cpu_idx]
+        try:
+            usr = float(parts[usr_idx])
+            sys = float(parts[sys_idx])
+        except ValueError:
+            continue
         data.setdefault(cpu, []).append(usr + sys)
 for cpu in sorted(data.keys(), key=lambda x: x if x != 'all' else 'zzz'):
     avg = sum(data[cpu]) / len(data[cpu]) if data[cpu] else 0
@@ -288,8 +304,26 @@ test_memory_bandwidth() {
         return
     fi
 
+    # 检查 perf 是否能找到对应内核版本的工具
+    if ! perf --version >/dev/null 2>&1; then
+        skip "perf  wrapper 无法找到匹配内核版本的 perf 二进制"
+        return
+    fi
+
+    # sudo 辅助函数
+    _sudo_perf() {
+        if sudo -n "$@" 2>/dev/null; then
+            return 0
+        elif [ -n "${SUDO_PASSWORD:-}" ]; then
+            echo "$SUDO_PASSWORD" | sudo -S "$@" 2>/dev/null
+            return $?
+        else
+            return 1
+        fi
+    }
+
     # perf uncore_imc 通常需要 root；失败则优雅跳过
-    if ! perf stat -e uncore_imc/cas_count_read/,uncore_imc/cas_count_write/ \
+    if ! _sudo_perf perf stat -e uncore_imc/cas_count_read/,uncore_imc/cas_count_write/ \
          -o "$perf_out" \
          env LD_PRELOAD="$HOOK_SO" GPUCOMPRESS_QUIET=1 \
          fio --name=perf_mem \
@@ -304,7 +338,7 @@ test_memory_bandwidth() {
              --numjobs=1 \
              --group_reporting \
              --unlink=0 >/dev/null 2>&1; then
-        skip "perf 内存带宽事件无法采集（可能需要 root 或 CPU 不支持 uncore_imc）"
+        skip "perf 内存带宽事件无法采集（可能需要 root、CPU 不支持 uncore_imc 或缺少匹配内核版本的 perf 二进制）"
         return
     fi
 

@@ -153,13 +153,29 @@ test_enospc() {
     local smallfs="$TESTDIR/smallfs"
     mkdir -p "$smallfs"
 
-    # 创建 16 MB tmpfs
+    # 创建 16 MB tmpfs（如果当前用户无 root，尝试 sudo；可通过 SUDO_PASSWORD 传入密码）
+    _sudo() {
+        if sudo -n "$@" 2>/dev/null; then
+            return 0
+        elif [ -n "${SUDO_PASSWORD:-}" ]; then
+            echo "$SUDO_PASSWORD" | sudo -S "$@" 2>/dev/null
+            return $?
+        else
+            return 1
+        fi
+    }
+
+    local mnt_ok=0
     if ! mountpoint -q "$smallfs"; then
-        mount -t tmpfs -o size=16M tmpfs "$smallfs" 2>/dev/null || {
+        if mount -t tmpfs -o size=16M tmpfs "$smallfs" 2>/dev/null; then
+            mnt_ok=1
+        elif _sudo mount -t tmpfs -o size=16M tmpfs "$smallfs"; then
+            mnt_ok=1
+        else
             echo -e "${BLUE}无法 mount tmpfs（可能需要 root），跳过此项${NC}"
             echo "SKIP: ENOSPC test (no root)" >> "$RESULT_LOG"
             return
-        }
+        fi
     fi
 
     # 填充到接近满
@@ -169,7 +185,7 @@ test_enospc() {
     local ret=0
     LD_PRELOAD="$HOOK_SO" GPUCOMPRESS_QUIET=1 dd if=/dev/zero of="$smallfs/nospace.bin" bs=1M count=8 status=none 2>/dev/null || ret=$?
 
-    umount "$smallfs" 2>/dev/null || true
+    _sudo umount "$smallfs" 2>/dev/null || umount "$smallfs" 2>/dev/null || true
 
     if [ $ret -ne 0 ]; then
         pass "磁盘满时 hook 写文件正确失败"
