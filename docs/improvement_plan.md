@@ -188,20 +188,36 @@
 
 ---
 
-### 2.3 真实 Workload（中优先级）
+### 2.3 真实 Workload（中优先级）✅ 已完成
 
-当前 `real_workload_study.sh` 较简单，可替换/补充为：
+**脚本**：`tests/real_workload_comprehensive.sh`
 
-| Workload | 测试方式 | 价值 |
-|---------|---------|------|
-| RocksDB / LevelDB | YCSB load + run | 验证数据库场景 |
-| SQLite | TPC-C / 导入导出 | 验证事务日志 + 表文件 |
-| 编译缓存 (ccache) | 大量小文件读写 | 验证元数据 + inline 路径 |
-| ML 数据加载 | ImageNet 风格顺序/随机读 | 验证大文件 + mmap |
+自动下载/编译 LevelDB、ccache，覆盖 SQLite / LevelDB / ccache / ML 数据加载四类场景。
 
-**注意**：
-- 需要配置 workload 使用 hook 创建的文件目录。
-- 重点关注 IOPS 和尾延迟，而非原始压缩率。
+**实测结果**：
+
+| Workload | 指标 | Baseline | Hook RAW / Compressed | 状态 / 比例 |
+|---------|-----|---------|----------------------|-------------|
+| SQLite | 导入 10 万行 | 1.28 s | **FAILED** | 不兼容 |
+| SQLite | 1 万随机查询 | 0.13 s | **FAILED** | 不兼容 |
+| LevelDB | fillseq | 2.84 us/op | **FAILED** | 不兼容 |
+| LevelDB | readseq | 0.67 us/op | **FAILED** | 不兼容 |
+| LevelDB | readrandom | 0.87 us/op | **FAILED** | 不兼容 |
+| ccache | cold compile 500 文件 | 33.28 s | 38.51 s | **86.4%** |
+| ccache | hot compile 500 文件 | 10.31 s | 12.94 s | **79.7%** |
+| ML 数据加载 | 顺序读 1000 张 1MB | 5500 MB/s | 362 MB/s | **6.6x  slower** |
+| ML 数据加载 | 随机读 200 张 1MB | 3599 MB/s | 300 MB/s | **12.0x slower** |
+
+**关键发现**：
+- **SQLite / LevelDB 不兼容**：Hook 在文件 offset 0 写入 56 字节 RAW header，破坏数据库文件的 magic/header 格式。
+- **ccache 可工作**：Hook 引入 14–26% 开销，主要来自小文件的 header 创建与 syscall 拦截。
+- **ML 小文件加载 overhead 大**：1000 个 1MB 文件场景下，大量 open/header/block-table 解析使带宽降至 Baseline 的 15–17%。
+
+**报告章节**：`实验结果报告.md` 4.13.1
+
+**后续优化方向**：
+- 为数据库类文件（`.db`、`.wal`、`.log`、LevelDB manifest）提供白名单，跳过 header。
+- 优化大量小文件场景：减少 open 开销、per-fd 多 block cache、批量预取。
 
 ---
 
@@ -300,9 +316,12 @@
 
 1. ~~**补充写路径 & 混合负载测试**~~ ✅ 已完成（`tests/write_mixed_load.sh`，报告 4.9.1b）
 2. ~~**补充 4G 大文件测试**~~ ✅ 已完成（`tests/large_file_benchmark.sh`，报告 4.9.7c）
-3. **实现 D2H 异步拷贝**（约 1 小时，收益确定）
-4. **重写/精简实验报告**，加入 Executive Summary 和统一对比表（约 3 小时）
-5. **可选**：多 block LRU cache、可压缩率梯度测试
+3. ~~**补充真实 Workload 测试**~~ ✅ 已完成（`tests/real_workload_comprehensive.sh`，报告 4.13.1）
+4. **实现 D2H 异步拷贝**（约 1 小时，收益确定）
+5. **重写/精简实验报告**，加入 Executive Summary 和统一对比表（约 3 小时）
+6. **可选**：多 block LRU cache、可压缩率梯度测试
+
+> 注：SQLite / LevelDB 在 Hook 下不兼容（文件 magic 被 header 破坏），属于架构级限制，如需支持需引入数据库文件白名单或改用尾部 header 方案。
 
 > 注：16 GB / 64 GB 大文件测试需保证测试目录有充足磁盘空间（> 64 GB），当前环境暂不满足。
 
