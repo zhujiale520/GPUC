@@ -294,18 +294,58 @@ int sglz_init(void) {
         g_d_batch_out[s] = nullptr;
         g_d_batch_out_lens[s] = nullptr;
         g_d_chunk_offsets[s] = nullptr;
-        cudaMalloc(&g_d_batch_in[s], batch_in_size);
-        cudaMalloc(&g_d_batch_out[s], batch_out_size);
-        cudaMalloc(&g_d_batch_out_lens[s], SGLZ_MAX_BATCH_BLOCKS * sizeof(size_t));
-        cudaMalloc(&g_d_chunk_offsets[s], SGLZ_MAX_BATCH_BLOCKS * SGLZ_NCHUNKS * sizeof(int));
+        err = cudaMalloc(&g_d_batch_in[s], batch_in_size);
+        if (err != cudaSuccess) {
+            fprintf(stderr, "[sglz] cudaMalloc(batch_in, stream=%d) failed: %s\n", s, cudaGetErrorString(err));
+            sglz_fini();
+            return -1;
+        }
+        err = cudaMalloc(&g_d_batch_out[s], batch_out_size);
+        if (err != cudaSuccess) {
+            fprintf(stderr, "[sglz] cudaMalloc(batch_out, stream=%d) failed: %s\n", s, cudaGetErrorString(err));
+            sglz_fini();
+            return -1;
+        }
+        err = cudaMalloc(&g_d_batch_out_lens[s], SGLZ_MAX_BATCH_BLOCKS * sizeof(size_t));
+        if (err != cudaSuccess) {
+            fprintf(stderr, "[sglz] cudaMalloc(batch_out_lens, stream=%d) failed: %s\n", s, cudaGetErrorString(err));
+            sglz_fini();
+            return -1;
+        }
+        err = cudaMalloc(&g_d_chunk_offsets[s], SGLZ_MAX_BATCH_BLOCKS * SGLZ_NCHUNKS * sizeof(int));
+        if (err != cudaSuccess) {
+            fprintf(stderr, "[sglz] cudaMalloc(chunk_offsets, stream=%d) failed: %s\n", s, cudaGetErrorString(err));
+            sglz_fini();
+            return -1;
+        }
     }
     /* 预分配 batch compress 的 device 内存池（stream 0） */
     size_t compress_in_size = (size_t)SGLZ_MAX_BATCH_BLOCKS * SGLZ_BLOCK_SIZE;
     size_t compress_out_size = (size_t)SGLZ_MAX_BATCH_BLOCKS * SGLZ_NCHUNKS * SGLZ_SLOT_SIZE;
-    cudaMalloc(&g_d_compress_in, compress_in_size);
-    cudaMalloc(&g_d_compress_out, compress_out_size);
-    cudaMalloc(&g_d_compress_in_lens, SGLZ_MAX_BATCH_BLOCKS * sizeof(size_t));
-    cudaMalloc(&g_d_compress_out_lens, SGLZ_MAX_BATCH_BLOCKS * sizeof(size_t));
+    err = cudaMalloc(&g_d_compress_in, compress_in_size);
+    if (err != cudaSuccess) {
+        fprintf(stderr, "[sglz] cudaMalloc(compress_in) failed: %s\n", cudaGetErrorString(err));
+        sglz_fini();
+        return -1;
+    }
+    err = cudaMalloc(&g_d_compress_out, compress_out_size);
+    if (err != cudaSuccess) {
+        fprintf(stderr, "[sglz] cudaMalloc(compress_out) failed: %s\n", cudaGetErrorString(err));
+        sglz_fini();
+        return -1;
+    }
+    err = cudaMalloc(&g_d_compress_in_lens, SGLZ_MAX_BATCH_BLOCKS * sizeof(size_t));
+    if (err != cudaSuccess) {
+        fprintf(stderr, "[sglz] cudaMalloc(compress_in_lens) failed: %s\n", cudaGetErrorString(err));
+        sglz_fini();
+        return -1;
+    }
+    err = cudaMalloc(&g_d_compress_out_lens, SGLZ_MAX_BATCH_BLOCKS * sizeof(size_t));
+    if (err != cudaSuccess) {
+        fprintf(stderr, "[sglz] cudaMalloc(compress_out_lens) failed: %s\n", cudaGetErrorString(err));
+        sglz_fini();
+        return -1;
+    }
     g_initialized = 1;
     return 0;
 }
