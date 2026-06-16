@@ -20,7 +20,7 @@
 #define SGLZ_MAX_MATCH    255
 #define SGLZ_MAX_OFFSET   2048
 #define SGLZ_SLOT_SIZE    (SGLZ_CHUNK_SIZE + 256)
-#define SGLZ_MAX_BATCH_BLOCKS 16
+#define SGLZ_MAX_BATCH_BLOCKS 32
 
 /* ============================================================
  *  CPU-side compression (single chunk)

@@ -278,6 +278,9 @@ static int compress_one_file(const char *path) {
     off64_t phys_off = (off64_t)new_hdr.header_size;
     off64_t src_data_off = (off64_t)old_hdr.header_size;
 
+    size_t total_orig = 0;
+    size_t total_comp = 0;
+
     uint32_t i = 0;
     while (i < num_blocks) {
         uint32_t batch_end = i + BATCH_SIZE;
@@ -370,6 +373,9 @@ static int compress_one_file(const char *path) {
                 }
             }
 
+            total_orig += to_read;
+            total_comp += blocks[block_id].comp_len;
+
             /* 保持 128KB 逻辑对齐 */
             off64_t next_phys_off = phys_off + GPUC_BLOCK_SIZE;
             off64_t cur_end = lseek64(fd_tmp, 0, SEEK_CUR);
@@ -388,6 +394,25 @@ static int compress_one_file(const char *path) {
     }
     free(batch_in); free(batch_out);
     free(batch_in_lens); free(batch_out_caps); free(batch_out_lens);
+
+    /* 文件级自适应 fallback：整体压缩率不足时保持 RAW */
+    int min_file_ratio = 85;
+    const char *ratio_env = getenv("GPUC_MIN_FILE_COMP_RATIO_PCT");
+    if (ratio_env) {
+        int v = atoi(ratio_env);
+        if (v > 0 && v <= 100) min_file_ratio = v;
+    }
+    if (total_orig > 0 && total_comp >= total_orig * (size_t)min_file_ratio / 100) {
+        fprintf(stderr, "[daemon] Low compression ratio %zu/%zu (threshold %d%%), keeping RAW: %s\n",
+                total_comp, total_orig, min_file_ratio, path);
+        close(fd_src);
+        close(fd_tmp);
+        free(blocks);
+        unlink(tmp_path);
+        /* 可选：记录到跳过列表避免反复重试（当前 daemon 的增量扫描会基于 mtime 跳过） */
+        printf("[daemon] Kept RAW (low ratio): %s\n", path);
+        return 0;
+    }
 
     /* 回填块索引表 */
     lseek64(fd_tmp, sizeof(new_hdr), SEEK_SET);

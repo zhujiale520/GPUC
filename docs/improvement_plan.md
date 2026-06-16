@@ -30,22 +30,33 @@
 
 ---
 
-### 1.2 更大 Batch Size（中投入 / 中等收益）
+### 1.2 更大 Batch Size（中投入 / 中等收益）✅ 已验证
 
 **现状**：
 - `MAX_BATCH_BLOCKS` 默认 16。
-- bs=1M 时覆盖 8 blocks，bs=2M 时只能覆盖 8/16，未充分利用。
+- `src/cpu_compress.c` 中的 CPU fallback batch 上限原本为 16，与 GPU 侧已不一致。
 
-**优化**：
-- 将 `MAX_BATCH_BLOCKS` 提升至 32 或 64。
-- 同步增大 io_uring ring depth（`GPUC_IOURING_DEPTH`）、per-fd read-ahead 上限、device 内存池。
+**已完成**：
+- 将 `src/cpu_compress.c` 的 `SGLZ_MAX_BATCH_BLOCKS` 从 16 提升至 32，与 GPU 侧对齐。
+- 新增 `tests/batch_size_sweep.sh`，扫描 batch size = 1/2/4/8/16/32 在 zero / rand 数据、`direct=1` 下的读带宽。
 
-**预期收益**：
-- bs≥2M 或大文件顺序读时，kernel 启动开销进一步摊销。
-- 对 bs=128k/1M 收益有限（read-ahead 已覆盖）。
+**实测结果**（512 MB，bs=128k，direct=1）：
 
-**注意**：
-- 每个线程内存占用会增加约 (batch_size/16)×24 MB，32 线程高并发下需谨慎。
+| Batch Size | zero (MB/s) | rand (MB/s) |
+|-----------|------------|------------|
+| 1 | 705.7 | 684.7 |
+| 2 | 511.9 | 402.7 |
+| 4 | 705.9 | 530.2 |
+| 8 | 493.2 | 697.3 |
+| 16 | 447.1 | 627.6 |
+| 32 | 567.8 | 699.7 |
+
+**关键结论**：
+- `direct=1` 场景下读带宽主要由磁盘 / page cache 决定，batch size 的影响被 I/O 层稀释，趋势不明显。
+- 32 相对 16 未出现性能回归，在 rand 数据上略有提升。
+- **当前默认仍保持 16 blocks**；若未来重点优化 bs≥2M 或大文件顺序读，可再将默认值提至 32。
+
+**报告章节**：`实验结果报告.md` 4.12
 
 ---
 
@@ -188,9 +199,9 @@
 
 ---
 
-### 2.3 真实 Workload（中优先级）✅ 已完成
+### 2.3 真实 Workload（中优先级）✅ 已完成 / 数据库兼容性已修复
 
-**脚本**：`tests/real_workload_comprehensive.sh`
+**脚本**：`tests/real_workload_comprehensive.sh`（原始功能测试结果）；`tests/db_whitelist.sh`（白名单修复验证）
 
 自动下载/编译 LevelDB、ccache，覆盖 SQLite / LevelDB / ccache / ML 数据加载四类场景。
 
@@ -198,25 +209,21 @@
 
 | Workload | 指标 | Baseline | Hook RAW / Compressed | 状态 / 比例 |
 |---------|-----|---------|----------------------|-------------|
-| SQLite | 导入 10 万行 | 1.28 s | **FAILED** | 不兼容 |
-| SQLite | 1 万随机查询 | 0.13 s | **FAILED** | 不兼容 |
-| LevelDB | fillseq | 2.84 us/op | **FAILED** | 不兼容 |
-| LevelDB | readseq | 0.67 us/op | **FAILED** | 不兼容 |
-| LevelDB | readrandom | 0.87 us/op | **FAILED** | 不兼容 |
+| SQLite | 创建表、插入、SELECT | — | **PASS** | 白名单修复后兼容 |
+| LevelDB | fillseq / readseq / readrandom | — | **PASS** | 白名单修复后兼容 |
 | ccache | cold compile 500 文件 | 33.28 s | 38.51 s | **86.4%** |
 | ccache | hot compile 500 文件 | 10.31 s | 12.94 s | **79.7%** |
 | ML 数据加载 | 顺序读 1000 张 1MB | 5500 MB/s | 362 MB/s | **6.6x  slower** |
 | ML 数据加载 | 随机读 200 张 1MB | 3599 MB/s | 300 MB/s | **12.0x slower** |
 
 **关键发现**：
-- **SQLite / LevelDB 不兼容**：Hook 在文件 offset 0 写入 56 字节 RAW header，破坏数据库文件的 magic/header 格式。
+- **SQLite / LevelDB 已通过数据库文件白名单机制修复**：对 `.db`、`.wal`、`.log`、`.ldb`、`.sst`、`CURRENT`、`MANIFEST-*` 等文件跳过 GPUC header；`rename()` 临时文件到白名单目标时也会剥离 header。
 - **ccache 可工作**：Hook 引入 14–26% 开销，主要来自小文件的 header 创建与 syscall 拦截。
 - **ML 小文件加载 overhead 大**：1000 个 1MB 文件场景下，大量 open/header/block-table 解析使带宽降至 Baseline 的 15–17%。
 
-**报告章节**：`实验结果报告.md` 4.13.1
+**报告章节**：`实验结果报告.md` 4.11.1、4.13.1
 
 **后续优化方向**：
-- 为数据库类文件（`.db`、`.wal`、`.log`、LevelDB manifest）提供白名单，跳过 header。
 - 优化大量小文件场景：减少 open 开销、per-fd 多 block cache、批量预取。
 
 ---
@@ -337,10 +344,11 @@
 3. ~~**补充真实 Workload 测试**~~ ✅ 已完成（`tests/real_workload_comprehensive.sh`，报告 4.13.1）
 4. ~~**补充可压缩率梯度测试**~~ ✅ 已完成（`tests/compressibility_gradient.sh`，报告 4.8b）
 5. ~~**重写/精简实验报告**，加入 Executive Summary 和统一对比表~~ ✅ 已完成
-6. **可选**：自适应低可压缩率 fallback、多 block LRU cache（需解决测试噪声）
+6. ~~**自适应低可压缩率 fallback**~~ ✅ 已完成（`tests/low_compressibility_fallback.sh`，报告 4.11.2）
+7. **可选**：多 block LRU cache（需解决测试噪声）
 
 > 注：
-> - SQLite / LevelDB 在 Hook 下不兼容（文件 magic 被 header 破坏），属于架构级限制。
+> - SQLite / LevelDB 兼容性问题已通过数据库文件白名单修复。
 > - D2H 异步拷贝实测未带来收益（可能因当前 kernel 与 D2H 重叠有限），已回滚。
 > - 多 block LRU cache 在 uniform random 下命中率低，对 seq_4k 等高频顺序读有 overhead，已回滚。
 

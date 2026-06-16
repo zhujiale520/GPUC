@@ -136,6 +136,7 @@ static volatile int     (*real_lxstat)(int, const char *, struct stat *);
 static volatile int     (*real_lxstat64)(int, const char *, struct stat64 *);
 static int     (*real_ftruncate)(int, off_t);
 static int     (*real_truncate)(const char *, off_t);
+static int     (*real_rename)(const char *, const char *);
 static int     (*real_dup)(int);
 static int     (*real_dup2)(int, int);
 static int     (*real_dup3)(int, int, int);
@@ -246,6 +247,64 @@ static int is_regular_file(int fd) {
     struct stat64 st;
     if (fstat64(fd, &st) != 0) return 0;
     return S_ISREG(st.st_mode);
+}
+
+/* ============================================================
+ *  数据库 / 日志文件白名单
+ *  这些文件依赖固定 offset 0 的 magic/header，不能附加 GPUC header
+ * ============================================================ */
+static const char *g_db_whitelist[] = {
+    ".db",          /* SQLite 主数据库 */
+    ".db-journal",  /* SQLite journal */
+    ".db-wal",      /* SQLite WAL */
+    ".wal",         /* 通用 WAL */
+    ".log",         /* 通用日志（保守匹配） */
+    ".ldb",         /* LevelDB SST */
+    ".sst",         /* RocksDB/LevelDB SST */
+    "CURRENT",      /* LevelDB manifest 指针 */
+    "CURRENT.",     /* LevelDB CURRENT.tmp / CURRENT.bak 等 */
+    "MANIFEST-",    /* LevelDB/RocksDB manifest */
+    NULL
+};
+
+static int is_whitelisted_path(const char *pathname) {
+    if (!pathname) return 0;
+    if (getenv("GPUC_NO_DB_WHITELIST")) return 0;
+
+    const char *name = pathname;
+    const char *slash = strrchr(pathname, '/');
+    if (slash) name = slash + 1;
+    if (*name == '\0') return 0;
+
+    /* 追加用户自定义模式（逗号分隔），例如 *.custom */
+    const char *extra = getenv("GPUC_WHITELIST");
+    if (extra && *extra) {
+        char buf[256];
+        strncpy(buf, extra, sizeof(buf) - 1);
+        buf[sizeof(buf) - 1] = '\0';
+        char *save = NULL;
+        for (char *tok = strtok_r(buf, ",", &save); tok; tok = strtok_r(NULL, ",", &save)) {
+            /* 去掉前导空白和可能的 *. */
+            while (*tok == ' ' || *tok == '\t') tok++;
+            if (*tok == '*') tok++;
+            if (*tok == '.') tok++;
+            size_t tlen = strlen(tok);
+            size_t nlen = strlen(name);
+            if (tlen > 0 && tlen < nlen && strcasecmp(name + nlen - tlen, tok) == 0)
+                return 1;
+        }
+    }
+
+    for (int i = 0; g_db_whitelist[i]; i++) {
+        const char *pat = g_db_whitelist[i];
+        size_t plen = strlen(pat);
+        size_t nlen = strlen(name);
+        if (pat[0] == 'M' && plen <= nlen && strncmp(name, pat, plen) == 0)
+            return 1;  /* MANIFEST- 前缀匹配 */
+        if (plen <= nlen && strcasecmp(name + nlen - plen, pat) == 0)
+            return 1;  /* 后缀匹配 */
+    }
+    return 0;
 }
 
 /* ============================================================
@@ -1358,6 +1417,7 @@ void __attribute__((constructor(101))) hook_init(void) {
     real_lxstat64 = dlsym(RTLD_NEXT, "__lxstat64");
     real_ftruncate = dlsym(RTLD_NEXT, "ftruncate");
     real_truncate  = dlsym(RTLD_NEXT, "truncate");
+    real_rename    = dlsym(RTLD_NEXT, "rename");
     real_dup       = dlsym(RTLD_NEXT, "dup");
     real_dup2      = dlsym(RTLD_NEXT, "dup2");
     real_dup3      = dlsym(RTLD_NEXT, "dup3");
@@ -1389,6 +1449,7 @@ void __attribute__((constructor(101))) hook_init(void) {
     if (!real_lxstat64) fprintf(stderr, "[HOOK] WARN: dlsym(__lxstat64) failed\n");
     if (!real_ftruncate) fprintf(stderr, "[HOOK] WARN: dlsym(ftruncate) failed\n");
     if (!real_truncate)  fprintf(stderr, "[HOOK] WARN: dlsym(truncate) failed\n");
+    if (!real_rename)    fprintf(stderr, "[HOOK] WARN: dlsym(rename) failed\n");
     if (!real_dup)       fprintf(stderr, "[HOOK] WARN: dlsym(dup) failed\n");
     if (!real_dup2)      fprintf(stderr, "[HOOK] WARN: dlsym(dup2) failed\n");
     if (!real_dup3)      fprintf(stderr, "[HOOK] WARN: dlsym(dup3) failed\n");
@@ -1501,6 +1562,7 @@ int open(const char *pathname, int flags, ...) {
     int fd = real_open(pathname, flags, mode);
     if (fd < 0) return fd;
     if (!is_regular_file(fd)) return fd;
+    if (is_whitelisted_path(pathname)) return fd;
 
     fd_info_t *info = (fd_info_t *)calloc(1, sizeof(fd_info_t));
     info->active = 1;
@@ -1547,6 +1609,7 @@ int open64(const char *pathname, int flags, ...) {
     int fd = real_open64(pathname, flags, mode);
     if (fd < 0) return fd;
     if (!is_regular_file(fd)) return fd;
+    if (is_whitelisted_path(pathname)) return fd;
 
     fd_info_t *info = (fd_info_t *)calloc(1, sizeof(fd_info_t));
     info->active = 1;
@@ -1570,6 +1633,7 @@ int creat(const char *pathname, mode_t mode) {
     }
     int fd = real_creat(pathname, mode);
     if (fd < 0) return fd;
+    if (is_whitelisted_path(pathname)) return fd;
 
     fd_info_t *info = (fd_info_t *)calloc(1, sizeof(fd_info_t));
     info->active = 1;
@@ -1749,6 +1813,76 @@ int truncate(const char *path, off_t length) {
         real_close(fd);
     }
     return real_truncate(path, length);
+}
+
+/* ============================================================
+ *  rename 拦截：当目标路径是数据库白名单时，避免把 GPUC header 带过去
+ *  典型场景：LevelDB 写临时文件 *.dbtmp 再 rename 为 CURRENT
+ * ============================================================ */
+int rename(const char *oldpath, const char *newpath) {
+    if (g_hooks_disabled) {
+        if (!real_rename) { errno = ENOSYS; return -1; }
+        return real_rename(oldpath, newpath);
+    }
+    if (!real_rename) { errno = ENOSYS; return -1; }
+
+    /* 目标不是白名单，直接透传 */
+    if (!is_whitelisted_path(newpath)) {
+        return real_rename(oldpath, newpath);
+    }
+
+    /* 检查源文件是否带 GPUC header */
+    int fd_src = real_open(oldpath, O_RDONLY);
+    if (fd_src < 0) {
+        return real_rename(oldpath, newpath);
+    }
+
+    struct gpuc_header hdr;
+    ssize_t nr = real_read(fd_src, &hdr, sizeof(hdr));
+    if (nr != (ssize_t)sizeof(hdr) || !gpuc_is_header(&hdr)) {
+        real_close(fd_src);
+        return real_rename(oldpath, newpath);
+    }
+
+    /* 安全起见：只对 RAW 状态文件做 header 剥离；
+     * COMPRESSED 文件不应该出现在 rename 到白名单路径的场景。 */
+    if (hdr.state != GPUC_STATE_RAW) {
+        real_close(fd_src);
+        return real_rename(oldpath, newpath);
+    }
+
+    /* 获取源文件权限 */
+    struct stat64 st;
+    if (fstat64(fd_src, &st) != 0) {
+        real_close(fd_src);
+        return real_rename(oldpath, newpath);
+    }
+
+    /* 新建目标文件，跳过 header 写入原始内容 */
+    int fd_dst = real_open(newpath, O_WRONLY | O_CREAT | O_TRUNC, st.st_mode & 0777);
+    if (fd_dst < 0) {
+        real_close(fd_src);
+        return -1;
+    }
+
+    if (real_lseek64(fd_src, (off64_t)hdr.header_size, SEEK_SET) < 0) {
+        real_close(fd_src); real_close(fd_dst);
+        return -1;
+    }
+
+    char buf[65536];
+    while ((nr = real_read(fd_src, buf, sizeof(buf))) > 0) {
+        if (real_write(fd_dst, buf, (size_t)nr) != nr) {
+            real_close(fd_src); real_close(fd_dst);
+            return -1;
+        }
+    }
+    real_close(fd_src);
+    real_close(fd_dst);
+
+    /* 删除源文件 */
+    syscall(SYS_unlink, oldpath);
+    return 0;
 }
 
 /* ============================================================
@@ -2005,6 +2139,7 @@ int openat(int dirfd, const char *pathname, int flags, ...) {
     int fd = real_openat(dirfd, pathname, flags, mode);
     if (fd < 0) return fd;
     if (!is_regular_file(fd)) return fd;
+    if (is_whitelisted_path(pathname)) return fd;
 
     fd_info_t *info = (fd_info_t *)calloc(1, sizeof(fd_info_t));
     info->active = 1;
@@ -2034,6 +2169,7 @@ int openat64(int dirfd, const char *pathname, int flags, ...) {
     int fd = real_openat64(dirfd, pathname, flags, mode);
     if (fd < 0) return fd;
     if (!is_regular_file(fd)) return fd;
+    if (is_whitelisted_path(pathname)) return fd;
 
     fd_info_t *info = (fd_info_t *)calloc(1, sizeof(fd_info_t));
     info->active = 1;

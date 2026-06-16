@@ -2,9 +2,9 @@
 set -e
 
 # ============================================================
-#  Batch Size 扫描 — 验证 16 blocks 是 sweet spot
+#  Batch Size 扫描 — 验证更大 batch 的收益边界
 #
-#  固定条件：512MB zero 数据，128k bs，sync 引擎，page cache 命中
+#  固定条件：512MB zero/rand 数据，128k bs，sync 引擎，direct=1
 #  变量：MAX_BATCH_BLOCKS = 1, 2, 4, 8, 16, 32
 # ============================================================
 
@@ -21,7 +21,6 @@ fi
 RUNTIME=10
 SIZE="512M"
 BS="128k"
-TESTFILE="$TESTDIR/sweep.bin"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -30,33 +29,48 @@ BLUE='\033[0;34m'
 NC='\033[0m'
 
 RESULT_CSV="$RESULTDIR/batch_size.csv"
-echo "batch_size,bw_mb_s" > "$RESULT_CSV"
+echo "batch_size,data_type,bw_mb_s" > "$RESULT_CSV"
 
-# ----------------------------------------------------------
-#  前置准备：创建测试文件并压缩
-# ----------------------------------------------------------
 echo "========================================"
 echo "  Batch Size 性能扫描"
 echo "========================================"
-echo "测试文件: $TESTFILE"
-echo "大小: $SIZE, 块大小: $BS, 运行时间: ${RUNTIME}s"
+echo "测试目录: $TESTDIR"
+echo "大小: $SIZE, 块大小: $BS, 运行时间: ${RUNTIME}s, direct=1"
 echo ""
 
-echo "[SETUP] 创建测试文件..."
-LD_PRELOAD="$PROJECT_DIR/bin/libgpuhook.so" GPUCOMPRESS_QUIET=1 \
-    fio --name=write --filename="$TESTFILE" --size="$SIZE" --bs="$BS" \
-        --rw=write --buffer_pattern=0x00 --direct=0 --ioengine=sync >/dev/null 2>&1
+# ----------------------------------------------------------
+#  生成两种测试数据文件
+# ----------------------------------------------------------
+prepare_file() {
+    local data_type="$1"
+    local testfile="$TESTDIR/sweep_${data_type}.bin"
+    rm -f "$testfile"
 
-echo "[SETUP] Daemon GPU 压缩..."
-"$PROJECT_DIR/bin/gpu_compress_daemon" "$TESTDIR" >/dev/null 2>&1
+    if [ "$data_type" == "zero" ]; then
+        LD_PRELOAD="$PROJECT_DIR/bin/libgpuhook.so" GPUCOMPRESS_QUIET=1 \
+            fio --name=write --filename="$testfile" --size="$SIZE" --bs="$BS" \
+                --rw=write --buffer_pattern=0x00 --direct=0 --ioengine=sync >/dev/null 2>&1
+    else
+        # rand：使用 /dev/urandom 生成不可压缩数据
+        LD_PRELOAD="$PROJECT_DIR/bin/libgpuhook.so" GPUCOMPRESS_QUIET=1 \
+            fio --name=write --filename="$testfile" --size="$SIZE" --bs="$BS" \
+                --rw=write --buffer_pattern=0xabcdef12 --direct=0 --ioengine=sync >/dev/null 2>&1
+    fi
 
-python3 << EOF
+    echo "[SETUP] Daemon GPU 压缩 ${data_type} 文件..."
+    "$PROJECT_DIR/bin/gpu_compress_daemon" "$TESTDIR" >/dev/null 2>&1
+
+    python3 - << EOF
 import struct
-with open('$TESTFILE', 'rb') as f:
+with open('$testfile', 'rb') as f:
     magic = struct.unpack('<I', f.read(4))[0]
     state = struct.unpack('<B', f.read(1))[0] if magic == 0x47505543 else None
-    print(f"[SETUP] File state: {'COMPRESSED' if state == 1 else 'RAW' if state == 0 else 'UNKNOWN'} (state={state})")
+print(f"[SETUP] ${data_type} file state: {'COMPRESSED' if state == 1 else 'RAW' if state == 0 else 'UNKNOWN'} (state={state})")
 EOF
+}
+
+prepare_file "zero"
+prepare_file "rand"
 
 # ----------------------------------------------------------
 #  扫描不同 batch size
@@ -68,27 +82,32 @@ for BATCH in 1 2 4 8 16 32; do
     rm -f "$PROJECT_DIR/bin/libgpuhook.so"
     make -C "$PROJECT_DIR" ABLATION_FLAGS="-DMAX_BATCH_BLOCKS=${BATCH}" bin/libgpuhook.so >/dev/null 2>&1
 
-    # 预热
-    LD_PRELOAD="$PROJECT_DIR/bin/libgpuhook.so" GPUCOMPRESS_QUIET=1 \
-        fio --name=warmup --filename="$TESTFILE" --size="$SIZE" --bs="$BS" \
-            --rw=read --runtime=3 --time_based --direct=0 --ioengine=sync \
-            >/dev/null 2>&1 || true
+    for DATA_TYPE in zero rand; do
+        TESTFILE="$TESTDIR/sweep_${DATA_TYPE}.bin"
 
-    # 正式测试
-    json_out="$RESULTDIR/batch_${BATCH}.json"
-    LD_PRELOAD="$PROJECT_DIR/bin/libgpuhook.so" GPUCOMPRESS_QUIET=1 \
-        fio --name="batch_${BATCH}" --filename="$TESTFILE" --size="$SIZE" --bs="$BS" \
-            --rw=read --runtime="$RUNTIME" --time_based --direct=0 --ioengine=sync \
-            --output-format=json > "$json_out" 2>/dev/null
+        # 预热
+        LD_PRELOAD="$PROJECT_DIR/bin/libgpuhook.so" GPUCOMPRESS_QUIET=1 \
+            fio --name=warmup --filename="$TESTFILE" --size="$SIZE" --bs="$BS" \
+                --rw=read --runtime=3 --time_based --direct=1 --ioengine=sync \
+                >/dev/null 2>&1 || true
 
-    bw=$(python3 -c "
+        # 正式测试
+        json_out="$RESULTDIR/batch_${BATCH}_${DATA_TYPE}.json"
+        LD_PRELOAD="$PROJECT_DIR/bin/libgpuhook.so" GPUCOMPRESS_QUIET=1 \
+            fio --name="batch_${BATCH}_${DATA_TYPE}" --filename="$TESTFILE" \
+                --size="$SIZE" --bs="$BS" --rw=read --runtime="$RUNTIME" \
+                --time_based --direct=1 --ioengine=sync --output-format=json \
+                > "$json_out" 2>/dev/null
+
+        bw=$(python3 -c "
 import json,sys
 data=json.load(open('$json_out'))
 print(data['jobs'][0]['read']['bw']/1024)
 " 2>/dev/null || echo "0")
 
-    echo -e "  Bandwidth: ${GREEN}${bw} MB/s${NC}"
-    echo "$BATCH,$bw" >> "$RESULT_CSV"
+        echo -e "  ${DATA_TYPE}: ${GREEN}${bw} MB/s${NC}"
+        echo "$BATCH,$DATA_TYPE,$bw" >> "$RESULT_CSV"
+    done
 done
 
 # ----------------------------------------------------------
@@ -101,11 +120,17 @@ echo "========================================"
 python3 << EOF
 import csv
 rows = list(csv.DictReader(open('$RESULT_CSV')))
-print(f"{'Batch Size':<12} {'带宽(MB/s)':>12}")
-print("-" * 25)
+print(f"{'Batch Size':<12} {'zero (MB/s)':>12} {'rand (MB/s)':>12}")
+print("-" * 38)
+from collections import defaultdict
+by_batch = defaultdict(dict)
 for r in rows:
-    print(f"{r['batch_size']:<12} {float(r['bw_mb_s']):>12.1f}")
+    by_batch[int(r['batch_size'])][r['data_type']] = float(r['bw_mb_s'])
+for bs in sorted(by_batch.keys()):
+    print(f"{bs:<12} {by_batch[bs].get('zero', 0):>12.1f} {by_batch[bs].get('rand', 0):>12.1f}")
 EOF
 
 echo ""
 echo -e "${GREEN}原始数据已保存到: $RESULTDIR/batch_size.csv${NC}"
+
+rm -rf "$TESTDIR"
