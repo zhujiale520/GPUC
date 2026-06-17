@@ -38,6 +38,7 @@
 #define SCAN_INTERVAL_SEC  60
 
 static volatile int g_running = 1;
+static int g_use_lz4 = 0;
 
 /* ============================================================
  *  增量扫描：记录已处理文件的路径和 mtime，避免重复检查
@@ -247,7 +248,7 @@ static int compress_one_file(const char *path) {
     new_hdr.block_size = GPUC_BLOCK_SIZE;
     new_hdr.num_blocks = num_blocks;
     new_hdr.state = GPUC_STATE_COMPRESSED;
-    new_hdr.comp_algo = GPUC_ALGO_SGLZ;
+    new_hdr.comp_algo = g_use_lz4 ? GPUC_ALGO_LZ4 : GPUC_ALGO_SGLZ;
     new_hdr.header_size = sizeof(new_hdr) + num_blocks * sizeof(*blocks);
     new_hdr.mtime = (uint64_t)time(NULL);
 
@@ -271,8 +272,13 @@ static int compress_one_file(const char *path) {
     size_t *batch_out_lens = (size_t *)calloc(BATCH_SIZE, sizeof(size_t));
     for (uint32_t b = 0; b < BATCH_SIZE; b++) {
         batch_in[b] = (uint8_t *)malloc(GC_BLOCK_SIZE);
-        batch_out[b] = (uint8_t *)malloc(GC_NCHUNKS * GC_SLOT_SIZE);
-        batch_out_caps[b] = GC_NCHUNKS * GC_SLOT_SIZE;
+        if (g_use_lz4) {
+            /* LZ4: [1B flag] + compressed payload, worst-case <= orig + small overhead */
+            batch_out_caps[b] = GC_BLOCK_SIZE + 4096;
+        } else {
+            batch_out_caps[b] = GC_NCHUNKS * GC_SLOT_SIZE;
+        }
+        batch_out[b] = (uint8_t *)malloc(batch_out_caps[b]);
     }
 
     off64_t phys_off = (off64_t)new_hdr.header_size;
@@ -309,13 +315,20 @@ static int compress_one_file(const char *path) {
         }
 
         /* GPU 批量压缩 */
-        int sret = sglz_compress_batch((int)batch_count,
+        int sret;
+        if (g_use_lz4) {
+            sret = gpu_lz4_compress_batch((int)batch_count,
+                                          (const uint8_t **)batch_in, batch_in_lens,
+                                          batch_out, batch_out_caps, batch_out_lens);
+        } else {
+            sret = sglz_compress_batch((int)batch_count,
                                        (const uint8_t **)batch_in, batch_in_lens,
                                        batch_out, batch_out_caps, batch_out_lens);
+        }
         (void)sret;
 
         /* DEBUG */
-        if (batch_count > 0) {
+        if (!g_use_lz4 && batch_count > 0) {
             uint16_t s0 = *(uint16_t *)batch_out[0];
             uint16_t s1 = *(uint16_t *)(batch_out[0] + GC_SLOT_SIZE);
             fprintf(stderr, "[DEBUG] batch_count=%u batch_out_lens[0]=%zu slot0=%u slot1=%u\n",
@@ -335,13 +348,10 @@ static int compress_one_file(const char *path) {
             blocks[block_id].crc32 = gpuc_crc32(batch_in[bi], to_read);
 
             if (comp_size > 0 && comp_size < to_read * MIN_COMP_RATIO_PCT / 100) {
-                int file_pos = 0;
-                for (int j = 0; j < GC_NCHUNKS; j++) {
-                    uint16_t slot_len = *(uint16_t *)(out_buf + j * GC_SLOT_SIZE);
-                    if (slot_len == 0xFFFF) slot_len = 2 + GC_CHUNK_SIZE;
-                    if (slot_len < 2 || slot_len > GC_SLOT_SIZE) {
-                        fprintf(stderr, "[daemon] Invalid slot_len %u at block %u chunk %d\n",
-                                slot_len, block_id, j);
+                if (g_use_lz4) {
+                    /* LZ4: 直接写入 [flag][payload] */
+                    if (write(fd_tmp, out_buf, comp_size) != (ssize_t)comp_size) {
+                        fprintf(stderr, "[daemon] write LZ4 block failed at block %u\n", block_id);
                         for (uint32_t b = 0; b < BATCH_SIZE; b++) {
                             free(batch_in[b]); free(batch_out[b]);
                         }
@@ -349,19 +359,37 @@ static int compress_one_file(const char *path) {
                         free(batch_in_lens); free(batch_out_caps); free(batch_out_lens);
                         goto fail;
                     }
-                    uint8_t *chunk_data = out_buf + j * GC_SLOT_SIZE;
-                    if (write(fd_tmp, chunk_data, slot_len) != slot_len) {
-                        for (uint32_t b = 0; b < BATCH_SIZE; b++) {
-                            free(batch_in[b]); free(batch_out[b]);
+                    blocks[block_id].comp_len = (uint32_t)comp_size;
+                } else {
+                    int file_pos = 0;
+                    for (int j = 0; j < GC_NCHUNKS; j++) {
+                        uint16_t slot_len = *(uint16_t *)(out_buf + j * GC_SLOT_SIZE);
+                        if (slot_len == 0xFFFF) slot_len = 2 + GC_CHUNK_SIZE;
+                        if (slot_len < 2 || slot_len > GC_SLOT_SIZE) {
+                            fprintf(stderr, "[daemon] Invalid slot_len %u at block %u chunk %d\n",
+                                    slot_len, block_id, j);
+                            for (uint32_t b = 0; b < BATCH_SIZE; b++) {
+                                free(batch_in[b]); free(batch_out[b]);
+                            }
+                            free(batch_in); free(batch_out);
+                            free(batch_in_lens); free(batch_out_caps); free(batch_out_lens);
+                            goto fail;
                         }
-                        free(batch_in); free(batch_out);
-                        free(batch_in_lens); free(batch_out_caps); free(batch_out_lens);
-                        goto fail;
+                        uint8_t *chunk_data = out_buf + j * GC_SLOT_SIZE;
+                        if (write(fd_tmp, chunk_data, slot_len) != slot_len) {
+                            for (uint32_t b = 0; b < BATCH_SIZE; b++) {
+                                free(batch_in[b]); free(batch_out[b]);
+                            }
+                            free(batch_in); free(batch_out);
+                            free(batch_in_lens); free(batch_out_caps); free(batch_out_lens);
+                            goto fail;
+                        }
+                        file_pos += slot_len;
                     }
-                    file_pos += slot_len;
+                    blocks[block_id].comp_len = (uint32_t)file_pos;
                 }
-                blocks[block_id].comp_len = (uint32_t)file_pos;
             } else {
+                /* 未压缩或压缩失败：存储原始数据 */
                 blocks[block_id].comp_len = (uint32_t)to_read;
                 if (write(fd_tmp, batch_in[bi], to_read) != (ssize_t)to_read) {
                     for (uint32_t b = 0; b < BATCH_SIZE; b++) {
@@ -518,6 +546,12 @@ int main(int argc, char **argv) {
     if (!directory) {
         print_usage(argv[0]);
         return 1;
+    }
+
+    const char *algo_env = getenv("GPUC_ALGO");
+    if (algo_env && strcmp(algo_env, "lz4") == 0) {
+        g_use_lz4 = 1;
+        fprintf(stderr, "[daemon] Using LZ4 compression backend (nvCOMP)\n");
     }
 
     /* 初始化 GPU */

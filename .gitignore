@@ -32,3 +32,6 @@ deps/
 # Workload tool binaries (compiled from .cc)
 tests/workload_tools/leveldb_simple_bench
 tests/workload_tools/leveldb_verify
+
+# Third-party dependencies (nvCOMP, liblz4) are downloaded/setup locally
+third_party/

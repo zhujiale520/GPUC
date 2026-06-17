@@ -16,8 +16,21 @@ endif
 # Ablation study flags: pass via make ABLATION_FLAGS="-DGPUC_NO_BATCH"
 ABLATION_FLAGS ?=
 
-NVCCFLAGS  = -arch=sm_$(GPU_ARCH) -O3 -I./include -Xcompiler -Wno-maybe-uninitialized -Wno-deprecated-gpu-targets $(ABLATION_FLAGS)
-LDFLAGS    = -lpthread
+# ----------------------------------------------------------
+# nvCOMP LZ4 backend（下载到 third_party/nvcomp，无需系统安装）
+# ----------------------------------------------------------
+NVCOMP_ROOT := $(PWD)/third_party/nvcomp
+NVCOMP_INC  := $(NVCOMP_ROOT)/usr/include/nvcomp_12
+NVCOMP_LIB  := $(NVCOMP_ROOT)/usr/lib/x86_64-linux-gnu/nvcomp/12
+NVCOMP_FLAGS = -I$(NVCOMP_INC)
+NVCOMP_LINK  = -L$(NVCOMP_LIB) -lnvcomp -Xlinker -rpath -Xlinker $(NVCOMP_LIB)
+
+# liblz4 runtime 已存在，本地创建符号链接用于链接期
+LZ4_LIB     := $(PWD)/third_party/lz4
+LZ4_LINK    = -L$(LZ4_LIB) -llz4 -Xlinker -rpath -Xlinker $(LZ4_LIB)
+
+NVCCFLAGS  = -arch=sm_$(GPU_ARCH) -O3 -I./include $(NVCOMP_FLAGS) -Xcompiler -Wno-maybe-uninitialized -Wno-deprecated-gpu-targets $(ABLATION_FLAGS)
+LDFLAGS    = -lpthread $(LZ4_LINK)
 
 SRCDIR     = src
 INCDIR     = include
@@ -63,38 +76,38 @@ check-env:
 # ----------------------------------------------------------
 # LD_PRELOAD 共享库（GPU 默认，支持 GPUCOMPRESS_BACKEND=cpu 切换）
 # ----------------------------------------------------------
-$(BINDIR)/libgpuhook.so: dirs $(SRCDIR)/hook.c $(SRCDIR)/gpu_compress.cu $(SRCDIR)/cpu_compress.c
-	$(NVCC) -shared -Xcompiler -fPIC $(NVCCFLAGS) $(filter-out dirs,$^) -o $@ -ldl $(LDFLAGS)
+$(BINDIR)/libgpuhook.so: dirs $(SRCDIR)/hook.c $(SRCDIR)/gpu_compress.cu $(SRCDIR)/cpu_compress.c $(SRCDIR)/cpu_lz4.c $(SRCDIR)/gpu_lz4.cu
+	$(NVCC) -shared -Xcompiler -fPIC $(NVCCFLAGS) $(filter-out dirs,$^) -o $@ -ldl $(NVCOMP_LINK) $(LDFLAGS)
 
 # ----------------------------------------------------------
 # 离线压缩后台程序 (GPU)
 # ----------------------------------------------------------
-$(BINDIR)/gpu_compress_daemon: dirs $(SRCDIR)/daemon.c $(SRCDIR)/gpu_compress.cu
-	$(NVCC) $(NVCCFLAGS) $(filter-out dirs,$^) -o $@ $(LDFLAGS)
+$(BINDIR)/gpu_compress_daemon: dirs $(SRCDIR)/daemon.c $(SRCDIR)/gpu_compress.cu $(SRCDIR)/gpu_lz4.cu
+	$(NVCC) $(NVCCFLAGS) $(filter-out dirs,$^) -o $@ $(NVCOMP_LINK) $(LDFLAGS)
 
 # ----------------------------------------------------------
 # LD_PRELOAD 共享库（纯 CPU 版本，无 CUDA 依赖）
 # ----------------------------------------------------------
-$(BINDIR)/libcpuhook.so: dirs $(SRCDIR)/hook.c $(SRCDIR)/cpu_compress.c
-	$(GCC) -shared -fPIC -O3 -DCPU_ONLY_BUILD -I./include $(filter-out dirs,$^) -o $@ -ldl -lpthread
+$(BINDIR)/libcpuhook.so: dirs $(SRCDIR)/hook.c $(SRCDIR)/cpu_compress.c $(SRCDIR)/cpu_lz4.c
+	$(GCC) -shared -fPIC -O3 -DCPU_ONLY_BUILD -I./include $(filter-out dirs,$^) -o $@ -ldl -lpthread $(LZ4_LINK)
 
 # ----------------------------------------------------------
 # 离线压缩后台程序 (CPU 对比)
 # ----------------------------------------------------------
-$(BINDIR)/cpu_compress_daemon: dirs $(SRCDIR)/cpu_daemon.c $(SRCDIR)/cpu_compress.c
-	$(GCC) -O3 -I./include $(filter-out dirs,$^) -o $@ -lpthread
+$(BINDIR)/cpu_compress_daemon: dirs $(SRCDIR)/cpu_daemon.c $(SRCDIR)/cpu_compress.c $(SRCDIR)/cpu_lz4.c
+	$(GCC) -O3 -I./include $(filter-out dirs,$^) -o $@ -lpthread $(LZ4_LINK)
 
 # ----------------------------------------------------------
 # 单元测试：压缩/解压一致性
 # ----------------------------------------------------------
-$(BINDIR)/test_compress: dirs $(SRCDIR)/test_compress.c $(SRCDIR)/gpu_compress.cu
-	$(NVCC) $(NVCCFLAGS) $(filter-out dirs,$^) -o $@ $(LDFLAGS)
+$(BINDIR)/test_compress: dirs $(SRCDIR)/test_compress.c $(SRCDIR)/gpu_compress.cu $(SRCDIR)/gpu_lz4.cu
+	$(NVCC) $(NVCCFLAGS) $(filter-out dirs,$^) -o $@ $(NVCOMP_LINK) $(LDFLAGS)
 
 # ----------------------------------------------------------
 # CPU vs GPU 性能对比测试
 # ----------------------------------------------------------
-$(BINDIR)/test_cpu_vs_gpu: dirs $(SRCDIR)/test_cpu_vs_gpu.c $(SRCDIR)/gpu_compress.cu $(SRCDIR)/cpu_compress.c
-	$(NVCC) $(NVCCFLAGS) $(filter-out dirs,$^) -o $@ $(LDFLAGS)
+$(BINDIR)/test_cpu_vs_gpu: dirs $(SRCDIR)/test_cpu_vs_gpu.c $(SRCDIR)/gpu_compress.cu $(SRCDIR)/cpu_compress.c $(SRCDIR)/cpu_lz4.c $(SRCDIR)/gpu_lz4.cu
+	$(NVCC) $(NVCCFLAGS) $(filter-out dirs,$^) -o $@ $(NVCOMP_LINK) $(LDFLAGS)
 
 # ----------------------------------------------------------
 # Hook 集成测试程序

@@ -453,7 +453,8 @@ static int write_raw_header(int fd, fd_info_t *info) {
     hdr.version = GPUC_VERSION;
     hdr.block_size = GPUC_BLOCK_SIZE;
     hdr.state = GPUC_STATE_RAW;
-    hdr.comp_algo = GPUC_ALGO_SGLZ;
+    const char *algo_env = getenv("GPUC_ALGO");
+    hdr.comp_algo = (algo_env && strcmp(algo_env, "lz4") == 0) ? GPUC_ALGO_LZ4 : GPUC_ALGO_SGLZ;
     hdr.header_size = sizeof(hdr);
     hdr.mtime = 0;
     hdr.ctime = 0;
@@ -783,6 +784,9 @@ static int gpuc_iouring_wait_all(int n, int *results) {
  *  已压缩文件的 read 路径（GPU 解压）
  * ============================================================ */
 
+static ssize_t read_compressed_lz4(int fd, fd_info_t *info, void *buf, size_t count);
+static ssize_t read_compressed_at_lz4(int fd, fd_info_t *info, void *buf, size_t count, off64_t offset);
+
 static ssize_t read_compressed(int fd, fd_info_t *info, void *buf, size_t count) {
     /* ---- 小文件内联：直接从 header 后读取原始数据（无需 GPU 解压） ---- */
     if (info->hdr.state == GPUC_STATE_INLINE) {
@@ -794,6 +798,10 @@ static ssize_t read_compressed(int fd, fd_info_t *info, void *buf, size_t count)
         ssize_t ret = real_pread64(fd, buf, count, phys_off);
         if (ret > 0) info->cur_offset += ret;
         return ret;
+    }
+
+    if (info->hdr.comp_algo == GPUC_ALGO_LZ4) {
+        return read_compressed_lz4(fd, info, buf, count);
     }
 
     ensure_backend_init();
@@ -1124,6 +1132,166 @@ static ssize_t read_compressed(int fd, fd_info_t *info, void *buf, size_t count)
 }
 
 /* ============================================================
+ *  LZ4 压缩文件的 read 路径（简化实现，逐块解压）
+ * ============================================================ */
+
+static ssize_t read_compressed_lz4(int fd, fd_info_t *info, void *buf, size_t count) {
+    ensure_backend_init();
+#ifndef GPUC_NO_FALLBACK
+    int use_cpu = should_cpu_fallback();
+#else
+    int use_cpu = 0;
+#endif
+    if (ensure_tls_buffers() != 0) {
+        errno = ENOMEM;
+        return -1;
+    }
+
+    off64_t start = info->cur_offset;
+    off64_t log_size = get_logical_size(info);
+    if (start >= log_size) return 0;
+    if (start + (off64_t)count > log_size)
+        count = (size_t)(log_size - start);
+
+    uint8_t *out_ptr = (uint8_t *)buf;
+    size_t total_read = 0;
+
+    while (count > 0) {
+        uint32_t block_id = (uint32_t)(start / GPUC_BLOCK_SIZE);
+        if (block_id >= info->hdr.num_blocks) break;
+
+        off64_t block_off = start % GPUC_BLOCK_SIZE;
+        size_t to_copy = GPUC_BLOCK_SIZE - (size_t)block_off;
+        if (to_copy > count) to_copy = count;
+
+        if (info->cache_valid && info->cache_block_id == block_id) {
+            memcpy(out_ptr, info->cache_buf + block_off, to_copy);
+        } else {
+            struct gpuc_block_entry *be = &info->blocks[block_id];
+            if (!info->cache_buf) {
+                info->cache_buf = (uint8_t *)malloc(GPUC_BLOCK_SIZE);
+                if (!info->cache_buf) {
+                    errno = ENOMEM;
+                    return (total_read > 0) ? (ssize_t)total_read : -1;
+                }
+            }
+
+            if (be->comp_len == be->orig_len) {
+                /* 整块 RAW 存储 */
+                ssize_t nr = real_pread64(fd, info->cache_buf, be->comp_len, (off64_t)be->offset);
+                if (nr != (ssize_t)be->comp_len) {
+                    return (total_read > 0) ? (ssize_t)total_read : -1;
+                }
+            } else {
+                ssize_t nr = real_pread64(fd, g_tls_decomp_buf, be->comp_len, (off64_t)be->offset);
+                if (nr != (ssize_t)be->comp_len) {
+                    return (total_read > 0) ? (ssize_t)total_read : -1;
+                }
+                int ret;
+                if (use_cpu)
+                    ret = cpu_lz4_decompress_128k(g_tls_decomp_buf, be->comp_len,
+                                                  info->cache_buf, be->orig_len);
+                else
+                    ret = gpu_lz4_decompress_128k(g_tls_decomp_buf, be->comp_len,
+                                                  info->cache_buf, be->orig_len);
+                if (ret != 0) {
+                    fprintf(stderr, "[HOOK] LZ4 decompress failed at block %u\n", block_id);
+                    return (total_read > 0) ? (ssize_t)total_read : -1;
+                }
+            }
+            info->cache_block_id = block_id;
+            info->cache_valid = 1;
+            memcpy(out_ptr, info->cache_buf + block_off, to_copy);
+        }
+
+        out_ptr += to_copy;
+        start += to_copy;
+        count -= to_copy;
+        total_read += to_copy;
+    }
+
+    info->cur_offset = start;
+    return (ssize_t)total_read;
+}
+
+static ssize_t read_compressed_at_lz4(int fd, fd_info_t *info, void *buf, size_t count, off64_t offset) {
+    ensure_backend_init();
+#ifndef GPUC_NO_FALLBACK
+    int use_cpu = should_cpu_fallback();
+#else
+    int use_cpu = 0;
+#endif
+    if (ensure_tls_buffers() != 0) {
+        errno = ENOMEM;
+        return -1;
+    }
+
+    off64_t start = offset;
+    off64_t log_size = get_logical_size(info);
+    if (start >= log_size) return 0;
+    if (start + (off64_t)count > log_size)
+        count = (size_t)(log_size - start);
+
+    uint8_t *out_ptr = (uint8_t *)buf;
+    size_t total_read = 0;
+
+    while (count > 0) {
+        uint32_t block_id = (uint32_t)(start / GPUC_BLOCK_SIZE);
+        if (block_id >= info->hdr.num_blocks) break;
+
+        off64_t block_off = start % GPUC_BLOCK_SIZE;
+        size_t to_copy = GPUC_BLOCK_SIZE - (size_t)block_off;
+        if (to_copy > count) to_copy = count;
+
+        if (info->cache_valid && info->cache_block_id == block_id) {
+            memcpy(out_ptr, info->cache_buf + block_off, to_copy);
+        } else {
+            struct gpuc_block_entry *be = &info->blocks[block_id];
+            if (!info->cache_buf) {
+                info->cache_buf = (uint8_t *)malloc(GPUC_BLOCK_SIZE);
+                if (!info->cache_buf) {
+                    errno = ENOMEM;
+                    return (total_read > 0) ? (ssize_t)total_read : -1;
+                }
+            }
+
+            if (be->comp_len == be->orig_len) {
+                ssize_t nr = real_pread64(fd, info->cache_buf, be->comp_len, (off64_t)be->offset);
+                if (nr != (ssize_t)be->comp_len) {
+                    return (total_read > 0) ? (ssize_t)total_read : -1;
+                }
+            } else {
+                ssize_t nr = real_pread64(fd, g_tls_decomp_buf, be->comp_len, (off64_t)be->offset);
+                if (nr != (ssize_t)be->comp_len) {
+                    return (total_read > 0) ? (ssize_t)total_read : -1;
+                }
+                int ret;
+                if (use_cpu)
+                    ret = cpu_lz4_decompress_128k(g_tls_decomp_buf, be->comp_len,
+                                                  info->cache_buf, be->orig_len);
+                else
+                    ret = gpu_lz4_decompress_128k(g_tls_decomp_buf, be->comp_len,
+                                                  info->cache_buf, be->orig_len);
+                if (ret != 0) {
+                    fprintf(stderr, "[HOOK] LZ4 decompress failed at block %u\n", block_id);
+                    return (total_read > 0) ? (ssize_t)total_read : -1;
+                }
+            }
+            info->cache_block_id = block_id;
+            info->cache_valid = 1;
+            memcpy(out_ptr, info->cache_buf + block_off, to_copy);
+        }
+
+        out_ptr += to_copy;
+        start += to_copy;
+        count -= to_copy;
+        total_read += to_copy;
+    }
+
+    return (ssize_t)total_read;
+}
+
+/* ============================================================
  *  RAW 文件的 read 路径（跳过 header）
  * ============================================================ */
 
@@ -1152,6 +1320,10 @@ static ssize_t read_compressed_at(int fd, fd_info_t *info, void *buf, size_t cou
             count = (size_t)(log_size - offset);
         off64_t phys_off = offset + (off64_t)sizeof(info->hdr);
         return real_pread64(fd, buf, count, phys_off);
+    }
+
+    if (info->hdr.comp_algo == GPUC_ALGO_LZ4) {
+        return read_compressed_at_lz4(fd, info, buf, count, offset);
     }
 
     ensure_backend_init();
@@ -1576,7 +1748,8 @@ int open(const char *pathname, int flags, ...) {
         hdr.version = GPUC_VERSION;
         hdr.block_size = GPUC_BLOCK_SIZE;
         hdr.state = GPUC_STATE_RAW;
-        hdr.comp_algo = GPUC_ALGO_SGLZ;
+        const char *algo_env2 = getenv("GPUC_ALGO");
+        hdr.comp_algo = (algo_env2 && strcmp(algo_env2, "lz4") == 0) ? GPUC_ALGO_LZ4 : GPUC_ALGO_SGLZ;
         hdr.header_size = sizeof(hdr);
         info->hdr = hdr;
         info->has_header = 1;
