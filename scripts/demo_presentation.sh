@@ -1,11 +1,11 @@
 #!/bin/bash
 # ============================================================
-#  GPU Compress 完整演示脚本（面向导师汇报）
+#  GPU Compress 完整演示脚本（面向汇报）
 # ============================================================
 
 set -e
 
-PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
+PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 HOOK_SO="$PROJECT_DIR/bin/libgpuhook.so"
 GPU_DAEMON="$PROJECT_DIR/bin/gpu_compress_daemon"
 TESTDIR="/tmp/gpuc_demo_$$"

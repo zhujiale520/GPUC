@@ -28,9 +28,9 @@ echo "timestamp,cpu_percent,usr,sys,iowait,idle" > "$CPU_LOG"
 echo "timestamp,gpu_util,gpu_mem_util,gpu_mem_used_mb" > "$GPU_LOG"
 echo "timestamp,mem_total_mb,mem_used_mb,mem_free_mb,mem_avail_mb" > "$MEM_LOG"
 
-END_TIME=$(($(date +%s) + DURATION))
+END_TIME=$(($(date +%s) + $DURATION))
 
-while [ $(date +%s) -lt $END_TIME ]; do
+while [ "$(date +%s)" -lt "$END_TIME" ]; do
     TS=$(date +%s.%N)
 
     # CPU (使用 top 的一行采样)
@@ -50,7 +50,7 @@ while [ $(date +%s) -lt $END_TIME ]; do
     if which nvidia-smi >/dev/null 2>&1; then
         nvidia-smi --query-gpu=utilization.gpu,utilization.memory,memory.used \
                    --format=csv,noheader,nounits 2>/dev/null | while IFS=, read -r gu gm gmu; do
-            echo "$TS,$(echo $gu | tr -d ' '),$(echo $gm | tr -d ' '),$(echo $gmu | tr -d ' ')" >> "$GPU_LOG"
+            echo "$TS,$(echo "$gu" | tr -d ' '),$(echo "$gm" | tr -d ' '),$(echo "$gmu" | tr -d ' ')" >> "$GPU_LOG"
         done
     fi
 

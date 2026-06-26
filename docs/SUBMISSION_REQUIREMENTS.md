@@ -1,4 +1,4 @@
-# "功能挑战"赛道提交内容整理
+# Submission Requirements
 
 ## 一、提交内容总体要求
 

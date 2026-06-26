@@ -1,6 +1,16 @@
 #!/bin/bash
 set -e
 
+# ============================================================
+#  Mixed Compressibility Integration Test
+# ============================================================
+# 生成"前半可压缩 + 后半不可压缩"的混合数据文件，
+# 验证 Daemon 压缩后同一文件中同时存在压缩块与未压缩块。
+# 与 compressibility_gradient.sh 区别：
+#   - 本脚本验证单文件混合场景的正确性
+#   - compressibility_gradient.sh 测试不同可压缩率梯度下的性能
+# ============================================================
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
 BINDIR="$PROJECT_DIR/bin"

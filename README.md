@@ -225,20 +225,24 @@ ftruncate / truncate / sendfile
 │   ├── test_integration.sh            # 集成测试
 │   └── test_mixed_compressibility.sh  # 混合可压缩性测试
 ├── docs/
-│   ├── DESIGN.md                # 项目研发设计思路
-│   ├── IMPLEMENTATION.md        # 实现描述与代码说明
-│   ├── ISSUES_AND_SOLUTIONS.md  # 研发过程中的问题与解决方法
-│   ├── REPRODUCIBILITY.md       # 实验复现指南
-│   ├── architecture.md          # 系统架构与数据流
-│   ├── architecture.png         # 架构图
-│   ├── deployment.md            # 部署与二次开发指南
-│   ├── improvement_plan.md      # 优化路线图
-│   ├── THIRD_PARTY.md           # 第三方来源与依赖说明
-│   └── AI_TOOL_DECLARATION.md   # AI 工具使用声明
+│   ├── DESIGN.md                      # 项目研发设计思路
+│   ├── IMPLEMENTATION.md              # 实现描述与代码说明
+│   ├── ISSUES_AND_SOLUTIONS.md        # 研发过程中的问题与解决方法
+│   ├── REPRODUCIBILITY.md             # 实验复现指南
+│   ├── EXPERIMENTAL_REPORT.md         # 全面性能测试数据
+│   ├── CODE_GUIDE.md                  # 代码结构导读
+│   ├── SUBMISSION_REQUIREMENTS.md     # 大赛官方提交要求
+│   ├── architecture.md                # 系统架构与数据流
+│   ├── architecture.png               # 架构图
+│   ├── deployment.md                  # 部署与二次开发指南
+│   ├── improvement_plan.md            # 优化路线图
+│   ├── THIRD_PARTY.md                 # 第三方来源与依赖说明
+│   └── AI_TOOL_DECLARATION.md         # AI 工具使用声明
 ├── scripts/
-│   ├── check_env.sh         # 新主机环境检查
-│   ├── demo.sh              # 一键演示
-│   └── monitor_resources.sh # 资源监控
+│   ├── check_env.sh           # 新主机环境检查
+│   ├── demo.sh                # 一键演示
+│   ├── demo_presentation.sh   # 面向汇报的完整演示脚本
+│   └── monitor_resources.sh   # 资源监控
 ├── LICENSE                  # 源代码许可证（Apache-2.0）
 ├── LICENSE-docs             # 文档许可证（CC BY-SA 4.0）
 ├── Makefile
@@ -270,7 +274,7 @@ ftruncate / truncate / sendfile
 
 - [docs/EXPERIMENTAL_REPORT.md](docs/EXPERIMENTAL_REPORT.md) — 全面性能测试数据
 - [docs/CODE_GUIDE.md](docs/CODE_GUIDE.md) — 代码结构导读
-- [提交要求](提交要求.md) — 大赛官方提交要求
+- [docs/SUBMISSION_REQUIREMENTS.md](docs/SUBMISSION_REQUIREMENTS.md) — 大赛官方提交要求
 
 ---
 
@@ -288,7 +292,7 @@ ftruncate / truncate / sendfile
 | 限制 | 说明 |
 |------|------|
 | `MAP_SHARED` mmap | 共享写映射暂不支持 |
-| `O_DIRECT` | 直接 I/O 未做特殊处理 |
+| `O_DIRECT` | 已支持，要求用户缓冲区页对齐 |
 | 单 GPU | 当前只使用 `cudaSetDevice(0)` |
 | GPU 共享性能 | GPU 高负载时实时性能下降约 82%（458 vs 80 MB/s） |
 
