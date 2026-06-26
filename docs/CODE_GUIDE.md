@@ -1,4 +1,4 @@
-# GPU Compress 代码导读
+# GPUC Code Guide
 
 > 目标：帮你彻底读懂 `gpu_compress/` 目录下的每一行代码（更新至 2026-06-02）
 

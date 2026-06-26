@@ -1,4 +1,4 @@
-# GPU 存储压缩卸载 — 实验结果报告
+# GPUC Experimental Results Report
 
 > 基于 GPU 的服务资源卸载技术探索
 > 2026 全国大学生计算机系统大赛 — OS 功能挑战赛道

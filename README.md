@@ -268,8 +268,8 @@ ftruncate / truncate / sendfile
 
 ### 实验与参考材料
 
-- [实验结果报告](实验结果报告.md) — 全面性能测试数据
-- [代码导读](代码导读.md) — 代码结构导读
+- [docs/EXPERIMENTAL_REPORT.md](docs/EXPERIMENTAL_REPORT.md) — 全面性能测试数据
+- [docs/CODE_GUIDE.md](docs/CODE_GUIDE.md) — 代码结构导读
 - [提交要求](提交要求.md) — 大赛官方提交要求
 
 ---
