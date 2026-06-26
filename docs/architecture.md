@@ -7,8 +7,9 @@
 | **非侵入式** | 不修改内核、不改造文件系统、不改应用代码 |
 | **透明叠加** | 在现有文件系统（ext4/xfs）之上插入压缩层 |
 | **离线压缩** | 写时不压缩，后台周期性扫描压缩，避免影响前台性能 |
-| **GPU 通用算力** | 不依赖专用压缩引擎（如 nvCOMP），体现 CUDA 通用计算能力 |
-| **CPU 对比基准** | 提供相同算法的纯 CPU 实现，用于量化 GPU offload 收益 |
+| **GPU 通用算力** | 默认 SGLZ 不依赖专用压缩引擎（如 nvCOMP），体现 CUDA 通用计算能力 |
+| **可插拔后端** | 可选 NVIDIA nvCOMP LZ4 后端（`GPUC_ALGO=lz4`），提升文本类数据压缩率 |
+| **CPU 对比基准** | 提供 SGLZ / LZ4 的纯 CPU fallback 实现，用于量化 GPU offload 收益 |
 
 ## 2. 系统架构
 
@@ -25,6 +26,8 @@
 ├─────────────────────────────────────────────────────────────┤
 │  ② 离线压缩 Daemon                                           │
 │     ├─ gpu_compress_daemon: 128K 分块 → GPU batch 压缩        │
+│     │   ├─ SGLZ（默认，自定义 CUDA 算法）                     │
+│     │   └─ LZ4（可选，NVIDIA nvCOMP）                         │
 │     ├─ cpu_compress_daemon: 128K 分块 → CPU 串行压缩          │
 │     └─ 稀疏文件写回，rename 原子替换                          │
 ├─────────────────────────────────────────────────────────────┤
@@ -67,6 +70,9 @@ LD_PRELOAD hook 拦截
 按 128KB 切分为独立块
     │
     ▼
+根据 GPUC_ALGO 选择压缩后端
+    │
+    ▼
 GPU batch 压缩（一次处理 32 个 block）
     │
     ▼
@@ -99,10 +105,13 @@ LD_PRELOAD hook 拦截
     │       └── COMPRESSED (state=1)
     │               │
     │               ▼
+    │           根据 comp_algo 选择 SGLZ 或 LZ4 解压路径
+    │               │
+    │               ▼
     │           根据块索引找到对应 128K 块
     │               │
     │               ▼
-    │           读紧凑格式 → 转换为 slot 布局
+    │           读紧凑格式 → 转换为 slot 布局（SGLZ）/ [flag][payload]（LZ4）
     │               │
     │               ▼
     │           GPU/CPU 解压该块

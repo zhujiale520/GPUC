@@ -16,6 +16,7 @@
 - **写路径**：应用透明写入，后台 Daemon 异步 GPU 压缩
 - **读路径**：对压缩文件自动调用 GPU 实时解压，用户完全无感知
 - **mmap 路径**：新增 mmap/munmap/msync 拦截，压缩文件可透明映射
+- **可插拔压缩后端**：默认 SGLZ（不依赖 nvCOMP），可选 `GPUC_ALGO=lz4` 启用 NVIDIA nvCOMP LZ4，文本类数据压缩率从 ~82% 降至 ~39%
 - **非侵入式**：基于 `LD_PRELOAD`，现有应用无需重新编译
 
 ---
@@ -51,6 +52,22 @@ unset LD_PRELOAD
 # 透明读取压缩文件
 export LD_PRELOAD="$PWD/bin/libgpuhook.so"
 dd if=/tmp/test.bin of=/dev/null bs=1M
+unset LD_PRELOAD
+```
+
+### 使用 LZ4 后端（可选）
+
+```bash
+# 写入数据后，用 GPUC_ALGO=lz4 启动 Daemon，启用 NVIDIA nvCOMP LZ4 压缩
+export LD_PRELOAD="$PWD/bin/libgpuhook.so"
+dd if=/usr/include of=/tmp/headers.tar bs=1M
+unset LD_PRELOAD
+
+GPUC_ALGO=lz4 ./bin/gpu_compress_daemon /tmp/
+
+# 读取时自动解压，无需额外参数
+export LD_PRELOAD="$PWD/bin/libgpuhook.so"
+cat /tmp/headers.tar | sha256sum
 unset LD_PRELOAD
 ```
 
@@ -92,12 +109,19 @@ unset LD_PRELOAD
 | 布局 | Header + Block Index Table + 稀疏对齐的压缩数据 |
 | 状态机 | RAW → (Daemon 压缩) → COMPRESSED / INLINE |
 
-### SGLZ 压缩算法（CUDA）
+### SGLZ 压缩算法（CUDA，默认后端）
 
 - 128 KB = 32 × 4 KB chunks，每 chunk 独立压缩
 - LZ77 变体，3-byte hash 滑动窗口（2048 B）
 - `0xFFFF` 标记未压缩 chunk（不可压缩数据的 fallback）
 - 不依赖 nvCOMP，体现 GPU **通用算力**
+
+### LZ4 压缩算法（CUDA，可选后端）
+
+- 通过 `GPUC_ALGO=lz4` 启用，调用 **NVIDIA nvCOMP** batched LZ4 API
+- 每个 128 KB block 作为独立 chunk 压缩，输出 `[1B flag][payload]` 格式
+- 文本类数据压缩率显著优于 SGLZ（Linux headers：82.5% → 38.6%）
+- CPU fallback 基于系统 liblz4，保证 GPU 不可用时仍可读取
 
 ### 核心优化汇总
 
@@ -148,12 +172,13 @@ ftruncate / truncate / sendfile
 
 ### 压缩效果
 
-| 数据类型 | 压缩率 |
-|---------|--------|
-| 全零数据 | **6.3%** |
-| 可压缩重复模式 | **6.3%** |
-| 混合数据 | **53.1%** |
-| 随机数据 | **100% (fallback)** |
+| 数据类型 | SGLZ | LZ4 (nvCOMP) |
+|---------|------|--------------|
+| 全零数据 | **3.2%** | **3.2%** |
+| 可压缩重复模式 | **3.2%** | — |
+| Linux headers（文本类，~35 MB） | **82.5%** | **38.6%** |
+| 混合数据 | **53.1%** | — |
+| 随机数据 | **100% (fallback)** | **100% (fallback)** |
 
 ---
 
@@ -162,12 +187,15 @@ ftruncate / truncate / sendfile
 ```
 ├── include/
 │   ├── file_header.h        # GPUC 文件格式定义
-│   └── gpu_compress_api.h   # C API（GPU/CPU 后端）
+│   ├── gpu_compress_api.h   # C API（GPU/CPU 后端）
+│   └── lz4_minimal.h        # liblz4 最小函数声明（避免安装 dev 包）
 ├── src/
-│   ├── hook.c               # LD_PRELOAD 拦截层 (~2100 行)
-│   ├── gpu_compress.cu      # CUDA 压缩/解压 (~580 行)
-│   ├── cpu_compress.c       # CPU 压缩/解压 (~212 行)
-│   ├── daemon.c             # 离线压缩 Daemon (~520 行)
+│   ├── hook.c               # LD_PRELOAD 拦截层 (~2700 行)
+│   ├── gpu_compress.cu      # CUDA SGLZ 压缩/解压 (~580 行)
+│   ├── gpu_lz4.cu           # CUDA LZ4 压缩/解压 (~260 行)
+│   ├── cpu_compress.c       # CPU SGLZ 压缩/解压 (~212 行)
+│   ├── cpu_lz4.c            # CPU LZ4 解压 (~100 行)
+│   ├── daemon.c             # 离线压缩 Daemon (~580 行)
 │   ├── cpu_daemon.c         # CPU 版 Daemon
 │   └── gpu_compress.cuh     # CUDA 内部头文件
 ├── tests/
@@ -176,6 +204,7 @@ ftruncate / truncate / sendfile
 │   ├── ablation_study.sh              # 消融实验（逐项关闭优化）
 │   ├── batch_size_sweep.sh            # Batch Size 敏感性扫描
 │   ├── real_workload_study.sh         # 真实数据 workload 测试
+│   ├── nvcomp_lz4.sh                  # nvCOMP LZ4 后端集成测试
 │   ├── first_io_latency.sh            # Hook 首次 I/O 延迟测试
 │   ├── metadata_perf.sh               # stat/ls/find 性能测试
 │   ├── massive_small_files.sh         # 海量小文件批量场景
@@ -196,13 +225,22 @@ ftruncate / truncate / sendfile
 │   ├── test_integration.sh            # 集成测试
 │   └── test_mixed_compressibility.sh  # 混合可压缩性测试
 ├── docs/
-│   ├── architecture.md      # 架构文档
-│   ├── architecture.png     # 架构图
-│   └── deployment.md        # 部署文档
+│   ├── DESIGN.md                # 项目研发设计思路
+│   ├── IMPLEMENTATION.md        # 实现描述与代码说明
+│   ├── ISSUES_AND_SOLUTIONS.md  # 研发过程中的问题与解决方法
+│   ├── REPRODUCIBILITY.md       # 实验复现指南
+│   ├── architecture.md          # 系统架构与数据流
+│   ├── architecture.png         # 架构图
+│   ├── deployment.md            # 部署与二次开发指南
+│   ├── improvement_plan.md      # 优化路线图
+│   ├── THIRD_PARTY.md           # 第三方来源与依赖说明
+│   └── AI_TOOL_DECLARATION.md   # AI 工具使用声明
 ├── scripts/
 │   ├── check_env.sh         # 新主机环境检查
 │   ├── demo.sh              # 一键演示
 │   └── monitor_resources.sh # 资源监控
+├── LICENSE                  # 源代码许可证（Apache-2.0）
+├── LICENSE-docs             # 文档许可证（CC BY-SA 4.0）
 ├── Makefile
 └── README.md
 ```
@@ -210,6 +248,25 @@ ftruncate / truncate / sendfile
 ---
 
 ## 文档链接
+
+### 设计开发文档
+
+- [docs/DESIGN.md](docs/DESIGN.md) — 项目研发设计思路与创新点
+- [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md) — 实现描述与核心代码说明
+- [docs/ISSUES_AND_SOLUTIONS.md](docs/ISSUES_AND_SOLUTIONS.md) — 研发过程中的问题与解决方法
+- [docs/REPRODUCIBILITY.md](docs/REPRODUCIBILITY.md) — 实验复现指南
+- [docs/architecture.md](docs/architecture.md) — 系统架构与数据流
+- [docs/deployment.md](docs/deployment.md) — 部署与二次开发指南
+- [docs/improvement_plan.md](docs/improvement_plan.md) — 后续优化计划
+
+### 合规与声明
+
+- [docs/THIRD_PARTY.md](docs/THIRD_PARTY.md) — 第三方来源与依赖说明
+- [docs/AI_TOOL_DECLARATION.md](docs/AI_TOOL_DECLARATION.md) — AI 工具使用声明
+- [LICENSE](LICENSE) — 源代码许可证（Apache-2.0）
+- [LICENSE-docs](LICENSE-docs) — 文档许可证（CC BY-SA 4.0）
+
+### 实验与汇报材料
 
 - [实验结果报告](实验结果报告.md) — 全面性能测试数据
 - [代码导读](代码导读.md) — 代码结构导读
@@ -240,10 +297,19 @@ ftruncate / truncate / sendfile
 
 ## 参考资料
 
-- [赛题说明](赛题说明.md)
 - [NVIDIA nvCOMP](https://github.com/NVIDIA/CUDALibrarySamples/tree/master/nvCOMP)
 - [ZFS Hardware Acceleration with QAT](https://openzfs.org/wiki/ZFS_Hardware_Acceleration_with_QAT)
 - [XRP: In-Kernel Storage Functions with eBPF](https://github.com/xrp-project/XRP)
+
+---
+
+## 开源协议与合规声明
+
+- **源代码**：采用 [Apache License 2.0](LICENSE)。
+- **技术文档 / 答辩材料**：采用 [CC BY-SA 4.0](LICENSE-docs)。
+- **第三方依赖与基础版本说明**：见 [docs/THIRD_PARTY.md](docs/THIRD_PARTY.md)。
+- **AI 工具使用声明**：见 [docs/AI_TOOL_DECLARATION.md](docs/AI_TOOL_DECLARATION.md)。
+- **原创性声明**：本项目为原创，未基于往届作品或开源项目。
 
 ---
 

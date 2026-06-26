@@ -105,6 +105,24 @@ LD_PRELOAD=/path/to/libgpuhook.so ./my_application
 export LD_PRELOAD=/path/to/libgpuhook.so
 ```
 
+### 2.4 使用 LZ4 后端（可选）
+
+默认使用本队自定义 SGLZ 算法。如需启用 NVIDIA nvCOMP LZ4，需要：
+
+1. 本地准备 nvCOMP 库（解压到 `third_party/nvcomp`）并创建 liblz4 符号链接（`third_party/lz4/liblz4.so`）。
+2. 编译时 Makefile 会自动链接上述库。
+3. 启动 Daemon 时设置环境变量：
+
+```bash
+LD_PRELOAD=./bin/libgpuhook.so dd if=/usr/include of=/tmp/headers.tar bs=1M
+GPUC_ALGO=lz4 ./bin/gpu_compress_daemon /tmp
+LD_PRELOAD=./bin/libgpuhook.so cat /tmp/headers.tar | sha256sum
+```
+
+说明：
+- 文本类数据使用 LZ4 通常比 SGLZ 压缩率更高。
+- Hook 读取时根据文件 header 的 `comp_algo` 自动选择 SGLZ 或 LZ4 解压路径，无需用户干预。
+
 ## 3. 性能测试
 
 ### 3.1 CPU vs GPU 压缩吞吐对比
@@ -150,19 +168,26 @@ cat ./logs/gpu_usage.log
 
 ### 4.1 添加新的压缩算法
 
+项目已采用可插拔后端设计，参考 `src/gpu_lz4.cu` / `src/cpu_lz4.c` 的实现方式：
+
 1. 在 `include/file_header.h` 中添加算法标识：
 ```c
 #define GPUC_ALGO_MYALGO 4
 ```
 
-2. 在 `src/gpu_compress.cu` 中实现 CUDA kernel：
-```cuda
-__global__ void myalgo_compress_kernel(...);
+2. 新增 GPU 后端实现（如 `src/gpu_myalgo.cu`），提供：
+```c
+int gpu_myalgo_compress_batch(...);
+int gpu_myalgo_decompress_batch(...);
+int gpu_myalgo_compress_128k(...);
+int gpu_myalgo_decompress_128k(...);
 ```
 
-3. 在 `src/cpu_compress.c` 中实现 CPU 版本（用于对比）
+3. 新增 CPU fallback 实现（如 `src/cpu_myalgo.c`），提供相同接口的 CPU 版本。
 
-4. 更新 `src/daemon.c` 和 `src/hook.c` 中的算法选择逻辑
+4. 在 `src/daemon.c` 中根据 `GPUC_ALGO` 选择压缩后端；在 `src/hook.c` 中根据 `hdr.comp_algo` 选择解压后端。
+
+5. 更新 `include/gpu_compress_api.h` 中的函数声明。
 
 ### 4.2 调整块大小
 
