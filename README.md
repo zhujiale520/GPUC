@@ -266,12 +266,11 @@ ftruncate / truncate / sendfile
 - [LICENSE](LICENSE) — 源代码许可证（Apache-2.0）
 - [LICENSE-docs](LICENSE-docs) — 文档许可证（CC BY-SA 4.0）
 
-### 实验与汇报材料
+### 实验与参考材料
 
 - [实验结果报告](实验结果报告.md) — 全面性能测试数据
 - [代码导读](代码导读.md) — 代码结构导读
-- [汇报大纲](汇报大纲.md)
-- [汇报材料](汇报材料.md)
+- [提交要求](提交要求.md) — 大赛官方提交要求
 
 ---
 
