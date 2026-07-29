@@ -1,0 +1,55 @@
+        -:    0:Source:/usr/include/x86_64-linux-gnu/sys/sendfile.h
+        -:    1:/* sendfile -- copy data directly from one file descriptor to another
+        -:    2:   Copyright (C) 1998-2020 Free Software Foundation, Inc.
+        -:    3:   This file is part of the GNU C Library.
+        -:    4:
+        -:    5:   The GNU C Library is free software; you can redistribute it and/or
+        -:    6:   modify it under the terms of the GNU Lesser General Public
+        -:    7:   License as published by the Free Software Foundation; either
+        -:    8:   version 2.1 of the License, or (at your option) any later version.
+        -:    9:
+        -:   10:   The GNU C Library is distributed in the hope that it will be useful,
+        -:   11:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   12:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+        -:   13:   Lesser General Public License for more details.
+        -:   14:
+        -:   15:   You should have received a copy of the GNU Lesser General Public
+        -:   16:   License along with the GNU C Library; if not, see
+        -:   17:   <https://www.gnu.org/licenses/>.  */
+        -:   18:
+        -:   19:#ifndef _SYS_SENDFILE_H
+        -:   20:#define _SYS_SENDFILE_H	1
+        -:   21:
+        -:   22:#include <features.h>
+        -:   23:#include <sys/types.h>
+        -:   24:
+        -:   25:__BEGIN_DECLS
+        -:   26:
+        -:   27:/* Send up to COUNT bytes from file associated with IN_FD starting at
+        -:   28:   *OFFSET to descriptor OUT_FD.  Set *OFFSET to the IN_FD's file position
+        -:   29:   following the read bytes.  If OFFSET is a null pointer, use the normal
+        -:   30:   file position instead.  Return the number of written bytes, or -1 in
+        -:   31:   case of error.  */
+        -:   32:#ifndef __USE_FILE_OFFSET64
+function sendfile called 0 returned 0% blocks executed 0%
+    #####:   33:extern ssize_t sendfile (int __out_fd, int __in_fd, off_t *__offset,
+branch  0 never executed
+branch  1 never executed
+        -:   34:			 size_t __count) __THROW;
+        -:   35:#else
+        -:   36:# ifdef __REDIRECT_NTH
+        -:   37:extern ssize_t __REDIRECT_NTH (sendfile,
+        -:   38:			       (int __out_fd, int __in_fd, __off64_t *__offset,
+        -:   39:				size_t __count), sendfile64);
+        -:   40:# else
+        -:   41:#  define sendfile sendfile64
+        -:   42:# endif
+        -:   43:#endif
+        -:   44:#ifdef __USE_LARGEFILE64
+        -:   45:extern ssize_t sendfile64 (int __out_fd, int __in_fd, __off64_t *__offset,
+        -:   46:			   size_t __count) __THROW;
+        -:   47:#endif
+        -:   48:
+        -:   49:__END_DECLS
+        -:   50:
+        -:   51:#endif	/* sys/sendfile.h */

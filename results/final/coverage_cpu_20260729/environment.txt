@@ -1,0 +1,6 @@
+run_id=20260729T172210Z
+git_commit=97e227c968c3a648bf24ee20c63b323310cb5080
+gcc=gcc (Ubuntu 9.4.0-1ubuntu1~20.04.2) 9.4.0
+gcov=gcov (Ubuntu 9.4.0-1ubuntu1~20.04.2) 9.4.0
+minimum_hook_line_coverage_pct=35
+scope=CPU Hook, CPU daemon, SGLZ/LZ4 CPU helpers

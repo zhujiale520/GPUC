@@ -52,7 +52,7 @@ TARGETS    = $(BINDIR)/libgpuhook.so $(BINDIR)/libcpuhook.so \
              $(BINDIR)/test_compress $(BINDIR)/test_hook $(BINDIR)/test_cold_read \
              $(BINDIR)/test_odirect_compressed
 
-.PHONY: all clean test dirs unit-test integration-test check-env check-gpu-deps cpu-only smoke-test sanitizer-test docs-check
+.PHONY: all clean test dirs unit-test integration-test check-env check-gpu-deps cpu-only smoke-test sanitizer-test coverage-test docs-check
 
 # ----------------------------------------------------------
 # 默认目标
@@ -88,6 +88,9 @@ smoke-test: cpu-only
 
 sanitizer-test:
 	bash tests/sanitizer_cpu.sh
+
+coverage-test:
+	bash tests/coverage_cpu.sh
 
 docs-check:
 	python3 scripts/check_docs_links.py

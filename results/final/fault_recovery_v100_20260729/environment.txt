@@ -1,0 +1,5 @@
+run_id=20260729T165049Z
+git_commit=97e227c968c3a648bf24ee20c63b323310cb5080
+kernel=Linux 5.15.0 #1 SMP Tue May 19 16:02:33 UTC 2026 x86_64 GNU/Linux
+faults=injected daemon ENOSPC; SIGKILL before rename; stale temp restart; GPU unavailable; /dev/full
+plain_sha256=3b6a07d0d404fab4e23b6d34bc6696a6a312dd92821332385e5af7c01c421351

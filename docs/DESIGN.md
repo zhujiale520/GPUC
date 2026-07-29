@@ -28,7 +28,8 @@
 | 内核模块 / eBPF | 性能潜力大 | 开发周期长，兼容性、稳定性风险高 |
 | 应用层手动压缩 | 灵活 | 需要修改业务代码，无法通用 |
 
-因此，我们希望设计一种**非侵入、可透明叠加、对现有应用零修改**的 GPU 压缩卸载方案。
+因此，我们希望设计一种**低侵入、可按进程叠加、动态链接应用无需修改源码**的
+GPU 压缩卸载方案。
 
 ### 1.3 为什么 GPU 适合做解压？
 
@@ -46,7 +47,7 @@
 | 目标 | 具体含义 |
 |---|---|
 | **非侵入式** | 不修改操作系统内核、不改造现有文件系统、不改动应用源码 |
-| **透明叠加** | 通过 `LD_PRELOAD` 在 ext4/xfs 之上插入压缩层，现有二进制无需重新编译 |
+| **按进程叠加** | 通过 `LD_PRELOAD` 为指定动态链接进程插入压缩层，现有二进制无需重新编译 |
 | **离线压缩** | 写路径只写 RAW 数据，后台 Daemon 异步完成压缩，避免阻塞前台写 |
 | **GPU 卸载** | 读路径对压缩文件自动调用 GPU 批量并行解压 |
 | **GPU 通用算力** | 默认 SGLZ 算法不依赖 NVIDIA nvCOMP 等闭源压缩库，体现 CUDA 通用计算能力 |
@@ -64,7 +65,7 @@
    - 拦截应用的标准 POSIX I/O 调用；
    - 新文件写入时附加 56 B RAW header；
    - 读压缩文件时查 header、读 block entry、批量 GPU/CPU 解压、返回原始数据；
-   - 拦截 `mmap/munmap/msync`，使压缩文件可被透明映射；
+   - 拦截 `mmap/munmap/msync`，以 userfaultfd 缺页填充只读私有映射；
    - 拦截 `stat` 系列调用，向上层报告逻辑大小，隐藏物理稀疏大小。
 
 2. **`gpu_compress_daemon`**（离线压缩守护进程）：
@@ -88,13 +89,17 @@
 | device-mapper | 高 | 长 | 高 | 内核态，性能高 |
 | 内核模块 / eBPF | 极高 | 极长 | 极高 | 理论上最优 |
 
-选择 LD_PRELOAD 的核心原因是**以最小的部署代价实现透明叠加**：
+选择 LD_PRELOAD 的核心原因是**以较小的部署代价实现按进程叠加**：
 - 不需要 root 权限即可对特定进程启用；
 - 不需要格式化文件系统或迁移数据；
 - 不需要重新编译应用；
 - 风险可控，出现 Bug 时只需取消 `LD_PRELOAD` 即可恢复。
 
 代价是性能上限低于内核态方案，但通过 batch、流水线、read-ahead 等优化，已能在多数场景接近 Baseline。
+
+它也不是全局透明层：静态链接程序、直接 syscall、应用自行提交的 io_uring 和
+未加载 Hook 的进程会绕过拦截。当前覆盖范围以
+[`SUPPORT_MATRIX.md`](SUPPORT_MATRIX.md) 为准。
 
 ### 4.2 为什么 128 KB 分块？
 
@@ -167,6 +172,29 @@ SQLite、LevelDB 等数据库文件在 offset 0 处具有严格 magic/header，5
 - **fsync 语义**：Hook 拦截 `fsync` 并保持正确语义；
 - **崩溃一致性**：kill -9 后文件仍可正常 open/read。
 
+### 5.4 只读归档与故障恢复
+
+Daemon 原子替换完成后，COMPRESSED/INLINE 文件被定义为只读归档对象。Hook 对
+`write/pwrite/writev/truncate/ftruncate/fallocate/posix_fallocate` 返回
+`EROFS`，对 `MAP_SHARED`/`MAP_FIXED` 返回 `EOPNOTSUPP`。本轮没有实现隐式
+copy-on-write；需要修改时应生成新的 RAW 对象，再由 Daemon 重新压缩。这一模型
+减少了压缩块局部更新、崩溃回滚和元数据事务的歧义。
+
+故障测试通过确定性注入覆盖 Daemon 中途 `SIGKILL`、压缩阶段 `ENOSPC`、残留临时
+文件重启、GPU 不可见 CPU fallback 和 `/dev/full`。原文件只在完整临时文件
+`fsync` 后通过 rename 切换，因此失败前原 RAW inode 与逻辑 SHA 保持不变。
+
+### 5.5 mmap 缺页模型
+
+默认 `GPUC_MMAP_MODE=auto` 优先创建 `userfaultfd`，注册 missing-page fault，
+handler 根据 fault 地址定位 128 KiB GPUC block，解压/读取后用 `UFFDIO_COPY`
+填充映射。Linux 不支持时回退到同步完整填充；`userfaultfd` 模式可强制要求该
+路径，失败时返回 `EOPNOTSUPP`。
+
+这个实现让 `mmap()` 返回不再随完整文件大小线性增长，但首次访问包含 CUDA
+lazy-init，完整扫描总工作量只是后移。它是按 GPUC block 填充，不应描述成“每个
+4 KiB 页只解压该页”。
+
 ---
 
 ## 6. 创新点总结
@@ -175,10 +203,12 @@ SQLite、LevelDB 等数据库文件在 offset 0 处具有严格 magic/header，5
 2. **自主 SGLZ CUDA 压缩算法**：不依赖 nvCOMP，体现 GPU 通用算力，对高重复数据达到 3.2% 压缩率。
 3. **多级性能优化体系**：batch decompress、device memory pool、io_uring、
    read-ahead、pinned memory 和 CUDA streams；各项增益需由修正后的消融实验复核。
-4. **mmap 正确性路径**：返回前同步填充完整逻辑内容；真正页级按需解压尚未实现。
+4. **mmap 缺页路径**：userfaultfd 捕获 missing fault，以 128 KiB GPUC block
+   为单位填充；不支持的内核同步回退。
 5. **可插拔压缩后端**：SGLZ 与 nvCOMP LZ4 共存，兼顾自主知识产权与真实数据压缩率。
 6. **文件级压缩率 fallback**：低压缩收益时保留 RAW；GPU/CPU 运行时自动切换仍有限制。
-7. **完整工程化与测试体系**：17+ 自动化测试脚本覆盖性能、稳定性、容错、真实 workload、能耗等多维度。
+7. **完整工程化与测试体系**：自动测试覆盖性能、稳定性、确定性故障恢复、覆盖率、
+   真实 workload 和能耗等维度。
 
 ---
 
@@ -186,11 +216,13 @@ SQLite、LevelDB 等数据库文件在 offset 0 处具有严格 magic/header，5
 
 | 维度 | btrfs zstd | 应用层压缩 | GPUC（本方案） |
 |---|---|---|---|
-| 侵入性 | 高（需特定文件系统） | 高（需改应用） | 无 |
+| 侵入性 | 高（需特定文件系统） | 高（需改应用） | 低（需为进程加载 Hook） |
 | 部署难度 | 中 | 高 | 低（LD_PRELOAD） |
 | 性能上限 | 高（内核态） | 取决于实现 | 中（用户态 + GPU） |
 | 压缩后端 | 固定 | 灵活 | 可插拔 SGLZ / LZ4 |
 | GPU 卸载 | 否 | 可选 | 是 |
-| 适用场景 | 新建系统 | 特定应用 | 现有系统透明叠加 |
+| 适用场景 | 新建系统 | 特定应用 | 动态链接应用的冷数据/只读归档 |
 
-GPUC 的核心价值不在于单点性能超越内核态方案，而在于**以极低的部署成本，为现有系统提供透明、可卸载、可降级的存储压缩能力**。
+GPUC 的核心价值不在于单点性能超越内核态方案，而在于**以较低部署成本，为受控
+动态链接进程提供可卸载、可降级的只读存储压缩能力**。GPU 供应商后端目前仍锁定
+NVIDIA CUDA，按决赛安排保留为后续工作。

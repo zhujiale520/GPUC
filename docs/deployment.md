@@ -208,10 +208,20 @@ int gpu_myalgo_decompress_128k(...);
 - `close`
 - `__fxstat/__fxstat64`
 
-如需支持 `mmap`：
-- 实现 `mmap/munmap/msync` 拦截
-- 在 mmap 时预解压整个文件到匿名映射区
-- 复杂度较高，建议作为内核态方案实现
+`mmap` 已支持受管文件的只读 `MAP_PRIVATE`：
+
+```bash
+# 默认优先 userfaultfd，不可用时同步回退
+GPUC_MMAP_MODE=auto LD_PRELOAD=./bin/libgpuhook.so ./my_application
+
+# 要求 userfaultfd；不可用时返回 EOPNOTSUPP
+GPUC_MMAP_MODE=userfaultfd LD_PRELOAD=./bin/libgpuhook.so ./my_application
+```
+
+缺页 handler 以 128 KiB GPUC block 填充。`MAP_SHARED`/`MAP_FIXED` 不支持，
+COMPRESSED/INLINE 也不能原地写、截断或预分配；需要修改时应导出为新 RAW 文件，
+完成修改后再运行 Daemon。完整接口边界见
+[`SUPPORT_MATRIX.md`](SUPPORT_MATRIX.md)。
 
 ### 4.4 集成到 Ganymede
 

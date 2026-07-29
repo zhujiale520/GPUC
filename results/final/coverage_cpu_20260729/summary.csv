@@ -1,0 +1,14 @@
+source,line_pct,lines,branch_executed_pct,branches
+/usr/include/x86_64-linux-gnu/sys/mman.h,66.67,3,66.67,6
+/home/ubuntu/project3136859-386240/src/hook.c,41.38,1984,50.06,1598
+/usr/include/x86_64-linux-gnu/sys/stat.h,33.33,6,33.33,12
+/usr/include/fcntl.h,42.86,7,42.86,14
+/usr/include/x86_64-linux-gnu/sys/uio.h,50.0,2,50.0,4
+/usr/include/unistd.h,87.5,16,85.71,28
+/usr/include/x86_64-linux-gnu/sys/sendfile.h,0.0,1,0.0,2
+/usr/include/stdio.h,100.0,1,100.0,2
+/usr/include/x86_64-linux-gnu/bits/fcntl-linux.h,100.0,2,100.0,4
+/home/ubuntu/project3136859-386240/include/file_header.h,58.33,12,0.0,2
+/home/ubuntu/project3136859-386240/src/cpu_daemon.c,62.15,251,77.27,176
+/home/ubuntu/project3136859-386240/src/cpu_compress.c,85.52,145,88.0,100
+/home/ubuntu/project3136859-386240/src/cpu_lz4.c,70.83,48,94.74,38

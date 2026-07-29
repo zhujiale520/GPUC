@@ -164,15 +164,24 @@ bash tests/benchmark_high_concurrency.sh
 mean/std/95% CI。GPU Compressed 的“有效逻辑带宽”可能因减少物理 I/O 而高于
 dense Baseline，不能解释为纯解压吞吐。
 
-### 4.4 mmap 同步完整解压
+### 4.4 mmap userfaultfd 缺页填充
 
 ```bash
-bash tests/mmap_size_sweep.sh
+GPUC_MMAP_MODE=userfaultfd GPUC_MMAP_SIZES="64M 256M" \
+GPUC_MMAP_THREADS=1 GPUC_REPEATS=5 bash tests/mmap_size_sweep.sh
 ```
 
-当前实现为保证 POSIX 可见性，在 `mmap()` 返回前同步填充全部逻辑内容，不是
-页级按需解压。测试使用逐页不同的非零 pattern，并在返回后立即扫描所有页。
-真正的按需页级解压需要 `userfaultfd` 等缺页处理机制，属于后续工作。
+测试使用逐页不同的非零 pattern，先随机访问一页，再并发扫描全部页；CSV 分开
+记录 `mmap_ms`、`first_fault_us` 和 `scan_ms`。handler 以 128 KiB GPUC block
+填充，并非每 fault 只解压一个 4 KiB 页。
+
+可用模式：
+
+```bash
+GPUC_MMAP_MODE=sync bash tests/mmap_size_sweep.sh       # 强制同步回退
+GPUC_MMAP_MODE=userfaultfd bash tests/mmap_size_sweep.sh # UFFD 不可用则失败
+GPUC_MMAP_THREADS=8 bash tests/mmap_size_sweep.sh       # 并发页扫描
+```
 
 ### 4.5 压缩率
 
@@ -250,13 +259,33 @@ bash tests/ablation_study.sh
 ```bash
 make smoke-test
 bash tests/test_concurrent_daemon.sh
+bash tests/fault_recovery.sh
 ```
 
 它们覆盖 POSIX RAW 语义、COMPRESSED `EROFS`、白名单原子 rename、损坏格式、
-2000 个 fuzz case，以及同路径非 flock reader 在 daemon 原子替换期间的一致性。
-旧 `fault_tolerance_boundary.sh` 中需要 root/故障注入的项目不作为自动 PASS 结论。
+2000 个 fuzz case、同路径非 flock reader 在 daemon 原子替换期间的一致性，以及
+确定性 Daemon ENOSPC、SIGKILL、残留临时文件重启、GPU 不可见 CPU fallback 和
+`/dev/full`。真实 GPU reset/主机断电需要隔离且有管理员权限的机器，不作为本机
+自动 PASS 结论。
 
-### 4.10 工程指标探索
+### 4.10 长稳与代码覆盖率
+
+```bash
+# 默认 1 小时；短 smoke 可设置 GPUC_RUNTIME=10
+GPUC_RESULT_DIR=results/local/stability \
+GPUC_RUNTIME=3600 GPUC_SIZE=256M bash tests/long_term_stability.sh
+
+# GCC 自带 gcov，无需 lcov
+GPUC_RESULT_DIR=results/local/coverage bash tests/coverage_cpu.sh
+# 或使用 CI 同款目标
+make coverage-test
+```
+
+长稳脚本保存 fio JSON、一秒带宽日志、500 ms GPU 指标和运行前后逻辑 SHA。
+覆盖率脚本覆盖 CPU Hook、CPU Daemon、SGLZ/LZ4 CPU helper，并要求
+`src/hook.c` 行覆盖率不低于 35%。它不代表 CUDA kernel 行覆盖率。
+
+### 4.11 工程指标探索
 
 ```bash
 bash tests/production_metrics.sh
@@ -265,7 +294,7 @@ bash tests/production_metrics.sh
 该脚本输出单机工程观测值。一次测试不能证明“生产级”，必须保留 fio JSON、
 环境信息、重复次数和置信区间，并在不同硬件与真实工作负载上复测。
 
-### 4.11 同吞吐 CPU/GPU 卸载
+### 4.12 同吞吐 CPU/GPU 卸载
 
 ```bash
 GPUC_RUNTIME=5 GPUC_REPEATS=5 GPUC_BUSINESS_WORKERS=4 \

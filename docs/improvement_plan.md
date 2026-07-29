@@ -9,7 +9,8 @@
 1. 只使用 `docs/EXPERIMENTAL_REPORT.md` 的有效结果制作图表；
 2. PPT 明确区分 warm/cold/direct，删除旧 99.8% 与伪 O_DIRECT，只引用新版
    对齐格式的 SATA/ext4 direct 结果；
-3. PPT 把 mmap 写成“同步完整逻辑映射”，不是按需页解压；
+3. PPT 把 mmap 写成“userfaultfd 触发、按 128 KiB block 填充”，并分开报告
+   返回、首次 fault 和完整扫描；
 4. “GPU 释放 CPU”只使用同吞吐同亲和性的长期 worker 结果，旧同步负结果作为
    优化前历史；
 5. 视频只演示可复现的 build、正确性、原子 daemon 替换和结果读取。
@@ -64,18 +65,15 @@
 - 测 8/16/24/32 线程及不同 CPU affinity；
 - 若单进程 64 stream 资源占用过大，改为有界 stream pool + 请求队列。
 
-## P2：userfaultfd mmap
+## 已完成：userfaultfd mmap 基础路径
 
-当前同步方案正确但需要完整准备。
+- userfaultfd 注册 missing 映射，缺页时按 128 KiB GPUC block 读取/解压；
+- auto 模式不可用时同步回退，强制模式返回 `EOPNOTSUPP`；
+- 返回前完成 fd/header/block buffer 初始化，避免 handler 初始化失败后悬挂；
+- `MAP_SHARED`、`MAP_FIXED` 和部分 `munmap` 明确拒绝；
+- 64/256 MiB、1/8 线程、五轮 pattern 正确性与三段延迟已保存。
 
-实施：
-
-- `PROT_NONE` 或 userfaultfd 注册逻辑映射；
-- 缺页时按 block 解压并唤醒等待线程；
-- 支持并发 fault 合并、缓存回收、unmap 和进程退出；
-- 在内核禁用 userfaultfd 时明确回退同步方案。
-
-验收：返回延迟、首次页、随机页、全量扫描、并发 fault 和 RSS 峰值分别报告。
+后续优化：多个 fault handler/队列、并发 fault 合并、缓存回收和跨 fork 语义。
 
 ## 已完成软件路径：格式与 O_DIRECT
 

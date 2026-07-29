@@ -1,0 +1,91 @@
+File '/usr/include/x86_64-linux-gnu/sys/mman.h'
+Lines executed:66.67% of 3
+Branches executed:66.67% of 6
+Taken at least once:33.33% of 6
+No calls
+Creating 'mman.h.gcov'
+
+File '/home/ubuntu/project3136859-386240/src/hook.c'
+Lines executed:41.38% of 1984
+Branches executed:50.06% of 1598
+Taken at least once:29.85% of 1598
+Calls executed:36.92% of 577
+Creating 'hook.c.gcov'
+
+File '/usr/include/x86_64-linux-gnu/sys/stat.h'
+Lines executed:33.33% of 6
+Branches executed:33.33% of 12
+Taken at least once:16.67% of 12
+No calls
+Creating 'stat.h.gcov'
+
+File '/usr/include/fcntl.h'
+Lines executed:42.86% of 7
+Branches executed:42.86% of 14
+Taken at least once:28.57% of 14
+No calls
+Creating 'fcntl.h.gcov'
+
+File '/usr/include/x86_64-linux-gnu/sys/uio.h'
+Lines executed:50.00% of 2
+Branches executed:50.00% of 4
+Taken at least once:25.00% of 4
+No calls
+Creating 'uio.h.gcov'
+
+File '/usr/include/unistd.h'
+Lines executed:87.50% of 16
+Branches executed:85.71% of 28
+Taken at least once:42.86% of 28
+Calls executed:100.00% of 2
+Creating 'unistd.h.gcov'
+
+File '/usr/include/x86_64-linux-gnu/sys/sendfile.h'
+Lines executed:0.00% of 1
+Branches executed:0.00% of 2
+Taken at least once:0.00% of 2
+No calls
+Creating 'sendfile.h.gcov'
+
+File '/usr/include/stdio.h'
+Lines executed:100.00% of 1
+Branches executed:100.00% of 2
+Taken at least once:50.00% of 2
+No calls
+Creating 'stdio.h.gcov'
+
+File '/usr/include/x86_64-linux-gnu/bits/fcntl-linux.h'
+Lines executed:100.00% of 2
+Branches executed:100.00% of 4
+Taken at least once:50.00% of 4
+No calls
+Creating 'fcntl-linux.h.gcov'
+
+File '/home/ubuntu/project3136859-386240/include/file_header.h'
+Lines executed:58.33% of 12
+Branches executed:0.00% of 2
+Taken at least once:0.00% of 2
+No calls
+Creating 'file_header.h.gcov'
+
+File '/home/ubuntu/project3136859-386240/src/cpu_daemon.c'
+Lines executed:62.15% of 251
+Branches executed:77.27% of 176
+Taken at least once:43.75% of 176
+Calls executed:60.61% of 99
+Creating 'cpu_daemon.c.gcov'
+
+File '/home/ubuntu/project3136859-386240/src/cpu_compress.c'
+Lines executed:85.52% of 145
+Branches executed:88.00% of 100
+Taken at least once:68.00% of 100
+Calls executed:66.67% of 9
+Creating 'cpu_compress.c.gcov'
+
+File '/home/ubuntu/project3136859-386240/src/cpu_lz4.c'
+Lines executed:70.83% of 48
+Branches executed:94.74% of 38
+Taken at least once:60.53% of 38
+Calls executed:62.50% of 8
+Creating 'cpu_lz4.c.gcov'
+

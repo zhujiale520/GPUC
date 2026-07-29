@@ -1,0 +1,722 @@
+        -:    0:Source:/home/ubuntu/project3136859-386240/src/cpu_daemon.c
+        -:    1:/*
+        -:    2: * daemon.c - 离线 GPU 压缩后台程序
+        -:    3: *
+        -:    4: * 用法：
+        -:    5: *   gpu_compress_daemon [-r] [-d] <directory>
+        -:    6: *
+        -:    7: *   -r    递归扫描子目录
+        -:    8: *   -d    以守护进程方式运行（周期性扫描）
+        -:    9: *
+        -:   10: * 工作流程：
+        -:   11: *   1. 扫描目录，发现后缀不是 .gpuc_tmp 的普通文件
+        -:   12: *   2. 打开文件，检查是否为 RAW 状态
+        -:   13: *   3. 逐块读取 → GPU 压缩 → 写入临时文件
+        -:   14: *   4. 用 rename 原子替换原文件
+        -:   15: */
+        -:   16:
+        -:   17:#define _GNU_SOURCE
+        -:   18:#include <stdio.h>
+        -:   19:#include <stdlib.h>
+        -:   20:#include <string.h>
+        -:   21:#include <unistd.h>
+        -:   22:#include <dirent.h>
+        -:   23:#include <sys/stat.h>
+        -:   24:#include <sys/types.h>
+        -:   25:#include <fcntl.h>
+        -:   26:#include <errno.h>
+        -:   27:#include <stdint.h>
+        -:   28:#include <time.h>
+        -:   29:#include <signal.h>
+        -:   30:#include <libgen.h>
+        -:   31:#include <sys/file.h>
+        -:   32:#include <sys/xattr.h>
+        -:   33:
+        -:   34:#include "file_header.h"
+        -:   35:#include "gpu_compress_api.h"
+        -:   36:int cpu_compress_init(void);
+        -:   37:void cpu_compress_fini(void);
+        -:   38:int cpu_compress_128k(const uint8_t *in, uint8_t *out, size_t out_cap);
+        -:   39:
+        -:   40:#define TMP_SUFFIX   ".gpuc_tmp"
+        -:   41:#define SCAN_INTERVAL_SEC  60
+        -:   42:
+        -:   43:static volatile int g_running = 1;
+        -:   44:
+        -:   45:/* Deterministic fault hooks used only when explicitly enabled by tests. */
+function daemon_fault_point called 3 returned 100% blocks executed 30%
+        3:   46:static int daemon_fault_point(uint32_t processed_blocks) {
+        3:   47:    const char *pause_after = getenv("GPUC_FAULT_PAUSE_AFTER_BLOCKS");
+call    0 returned 3
+       3*:   48:    if (pause_after && processed_blocks >= (uint32_t)strtoul(pause_after, NULL, 10)) {
+branch  0 taken 0 (fallthrough)
+branch  1 taken 3
+call    2 never executed
+branch  3 never executed
+branch  4 never executed
+    #####:   49:        unsigned seconds = 30;
+    #####:   50:        const char *duration = getenv("GPUC_FAULT_PAUSE_SECONDS");
+call    0 never executed
+    #####:   51:        if (duration) seconds = (unsigned)strtoul(duration, NULL, 10);
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+    #####:   52:        sleep(seconds ? seconds : 1);
+branch  0 never executed
+branch  1 never executed
+call    2 never executed
+        -:   53:    }
+        3:   54:    const char *enospc_after = getenv("GPUC_FAULT_ENOSPC_AFTER_BLOCKS");
+call    0 returned 3
+       3*:   55:    if (enospc_after &&
+branch  0 taken 0 (fallthrough)
+branch  1 taken 3
+    #####:   56:        processed_blocks >= (uint32_t)strtoul(enospc_after, NULL, 10)) {
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:   57:        errno = ENOSPC;
+    #####:   58:        fprintf(stderr, "[cpu_daemon] injected ENOSPC after %u blocks\n",
+call    0 never executed
+        -:   59:                processed_blocks);
+    #####:   60:        return -1;
+        -:   61:    }
+        3:   62:    return 0;
+        -:   63:}
+        -:   64:
+function copy_fd_xattrs called 2 returned 100% blocks executed 20%
+        2:   65:static int copy_fd_xattrs(int srcfd, int dstfd) {
+        2:   66:    ssize_t names_len = flistxattr(srcfd, NULL, 0);
+call    0 returned 2
+       2*:   67:    if (names_len <= 0) return names_len < 0 && errno != ENOTSUP ? -1 : 0;
+branch  0 taken 2 (fallthrough)
+branch  1 taken 0
+branch  2 taken 0 (fallthrough)
+branch  3 taken 2
+branch  4 never executed
+branch  5 never executed
+    #####:   68:    char *names = (char *)malloc((size_t)names_len);
+    #####:   69:    if (!names) return -1;
+branch  0 never executed
+branch  1 never executed
+    #####:   70:    if (flistxattr(srcfd, names, (size_t)names_len) != names_len) {
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+    #####:   71:        free(names);
+    #####:   72:        return -1;
+        -:   73:    }
+    #####:   74:    for (char *name = names; name < names + names_len; name += strlen(name) + 1) {
+branch  0 never executed
+branch  1 never executed
+    #####:   75:        ssize_t value_len = fgetxattr(srcfd, name, NULL, 0);
+call    0 never executed
+    #####:   76:        if (value_len < 0) { free(names); return -1; }
+branch  0 never executed
+branch  1 never executed
+    #####:   77:        void *value = malloc(value_len ? (size_t)value_len : 1);
+branch  0 never executed
+branch  1 never executed
+    #####:   78:        if (!value) { free(names); return -1; }
+branch  0 never executed
+branch  1 never executed
+    #####:   79:        if (fgetxattr(srcfd, name, value, (size_t)value_len) != value_len ||
+call    0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+branch  4 never executed
+    #####:   80:            fsetxattr(dstfd, name, value, (size_t)value_len, 0) != 0) {
+call    0 never executed
+    #####:   81:            free(value); free(names); return -1;
+        -:   82:        }
+    #####:   83:        free(value);
+        -:   84:    }
+    #####:   85:    free(names);
+    #####:   86:    return 0;
+        -:   87:}
+        -:   88:
+function fsync_parent_dir called 2 returned 100% blocks executed 85%
+        2:   89:static void fsync_parent_dir(const char *path) {
+        2:   90:    char *copy = strdup(path);
+       2*:   91:    if (!copy) return;
+branch  0 taken 0 (fallthrough)
+branch  1 taken 2
+        2:   92:    char *slash = strrchr(copy, '/');
+        2:   93:    const char *dir = ".";
+        2:   94:    if (slash) {
+branch  0 taken 2 (fallthrough)
+branch  1 taken 0
+       2*:   95:        if (slash == copy) slash[1] = '\0'; else *slash = '\0';
+branch  0 taken 0 (fallthrough)
+branch  1 taken 2
+        2:   96:        dir = copy;
+        -:   97:    }
+        2:   98:    int dfd = open(dir, O_RDONLY | O_DIRECTORY);
+call    0 returned 2
+        2:   99:    if (dfd >= 0) { (void)fsync(dfd); close(dfd); }
+branch  0 taken 2 (fallthrough)
+branch  1 taken 0
+call    2 returned 2
+call    3 returned 2
+        2:  100:    free(copy);
+        -:  101:}
+        -:  102:
+function sigint_handler called 0 returned 0% blocks executed 0%
+    #####:  103:static void sigint_handler(int sig) {
+        -:  104:    (void)sig;
+    #####:  105:    g_running = 0;
+    #####:  106:}
+        -:  107:
+        -:  108:/* 检查文件名是否以 suffix 结尾 */
+function ends_with called 2 returned 100% blocks executed 75%
+        2:  109:static int ends_with(const char *str, const char *suffix) {
+        2:  110:    size_t len = strlen(str);
+        2:  111:    size_t slen = strlen(suffix);
+        2:  112:    if (len < slen) return 0;
+branch  0 taken 2 (fallthrough)
+branch  1 taken 0
+    #####:  113:    return strcmp(str + len - slen, suffix) == 0;
+        -:  114:}
+        -:  115:
+        -:  116:/* 判断文件是否为 RAW 状态 */
+function is_raw_file called 2 returned 100% blocks executed 80%
+        2:  117:static int is_raw_file(const char *path) {
+        2:  118:    int fd = open(path, O_RDONLY);
+call    0 returned 2
+       2*:  119:    if (fd < 0) return 0;
+branch  0 taken 0 (fallthrough)
+branch  1 taken 2
+        -:  120:
+        -:  121:    struct gpuc_header hdr;
+        2:  122:    ssize_t n = read(fd, &hdr, sizeof(hdr));
+call    0 returned 2
+        2:  123:    close(fd);
+call    0 returned 2
+        -:  124:
+       2*:  125:    if (n != (ssize_t)sizeof(hdr)) return 0;
+branch  0 taken 0 (fallthrough)
+branch  1 taken 2
+       2*:  126:    return gpuc_is_header(&hdr) && hdr.state == GPUC_STATE_RAW;
+call    0 returned 2
+branch  1 taken 2 (fallthrough)
+branch  2 taken 0
+branch  3 taken 2 (fallthrough)
+branch  4 taken 0
+        -:  127:}
+        -:  128:
+        -:  129:/*
+        -:  130: * 压缩单个文件
+        -:  131: *
+        -:  132: * 步骤：
+        -:  133: *   1. 读取原文件 header 和数据
+        -:  134: *   2. 创建临时文件
+        -:  135: *   3. 逐块 GPU 压缩，写入临时文件（保持 128KB 逻辑对齐）
+        -:  136: *   4. 回填 header 和块索引表
+        -:  137: *   5. rename 替换
+        -:  138: */
+function compress_one_file called 2 returned 100% blocks executed 65%
+        2:  139:static int compress_one_file(const char *path) {
+        2:  140:    int fd_src = open(path, O_RDONLY);
+call    0 returned 2
+        2:  141:    if (fd_src < 0) {
+branch  0 taken 0 (fallthrough)
+branch  1 taken 2
+    #####:  142:        perror("open src");
+call    0 never executed
+    #####:  143:        return -1;
+        -:  144:    }
+        2:  145:    if (flock(fd_src, LOCK_EX | LOCK_NB) != 0) {
+call    0 returned 2
+branch  1 taken 0 (fallthrough)
+branch  2 taken 2
+    #####:  146:        close(fd_src);
+call    0 never executed
+    #####:  147:        return -1;
+        -:  148:    }
+        -:  149:
+        -:  150:    struct gpuc_header old_hdr;
+        2:  151:    if (read(fd_src, &old_hdr, sizeof(old_hdr)) != (ssize_t)sizeof(old_hdr)) {
+call    0 returned 2
+branch  1 taken 0 (fallthrough)
+branch  2 taken 2
+    #####:  152:        close(fd_src);
+call    0 never executed
+    #####:  153:        return -1;
+        -:  154:    }
+        2:  155:    if (!gpuc_is_header(&old_hdr) || old_hdr.state != GPUC_STATE_RAW) {
+call    0 returned 2
+branch  1 taken 2 (fallthrough)
+branch  2 taken 0
+branch  3 taken 0 (fallthrough)
+branch  4 taken 2
+    #####:  156:        close(fd_src);
+call    0 never executed
+    #####:  157:        return -1;
+        -:  158:    }
+        -:  159:    struct stat src_st;
+        2:  160:    if (fstat(fd_src, &src_st) != 0) {
+call    0 returned 2
+branch  1 taken 0 (fallthrough)
+branch  2 taken 2
+    #####:  161:        close(fd_src);
+call    0 never executed
+    #####:  162:        return -1;
+        -:  163:    }
+        -:  164:
+        2:  165:    off64_t phys_size = lseek64(fd_src, 0, SEEK_END);
+call    0 returned 2
+        2:  166:    if (phys_size <= (off64_t)old_hdr.header_size) {
+branch  0 taken 0 (fallthrough)
+branch  1 taken 2
+    #####:  167:        close(fd_src);
+call    0 never executed
+    #####:  168:        return -1;
+        -:  169:    }
+        -:  170:
+        2:  171:    off64_t data_size = phys_size - old_hdr.header_size;
+        2:  172:    uint32_t num_blocks = gpuc_num_blocks((uint64_t)data_size);
+call    0 returned 2
+        -:  173:
+        2:  174:    printf("[daemon] Compressing: %s (%ld bytes, %u blocks)\n",
+call    0 returned 2
+        -:  175:           path, (long)data_size, num_blocks);
+        -:  176:
+        -:  177:    /* 分配块索引表 */
+        -:  178:    struct gpuc_block_entry *blocks =
+        2:  179:        (struct gpuc_block_entry *)calloc(num_blocks, sizeof(*blocks));
+        2:  180:    if (!blocks) {
+branch  0 taken 0 (fallthrough)
+branch  1 taken 2
+    #####:  181:        close(fd_src);
+call    0 never executed
+    #####:  182:        return -1;
+        -:  183:    }
+        -:  184:
+        -:  185:    /* 创建临时文件 */
+        -:  186:    char tmp_path[PATH_MAX + 16];
+        2:  187:    snprintf(tmp_path, sizeof(tmp_path), "%s%s", path, TMP_SUFFIX);
+        2:  188:    int fd_tmp = open(tmp_path, O_WRONLY | O_CREAT | O_TRUNC, src_st.st_mode & 07777);
+call    0 returned 2
+        2:  189:    if (fd_tmp < 0) {
+branch  0 taken 0 (fallthrough)
+branch  1 taken 2
+    #####:  190:        perror("open tmp");
+call    0 never executed
+    #####:  191:        free(blocks);
+    #####:  192:        close(fd_src);
+call    0 never executed
+    #####:  193:        return -1;
+        -:  194:    }
+        -:  195:
+        -:  196:    /* 构建新 header */
+        -:  197:    struct gpuc_header new_hdr;
+        2:  198:    memset(&new_hdr, 0, sizeof(new_hdr));
+        2:  199:    new_hdr.magic = GPUC_MAGIC;
+        2:  200:    new_hdr.version = GPUC_VERSION;
+        2:  201:    new_hdr.orig_size = (uint64_t)data_size;
+        2:  202:    new_hdr.block_size = GPUC_BLOCK_SIZE;
+        2:  203:    new_hdr.num_blocks = num_blocks;
+        2:  204:    new_hdr.state = GPUC_STATE_COMPRESSED;
+        2:  205:    new_hdr.comp_algo = GPUC_ALGO_SGLZ;
+        2:  206:    new_hdr.reserved = GPUC_HEADER_FLAG_DIRECT_ALIGNED;
+        4:  207:    new_hdr.header_size = gpuc_align_up_u64(
+        2:  208:        sizeof(new_hdr) + (uint64_t)num_blocks * sizeof(*blocks),
+call    0 returned 2
+        -:  209:        GPUC_IO_ALIGNMENT);
+        2:  210:    new_hdr.mtime = (uint64_t)time(NULL);
+call    0 returned 2
+        -:  211:
+        -:  212:    /* 先写入 header 占位（最后回填） */
+        2:  213:    if (write(fd_tmp, &new_hdr, sizeof(new_hdr)) != (ssize_t)sizeof(new_hdr)) {
+call    0 returned 2
+branch  1 taken 0 (fallthrough)
+branch  2 taken 2
+    #####:  214:        goto fail;
+        -:  215:    }
+        2:  216:    if (write(fd_tmp, blocks, num_blocks * sizeof(*blocks)) !=
+call    0 returned 2
+        2:  217:        (ssize_t)(num_blocks * sizeof(*blocks))) {
+branch  0 taken 0 (fallthrough)
+branch  1 taken 2
+    #####:  218:        goto fail;
+        -:  219:    }
+        4:  220:    if (lseek64(fd_tmp, (off64_t)new_hdr.header_size - 1, SEEK_SET) < 0 ||
+call    0 returned 2
+branch  1 taken 2 (fallthrough)
+branch  2 taken 0
+branch  3 taken 0 (fallthrough)
+branch  4 taken 2
+        2:  221:        write(fd_tmp, "", 1) != 1) {
+call    0 returned 2
+    #####:  222:        goto fail;
+        -:  223:    }
+        -:  224:
+        -:  225:    /* 压缩缓冲区 */
+        2:  226:    uint8_t *in_buf = NULL;
+        2:  227:    uint8_t *out_buf = NULL;
+        2:  228:    in_buf = (uint8_t *)malloc(GC_BLOCK_SIZE);
+        2:  229:    out_buf = (uint8_t *)malloc(GC_NCHUNKS * GC_SLOT_SIZE);
+        2:  230:    if (!in_buf || !out_buf) {
+branch  0 taken 2 (fallthrough)
+branch  1 taken 0
+branch  2 taken 0 (fallthrough)
+branch  3 taken 2
+    #####:  231:        goto fail;
+        -:  232:    }
+        -:  233:
+        2:  234:    off64_t phys_off = (off64_t)new_hdr.header_size;
+        2:  235:    off64_t src_data_off = (off64_t)old_hdr.header_size;
+        -:  236:
+        5:  237:    for (uint32_t i = 0; i < num_blocks; i++) {
+branch  0 taken 3
+branch  1 taken 2 (fallthrough)
+        3:  238:        size_t to_read = GC_BLOCK_SIZE;
+        3:  239:        if (src_data_off + (off64_t)to_read > phys_size)
+branch  0 taken 1 (fallthrough)
+branch  1 taken 2
+        1:  240:            to_read = (size_t)(phys_size - src_data_off);
+        -:  241:
+        3:  242:        ssize_t nr = pread64(fd_src, in_buf, to_read, src_data_off);
+call    0 returned 3
+        3:  243:        if (nr != (ssize_t)to_read) {
+branch  0 taken 0 (fallthrough)
+branch  1 taken 3
+    #####:  244:            fprintf(stderr, "[daemon] pread failed at block %u\n", i);
+call    0 never executed
+    #####:  245:            goto fail;
+        -:  246:        }
+        -:  247:
+        -:  248:        /* GPU 压缩 */
+        3:  249:        int comp_ret = cpu_compress_128k(in_buf, out_buf, GC_NCHUNKS * GC_SLOT_SIZE);
+call    0 returned 3
+        -:  250:
+        3:  251:        blocks[i].orig_len = (uint32_t)to_read;
+        3:  252:        blocks[i].offset = (uint64_t)phys_off;
+        3:  253:        blocks[i].reserved = GPUC_BLOCK_SIZE;
+        -:  254:
+        3:  255:        if (comp_ret > 0 && comp_ret < (int)to_read) {
+branch  0 taken 2 (fallthrough)
+branch  1 taken 1
+branch  2 taken 1 (fallthrough)
+branch  3 taken 1
+        -:  256:            /* 压缩成功：将 slot 布局转换为紧凑格式写入 */
+        1:  257:            int file_pos = 0;
+       33:  258:            for (int j = 0; j < GC_NCHUNKS; j++) {
+branch  0 taken 32
+branch  1 taken 1 (fallthrough)
+       32:  259:                uint16_t slot_len = *(uint16_t *)(out_buf + j * GC_SLOT_SIZE);
+      32*:  260:                if (slot_len == 0xFFFF) slot_len = 2 + GC_CHUNK_SIZE;
+branch  0 taken 0 (fallthrough)
+branch  1 taken 32
+       32:  261:                if (slot_len < 2 || slot_len > GC_SLOT_SIZE) {
+branch  0 taken 32 (fallthrough)
+branch  1 taken 0
+branch  2 taken 0 (fallthrough)
+branch  3 taken 32
+    #####:  262:                    fprintf(stderr, "[daemon] Invalid slot_len %u at block %u chunk %d\n",
+call    0 never executed
+        -:  263:                            slot_len, i, j);
+    #####:  264:                    goto fail;
+        -:  265:                }
+       32:  266:                if (write(fd_tmp, out_buf + j * GC_SLOT_SIZE, slot_len) != slot_len) {
+call    0 returned 32
+branch  1 taken 0 (fallthrough)
+branch  2 taken 32
+    #####:  267:                    goto fail;
+        -:  268:                }
+       32:  269:                file_pos += slot_len;
+        -:  270:            }
+        1:  271:            blocks[i].comp_len = (uint32_t)file_pos;
+        -:  272:        } else {
+        -:  273:            /* 未压缩或压缩失败：存储原始数据 */
+        2:  274:            blocks[i].comp_len = (uint32_t)to_read;
+        2:  275:            if (write(fd_tmp, in_buf, to_read) != (ssize_t)to_read) {
+call    0 returned 2
+branch  1 taken 0 (fallthrough)
+branch  2 taken 2
+    #####:  276:                goto fail;
+        -:  277:            }
+        -:  278:        }
+        -:  279:
+        -:  280:        /* 保持 128KB 逻辑对齐：用 lseek 制造空洞 */
+        3:  281:        off64_t next_phys_off = phys_off + GPUC_BLOCK_SIZE;
+        3:  282:        off64_t cur_end = lseek64(fd_tmp, 0, SEEK_CUR);
+call    0 returned 3
+        3:  283:        if (cur_end < next_phys_off) {
+branch  0 taken 2 (fallthrough)
+branch  1 taken 1
+        2:  284:            lseek64(fd_tmp, next_phys_off - 1, SEEK_SET);
+call    0 returned 2
+        2:  285:            if (write(fd_tmp, "", 1) != 1) { /* ignore */ }
+call    0 returned 2
+        -:  286:        }
+        3:  287:        phys_off = next_phys_off;
+        3:  288:        src_data_off += to_read;
+       3*:  289:        if (daemon_fault_point(i + 1) != 0) goto fail;
+call    0 returned 3
+branch  1 taken 0 (fallthrough)
+branch  2 taken 3
+        -:  290:    }
+        -:  291:
+        -:  292:    /* 回填块索引表 */
+        2:  293:    lseek64(fd_tmp, sizeof(new_hdr), SEEK_SET);
+call    0 returned 2
+        2:  294:    if (write(fd_tmp, blocks, num_blocks * sizeof(*blocks)) !=
+call    0 returned 2
+        2:  295:        (ssize_t)(num_blocks * sizeof(*blocks))) {
+branch  0 taken 0 (fallthrough)
+branch  1 taken 2
+    #####:  296:        goto fail;
+        -:  297:    }
+        -:  298:
+        -:  299:    /* 回填 header */
+        2:  300:    lseek64(fd_tmp, 0, SEEK_SET);
+call    0 returned 2
+        2:  301:    if (write(fd_tmp, &new_hdr, sizeof(new_hdr)) != (ssize_t)sizeof(new_hdr)) {
+call    0 returned 2
+branch  1 taken 0 (fallthrough)
+branch  2 taken 2
+    #####:  302:        goto fail;
+        -:  303:    }
+        -:  304:
+        -:  305:    struct stat src_after;
+        2:  306:    if (fstat(fd_src, &src_after) != 0 ||
+call    0 returned 2
+branch  1 taken 2 (fallthrough)
+branch  2 taken 0
+        2:  307:        src_after.st_size != src_st.st_size ||
+branch  0 taken 2 (fallthrough)
+branch  1 taken 0
+        2:  308:        src_after.st_mtim.tv_sec != src_st.st_mtim.tv_sec ||
+branch  0 taken 2 (fallthrough)
+branch  1 taken 0
+        2:  309:        src_after.st_mtim.tv_nsec != src_st.st_mtim.tv_nsec ||
+branch  0 taken 2 (fallthrough)
+branch  1 taken 0
+        2:  310:        src_after.st_ctim.tv_sec != src_st.st_ctim.tv_sec ||
+branch  0 taken 2 (fallthrough)
+branch  1 taken 0
+        2:  311:        src_after.st_ctim.tv_nsec != src_st.st_ctim.tv_nsec) {
+branch  0 taken 0 (fallthrough)
+branch  1 taken 2
+    #####:  312:        errno = EBUSY;
+    #####:  313:        goto fail;
+        -:  314:    }
+        -:  315:
+        2:  316:    (void)fchmod(fd_tmp, src_st.st_mode & 07777);
+call    0 returned 2
+       2*:  317:    if (fchown(fd_tmp, src_st.st_uid, src_st.st_gid) != 0 && errno != EPERM)
+call    0 returned 2
+branch  1 taken 0 (fallthrough)
+branch  2 taken 2
+branch  3 never executed
+branch  4 never executed
+    #####:  318:        perror("[cpu_daemon] fchown");
+call    0 never executed
+        2:  319:    struct timespec src_times[2] = {src_st.st_atim, src_st.st_mtim};
+        2:  320:    (void)futimens(fd_tmp, src_times);
+call    0 returned 2
+        2:  321:    if (copy_fd_xattrs(fd_src, fd_tmp) != 0 || fsync(fd_tmp) != 0)
+call    0 returned 2
+branch  1 taken 2 (fallthrough)
+branch  2 taken 0
+call    3 returned 2
+branch  4 taken 0 (fallthrough)
+branch  5 taken 2
+    #####:  322:        goto fail;
+        -:  323:
+        2:  324:    close(fd_src);
+call    0 returned 2
+        2:  325:    close(fd_tmp);
+call    0 returned 2
+        2:  326:    free(in_buf);
+        2:  327:    free(out_buf);
+        2:  328:    free(blocks);
+        -:  329:
+        -:  330:    /* 原子替换 */
+        2:  331:    if (rename(tmp_path, path) != 0) {
+call    0 returned 2
+branch  1 taken 0 (fallthrough)
+branch  2 taken 2
+    #####:  332:        perror("rename");
+call    0 never executed
+    #####:  333:        unlink(tmp_path);
+call    0 never executed
+    #####:  334:        return -1;
+        -:  335:    }
+        2:  336:    fsync_parent_dir(path);
+call    0 returned 2
+        -:  337:
+        2:  338:    printf("[daemon] Done: %s\n", path);
+call    0 returned 2
+        2:  339:    return 0;
+        -:  340:
+    #####:  341:fail:
+    #####:  342:    close(fd_src);
+call    0 never executed
+    #####:  343:    close(fd_tmp);
+call    0 never executed
+    #####:  344:    if (in_buf) free(in_buf);
+branch  0 never executed
+branch  1 never executed
+    #####:  345:    if (out_buf) free(out_buf);
+branch  0 never executed
+branch  1 never executed
+    #####:  346:    free(blocks);
+    #####:  347:    unlink(tmp_path);
+call    0 never executed
+    #####:  348:    return -1;
+        -:  349:}
+        -:  350:
+        -:  351:/* 扫描目录 */
+function scan_directory called 2 returned 100% blocks executed 77%
+        2:  352:static void scan_directory(const char *dirpath, int recursive) {
+        2:  353:    DIR *dir = opendir(dirpath);
+call    0 returned 2
+        2:  354:    if (!dir) {
+branch  0 taken 0 (fallthrough)
+branch  1 taken 2
+    #####:  355:        perror("opendir");
+call    0 never executed
+    #####:  356:        return;
+        -:  357:    }
+        -:  358:
+        -:  359:    struct dirent *entry;
+        8:  360:    while ((entry = readdir(dir)) != NULL) {
+call    0 returned 8
+branch  1 taken 6
+branch  2 taken 2 (fallthrough)
+        6:  361:        if (entry->d_name[0] == '.') continue;
+branch  0 taken 4 (fallthrough)
+branch  1 taken 2
+       2*:  362:        if (ends_with(entry->d_name, TMP_SUFFIX)) continue;
+call    0 returned 2
+branch  1 taken 0 (fallthrough)
+branch  2 taken 2
+        -:  363:
+        -:  364:        char fullpath[PATH_MAX];
+        2:  365:        snprintf(fullpath, sizeof(fullpath), "%s/%s", dirpath, entry->d_name);
+        -:  366:
+        -:  367:        struct stat st;
+       2*:  368:        if (stat(fullpath, &st) != 0) continue;
+call    0 returned 2
+branch  1 taken 0 (fallthrough)
+branch  2 taken 2
+        -:  369:
+       2*:  370:        if (S_ISDIR(st.st_mode) && recursive) {
+branch  0 taken 0 (fallthrough)
+branch  1 taken 2
+branch  2 never executed
+branch  3 never executed
+    #####:  371:            scan_directory(fullpath, recursive);
+call    0 never executed
+        2:  372:        } else if (S_ISREG(st.st_mode)) {
+branch  0 taken 2 (fallthrough)
+branch  1 taken 0
+        2:  373:            if (is_raw_file(fullpath)) {
+call    0 returned 2
+branch  1 taken 2 (fallthrough)
+branch  2 taken 0
+        2:  374:                compress_one_file(fullpath);
+call    0 returned 2
+        -:  375:            }
+        -:  376:        }
+        -:  377:    }
+        -:  378:
+        2:  379:    closedir(dir);
+call    0 returned 2
+        -:  380:}
+        -:  381:
+function print_usage called 0 returned 0% blocks executed 0%
+    #####:  382:static void print_usage(const char *prog) {
+    #####:  383:    printf("Usage: %s [-r] [-d] <directory>\n", prog);
+call    0 never executed
+    #####:  384:    printf("  -r    Recursive scan\n");
+call    0 never executed
+    #####:  385:    printf("  -d    Daemon mode (periodic scan every %d seconds)\n", SCAN_INTERVAL_SEC);
+call    0 never executed
+    #####:  386:}
+        -:  387:
+function main called 2 returned 100% blocks executed 49%
+        2:  388:int main(int argc, char **argv) {
+        2:  389:    int recursive = 0;
+        2:  390:    int daemon_mode = 0;
+        2:  391:    const char *directory = NULL;
+        -:  392:
+        4:  393:    for (int i = 1; i < argc; i++) {
+branch  0 taken 2
+branch  1 taken 2 (fallthrough)
+        2:  394:        if (strcmp(argv[i], "-r") == 0) {
+branch  0 taken 0 (fallthrough)
+branch  1 taken 2
+    #####:  395:            recursive = 1;
+        2:  396:        } else if (strcmp(argv[i], "-d") == 0) {
+branch  0 taken 0 (fallthrough)
+branch  1 taken 2
+    #####:  397:            daemon_mode = 1;
+        2:  398:        } else if (argv[i][0] == '-') {
+branch  0 taken 0 (fallthrough)
+branch  1 taken 2
+    #####:  399:            print_usage(argv[0]);
+call    0 never executed
+    #####:  400:            return 1;
+        -:  401:        } else {
+        2:  402:            directory = argv[i];
+        -:  403:        }
+        -:  404:    }
+        -:  405:
+        2:  406:    if (!directory) {
+branch  0 taken 0 (fallthrough)
+branch  1 taken 2
+    #####:  407:        print_usage(argv[0]);
+call    0 never executed
+    #####:  408:        return 1;
+        -:  409:    }
+        -:  410:
+        -:  411:    /* 初始化 GPU */
+        2:  412:    if (cpu_compress_init() != 0) {
+call    0 returned 2
+branch  1 taken 0 (fallthrough)
+branch  2 taken 2
+    #####:  413:        fprintf(stderr, "Failed to initialize GPU compression\n");
+call    0 never executed
+    #####:  414:        return 1;
+        -:  415:    }
+        -:  416:
+        2:  417:    signal(SIGINT, sigint_handler);
+call    0 returned 2
+        2:  418:    signal(SIGTERM, sigint_handler);
+call    0 returned 2
+        -:  419:
+        2:  420:    if (daemon_mode) {
+branch  0 taken 0 (fallthrough)
+branch  1 taken 2
+    #####:  421:        printf("[daemon] Starting in daemon mode, scanning every %d seconds\n",
+call    0 never executed
+        -:  422:               SCAN_INTERVAL_SEC);
+    #####:  423:        while (g_running) {
+branch  0 never executed
+branch  1 never executed
+    #####:  424:            scan_directory(directory, recursive);
+call    0 never executed
+    #####:  425:            for (int i = 0; i < SCAN_INTERVAL_SEC && g_running; i++) {
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  426:                sleep(1);
+call    0 never executed
+        -:  427:            }
+        -:  428:        }
+    #####:  429:        printf("[daemon] Shutting down\n");
+call    0 never executed
+        -:  430:    } else {
+        2:  431:        scan_directory(directory, recursive);
+call    0 returned 2
+        -:  432:    }
+        -:  433:
+        2:  434:    cpu_compress_fini();
+call    0 returned 2
+        2:  435:    return 0;
+        -:  436:}

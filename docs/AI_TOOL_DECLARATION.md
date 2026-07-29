@@ -46,6 +46,10 @@
    - 补齐 fio 预分配相关 64 位 POSIX 接口，新增随机/写入/尾延迟矩阵、公开
      Gutenberg 数据集、pidstat/sar 原始采样与 V100 板卡 J/GiB 边界实验；
      对缺少权限、许可软件或硬件计数器的项目保留可复核阻塞记录。
+   - 实现 userfaultfd mmap 的 128 KiB block 缺页填充与同步回退，补充并发
+     pattern 正确性、首次 fault 和完整扫描实验。
+   - 增加 Daemon ENOSPC/SIGKILL/重启、GPU 不可见降级、长稳 SHA，以及 GCC
+     gcov/CI 覆盖率门槛；统一只读归档模型和 LD_PRELOAD 支持矩阵。
 ## 3. 成果说明
 
 AI 工具辅助产生的关键成果包括：
@@ -60,6 +64,9 @@ AI 工具辅助产生的关键成果包括：
   与 CPU 业务卸载测试。修复后的同吞吐实验显示 GPU 额外主机 CPU 成本降低约
   28.8%，SQLite 相对 CPU 路径 QPS 高约 7.3%、p99 低约 50.5%；结果边界和
   DRAM/NVMe 环境缺口均在报告中保留。
+- userfaultfd 将 256 MiB COMPRESSED 的 `mmap()` 返回降到约 0.215 ms，同时
+  单独保留约 147 ms 首次 fault 和约 5.65 s 完整扫描成本；确定性故障恢复五项
+  PASS，CPU Hook gcov 行覆盖率为 41.38%。
 
 AI 辅助内容已完成编译、自动测试和结果交叉核验；最终提交前仍由团队进行人工审查
 并决定是否纳入 git 版本管理。

@@ -73,7 +73,8 @@
 - [x] 停止把“后台顺序预解压”称为“按需解压”。
 - [x] 修复应用提前访问 16 MB 之后区域可能读到未完成数据的问题。
 - [x] mmap 测试改用逐页唯一、非零 pattern，并在 `mmap()` 返回后立即扫描全部页。
-- [x] 短期方案以同步正确性优先；真正按需方案使用 `userfaultfd`，单独作为后续优化。
+- [x] 先以同步完整填充修复可见性，再实现 userfaultfd 按 128 KiB block 缺页
+  填充；同步路径保留为不支持 userfaultfd 时的兼容回退。
 
 ### D. 文件语义与并发安全
 
@@ -159,6 +160,23 @@
 - [x] 增加 ASan/UBSan CPU 路径测试；CI 环境同时开启 LSAN。
 - [x] 整理 `results/` 数据规范与最终结果索引；自动绘图留到 PPT 阶段统一完成。
 - [x] 精简实验报告，移除失效历史表，只保留可审计结果。
+- [x] 明确 LD_PRELOAD 是指定动态链接进程的用户态原型，不覆盖静态链接、直接
+  syscall 和应用自行提交的 io_uring；新增 `docs/SUPPORT_MATRIX.md`。
+- [x] 将 COMPRESSED/INLINE 固化为只读归档对象：写、截断、预分配返回
+  `EROFS`，`MAP_SHARED`/`MAP_FIXED` 返回 `EOPNOTSUPP`；本轮不实现隐式 COW。
+- [x] 实现 userfaultfd mmap 缺页填充，按 128 KiB GPUC block 读取/解压；
+  auto 模式不可用时同步回退，强制模式明确失败。
+  - 256 MiB COMPRESSED 五轮：`mmap()` 0.215±0.011 ms，首次 fault
+    146.502±3.836 ms，完整扫描 5651.449±367.254 ms，mismatch=0。
+- [x] 增加确定性故障恢复：Daemon ENOSPC、SIGKILL、残留临时文件重启、
+  GPU 不可见 CPU fallback、`/dev/full` 五项全部 PASS。
+- [x] V100 10 分钟正式稳定性验收：fio error=0、实际 runtime 600002 ms、
+  600 个带宽样本、变异系数 9.05%、前后逻辑 SHA 一致；脚本默认 1 小时，但
+  不将默认配置冒充已执行时长。
+- [x] 增加 GCC gcov CPU 覆盖率和 CI 门槛：Hook 行覆盖率 41.38%，门槛 35%；
+  CPU Daemon/SGLZ/LZ4 分别为 62.15%/85.52%/70.83%。
+- [!] AMD/Intel/其他 GPU 供应商后端按用户安排暂缓；当前仍只支持 NVIDIA
+  CUDA/nvCOMP，不能宣称跨供应商。
 
 ## 最后阶段：PPT 与视频
 

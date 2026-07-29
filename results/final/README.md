@@ -25,6 +25,11 @@ checkpoint `035e42b02a5a2a929c14c0de8fa1f1a5e86088b8` 为起点，随后加入�
 | `sqlite_range_offload_fixed4g_samecore_v100_20260729/` | SQLite range aggregate + 同吞吐解压，5 次 | GPU 比 CPU QPS 高约 7.3%，p99 低约 50.5%；GPU p99 仍高于无解压 baseline |
 | `odirect_aligned_v100_20260729/` | 512 MiB、128 KiB、15 秒、`direct=1` | O_DIRECT 标志保留、内容正确、0 error、62.9 MiB/s；设备为 SATA/ext4 |
 | `p0_resource_capability_v100_20260729/` | 资源计数器与存储设备审计 | 说明已有 CPU/RSS/fault/context/profile 指标及 DRAM/NVMe 的环境限制 |
+| `mmap_userfaultfd_v100_20260729/` | 64/256 MiB，单线程逐页 pattern，5 次 | 256 MiB `mmap()` 0.215±0.011 ms，首次 fault 146.502±3.836 ms，mismatch=0 |
+| `mmap_userfaultfd_threads8_v100_20260729/` | 同输入，8 扫描线程，5 次 | 256 MiB 完整扫描 5376.3±159.1 ms，无稳定线性扩展 |
+| `fault_recovery_v100_20260729/` | ENOSPC、SIGKILL、重启、GPU 不可见、`/dev/full` | 五项全部 PASS，原 RAW/逻辑 SHA 保持 |
+| `stability_10m_v100_20260729/` | 256 MiB、128 KiB、持续 600 秒 | fio error=0，600 个带宽样本，前后逻辑 SHA 一致 |
+| `coverage_cpu_20260729/` | GCC/gcov CPU Hook/Daemon/SGLZ/LZ4 | Hook 行 41.38%、分支执行 50.06%；CI 最低门槛 35% |
 
 `break_even.csv` 根据 cold、headers 和可压缩率梯度的实测均值计算。所有已测
 COMPRESSED 读取都慢于对应 Baseline，因此即使离线压缩成本按 0 计算，也不存在
@@ -42,3 +47,5 @@ COMPRESSED 读取都慢于对应 Baseline，因此即使离线压缩成本按 0 
 - `results/final/high_concurrency_v100_20260725/` 是保留的历史无效结果，
   其 README 已说明错误原因，不得用于决赛图表。
 - 所有数值都是该单机软件栈的工程观测，不外推为生产级保证。
+- 长稳脚本默认 1 小时，但当前正式目录实际执行 10 分钟；真实 GPU reset、掉电和
+  数小时压力仍需要隔离且具有管理员权限的机器。

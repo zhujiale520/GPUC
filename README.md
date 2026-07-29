@@ -11,13 +11,18 @@
 
 ## 项目概述
 
-本项目在**不修改内核、不改动现有文件系统（ext4/xfs）**的前提下，通过用户态 `LD_PRELOAD` 透明拦截层实现 GPU offload 存储压缩：
+本项目在**不修改内核、不改动现有文件系统（ext4/xfs）**的前提下，通过用户态
+`LD_PRELOAD` 拦截层为指定动态链接进程提供 GPU offload 存储压缩：
 
-- **写路径**：应用透明写入，后台 Daemon 异步 GPU 压缩
-- **读路径**：对压缩文件自动调用 GPU 实时解压，用户完全无感知
-- **mmap 路径**：新增 mmap/munmap/msync 拦截，压缩文件可透明映射
+- **写路径**：应用写入 RAW，后台 Daemon 原子转换为只读压缩对象
+- **读路径**：加载 Hook 的应用对压缩文件自动调用 GPU/CPU 解压
+- **mmap 路径**：`userfaultfd` 按 128 KiB block 缺页填充，内核不支持时同步回退
 - **可插拔压缩后端**：默认 SGLZ（不依赖 nvCOMP），可选 `GPUC_ALGO=lz4` 启用 NVIDIA nvCOMP LZ4，文本类数据压缩率从 ~82% 降至 ~39%
-- **非侵入式**：基于 `LD_PRELOAD`，现有应用无需重新编译
+- **非侵入式**：动态链接应用无需重新编译，但静态程序、直接 syscall 和应用
+  自提交 io_uring 不在透明覆盖范围
+
+压缩完成后的 COMPRESSED/INLINE 文件采用明确的**只读归档模型**，破坏性修改返回
+`EROFS`。完整边界见 [支持矩阵](docs/SUPPORT_MATRIX.md)。
 
 ---
 
@@ -82,7 +87,7 @@ unset LD_PRELOAD
 │  LD_PRELOAD 拦截层 (libgpuhook.so)                       │
 │     ├─ open()  → 新文件自动附加 RAW header               │
 │     ├─ read()  → 查索引 → 批量 GPU 解压 → 返回原始数据    │
-│     ├─ mmap()  → COMPRESSED 文件预解压到匿名内存          │
+│     ├─ mmap()  → userfaultfd 按块填充，必要时同步回退      │
 │     ├─ write() → 直接透传（不压缩）                       │
 │     └─ fstat() → 报告逻辑大小（隐藏物理稀疏大小）         │
 ├─────────────────────────────────────────────────────────┤
@@ -92,7 +97,7 @@ unset LD_PRELOAD
 │     ├─ 写临时文件 → atomic rename 替换                   │
 │     └─ 保持 128KB 稀疏对齐，支持随机读                    │
 ├─────────────────────────────────────────────────────────┤
-│  ext4 / xfs（完全不改，透明叠加）                         │
+│  ext4 / xfs（不改文件系统，按进程启用）                   │
 └─────────────────────────────────────────────────────────┘
 ```
 
@@ -212,7 +217,9 @@ ftruncate / truncate / sendfile
 │   ├── mem_pressure_scan.sh           # GPU 显存压力扫描
 │   ├── odirect_read.sh                # O_DIRECT 压缩读测试
 │   ├── write_read_consistency.sh      # 写后读一致性验证
-│   ├── long_term_stability.sh         # 30 分钟长时间稳定性测试
+│   ├── long_term_stability.sh         # 默认 1 小时稳定性与 SHA 测试
+│   ├── fault_recovery.sh              # ENOSPC/SIGKILL/重启/降级测试
+│   ├── coverage_cpu.sh                # CPU 路径 gcov 覆盖率门槛
 │   ├── random_read_small_bs.sh        # 小 bs 随机读测试
 │   ├── mmap_size_sweep.sh             # mmap 不同文件大小测试
 │   ├── multithread_jobs32.sh          # 32 线程并发扩展性测试
@@ -229,6 +236,7 @@ ftruncate / truncate / sendfile
 │   ├── IMPLEMENTATION.md              # 实现描述与代码说明
 │   ├── ISSUES_AND_SOLUTIONS.md        # 研发过程中的问题与解决方法
 │   ├── REPRODUCIBILITY.md             # 实验复现指南
+│   ├── SUPPORT_MATRIX.md              # 支持范围与限制统一口径
 │   ├── EXPERIMENTAL_REPORT.md         # 全面性能测试数据
 │   ├── CODE_GUIDE.md                  # 代码结构导读
 │   ├── SUBMISSION_REQUIREMENTS.md     # 大赛官方提交要求
@@ -259,6 +267,7 @@ ftruncate / truncate / sendfile
 - [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md) — 实现描述与核心代码说明
 - [docs/ISSUES_AND_SOLUTIONS.md](docs/ISSUES_AND_SOLUTIONS.md) — 研发过程中的问题与解决方法
 - [docs/REPRODUCIBILITY.md](docs/REPRODUCIBILITY.md) — 实验复现指南
+- [docs/SUPPORT_MATRIX.md](docs/SUPPORT_MATRIX.md) — 支持矩阵、只读模型和故障边界
 - [docs/architecture.md](docs/architecture.md) — 系统架构与数据流
 - [docs/deployment.md](docs/deployment.md) — 部署与二次开发指南
 - [docs/improvement_plan.md](docs/improvement_plan.md) — 后续优化计划
@@ -291,9 +300,12 @@ ftruncate / truncate / sendfile
 
 | 限制 | 说明 |
 |------|------|
-| `MAP_SHARED` mmap | 共享写映射暂不支持 |
-| `O_DIRECT` | 已支持，要求用户缓冲区页对齐 |
+| 应用覆盖 | 仅加载 Hook 的动态链接 libc I/O；静态/直接 syscall/应用 io_uring 不覆盖 |
+| 压缩对象修改 | COMPRESSED/INLINE 只读，破坏性修改返回 `EROFS` |
+| `mmap` | 支持只读 `MAP_PRIVATE` 完整解除；共享/固定/部分 munmap/跨 fork 不支持 |
+| `O_DIRECT` | 新版对齐格式已支持，要求用户缓冲区页对齐；正式 NVMe 性能未测 |
 | 单 GPU | 当前只使用 `cudaSetDevice(0)` |
+| GPU 供应商 | 当前只支持 NVIDIA CUDA；其他供应商后端暂缓 |
 | GPU 共享性能 | GPU 高负载时实时性能下降约 82%（458 vs 80 MB/s） |
 
 ---

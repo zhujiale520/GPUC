@@ -1,0 +1,473 @@
+        -:    0:Source:/usr/include/x86_64-linux-gnu/bits/fcntl-linux.h
+        -:    1:/* O_*, F_*, FD_* bit values for Linux.
+        -:    2:   Copyright (C) 2001-2020 Free Software Foundation, Inc.
+        -:    3:   This file is part of the GNU C Library.
+        -:    4:
+        -:    5:   The GNU C Library is free software; you can redistribute it and/or
+        -:    6:   modify it under the terms of the GNU Lesser General Public
+        -:    7:   License as published by the Free Software Foundation; either
+        -:    8:   version 2.1 of the License, or (at your option) any later version.
+        -:    9:
+        -:   10:   The GNU C Library is distributed in the hope that it will be useful,
+        -:   11:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   12:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+        -:   13:   Lesser General Public License for more details.
+        -:   14:
+        -:   15:   You should have received a copy of the GNU Lesser General Public
+        -:   16:   License along with the GNU C Library; if not, see
+        -:   17:   <https://www.gnu.org/licenses/>.  */
+        -:   18:
+        -:   19:#ifndef	_FCNTL_H
+        -:   20:# error "Never use <bits/fcntl-linux.h> directly; include <fcntl.h> instead."
+        -:   21:#endif
+        -:   22:
+        -:   23:/* This file contains shared definitions between Linux architectures
+        -:   24:   and is included by <bits/fcntl.h> to declare them.  The various
+        -:   25:   #ifndef cases allow the architecture specific file to define those
+        -:   26:   values with different values.
+        -:   27:
+        -:   28:   A minimal <bits/fcntl.h> contains just:
+        -:   29:
+        -:   30:   struct flock {...}
+        -:   31:   #ifdef __USE_LARGEFILE64
+        -:   32:   struct flock64 {...}
+        -:   33:   #endif
+        -:   34:   #include <bits/fcntl-linux.h>
+        -:   35:*/
+        -:   36:
+        -:   37:#ifdef __USE_GNU
+        -:   38:# include <bits/types/struct_iovec.h>
+        -:   39:#endif
+        -:   40:
+        -:   41:/* open/fcntl.  */
+        -:   42:#define O_ACCMODE	   0003
+        -:   43:#define O_RDONLY	     00
+        -:   44:#define O_WRONLY	     01
+        -:   45:#define O_RDWR		     02
+        -:   46:#ifndef O_CREAT
+        -:   47:# define O_CREAT	   0100	/* Not fcntl.  */
+        -:   48:#endif
+        -:   49:#ifndef O_EXCL
+        -:   50:# define O_EXCL		   0200	/* Not fcntl.  */
+        -:   51:#endif
+        -:   52:#ifndef O_NOCTTY
+        -:   53:# define O_NOCTTY	   0400	/* Not fcntl.  */
+        -:   54:#endif
+        -:   55:#ifndef O_TRUNC
+        -:   56:# define O_TRUNC	  01000	/* Not fcntl.  */
+        -:   57:#endif
+        -:   58:#ifndef O_APPEND
+        -:   59:# define O_APPEND	  02000
+        -:   60:#endif
+        -:   61:#ifndef O_NONBLOCK
+        -:   62:# define O_NONBLOCK	  04000
+        -:   63:#endif
+        -:   64:#ifndef O_NDELAY
+        -:   65:# define O_NDELAY	O_NONBLOCK
+        -:   66:#endif
+        -:   67:#ifndef O_SYNC
+        -:   68:# define O_SYNC	       04010000
+        -:   69:#endif
+        -:   70:#define O_FSYNC		O_SYNC
+        -:   71:#ifndef O_ASYNC
+        -:   72:# define O_ASYNC	 020000
+        -:   73:#endif
+        -:   74:#ifndef __O_LARGEFILE
+        -:   75:# define __O_LARGEFILE	0100000
+        -:   76:#endif
+        -:   77:
+        -:   78:#ifndef __O_DIRECTORY
+        -:   79:# define __O_DIRECTORY	0200000
+        -:   80:#endif
+        -:   81:#ifndef __O_NOFOLLOW
+        -:   82:# define __O_NOFOLLOW	0400000
+        -:   83:#endif
+        -:   84:#ifndef __O_CLOEXEC
+        -:   85:# define __O_CLOEXEC   02000000
+        -:   86:#endif
+        -:   87:#ifndef __O_DIRECT
+        -:   88:# define __O_DIRECT	 040000
+        -:   89:#endif
+        -:   90:#ifndef __O_NOATIME
+        -:   91:# define __O_NOATIME   01000000
+        -:   92:#endif
+        -:   93:#ifndef __O_PATH
+        -:   94:# define __O_PATH     010000000
+        -:   95:#endif
+        -:   96:#ifndef __O_DSYNC
+        -:   97:# define __O_DSYNC	 010000
+        -:   98:#endif
+        -:   99:#ifndef __O_TMPFILE
+        -:  100:# define __O_TMPFILE   (020000000 | __O_DIRECTORY)
+        -:  101:#endif
+        -:  102:
+        -:  103:#ifndef F_GETLK
+        -:  104:# ifndef __USE_FILE_OFFSET64
+        -:  105:#  define F_GETLK	5	/* Get record locking info.  */
+        -:  106:#  define F_SETLK	6	/* Set record locking info (non-blocking).  */
+        -:  107:#  define F_SETLKW	7	/* Set record locking info (blocking).  */
+        -:  108:# else
+        -:  109:#  define F_GETLK	F_GETLK64  /* Get record locking info.  */
+        -:  110:#  define F_SETLK	F_SETLK64  /* Set record locking info (non-blocking).*/
+        -:  111:#  define F_SETLKW	F_SETLKW64 /* Set record locking info (blocking).  */
+        -:  112:# endif
+        -:  113:#endif
+        -:  114:#ifndef F_GETLK64
+        -:  115:# define F_GETLK64	12	/* Get record locking info.  */
+        -:  116:# define F_SETLK64	13	/* Set record locking info (non-blocking).  */
+        -:  117:# define F_SETLKW64	14	/* Set record locking info (blocking).  */
+        -:  118:#endif
+        -:  119:
+        -:  120:/* open file description locks.
+        -:  121:
+        -:  122:   Usually record locks held by a process are released on *any* close and are
+        -:  123:   not inherited across a fork.
+        -:  124:
+        -:  125:   These cmd values will set locks that conflict with process-associated record
+        -:  126:   locks, but are "owned" by the opened file description, not the process.
+        -:  127:   This means that they are inherited across fork or clone with CLONE_FILES
+        -:  128:   like BSD (flock) locks, and they are only released automatically when the
+        -:  129:   last reference to the the file description against which they were acquired
+        -:  130:   is put. */
+        -:  131:#ifdef __USE_GNU
+        -:  132:# define F_OFD_GETLK	36
+        -:  133:# define F_OFD_SETLK	37
+        -:  134:# define F_OFD_SETLKW	38
+        -:  135:#endif
+        -:  136:
+        -:  137:#ifdef __USE_LARGEFILE64
+        -:  138:# define O_LARGEFILE __O_LARGEFILE
+        -:  139:#endif
+        -:  140:
+        -:  141:#ifdef __USE_XOPEN2K8
+        -:  142:# define O_DIRECTORY	__O_DIRECTORY	/* Must be a directory.  */
+        -:  143:# define O_NOFOLLOW	__O_NOFOLLOW	/* Do not follow links.  */
+        -:  144:# define O_CLOEXEC	__O_CLOEXEC	/* Set close_on_exec.  */
+        -:  145:#endif
+        -:  146:
+        -:  147:#ifdef __USE_GNU
+        -:  148:# define O_DIRECT	__O_DIRECT	/* Direct disk access.  */
+        -:  149:# define O_NOATIME	__O_NOATIME	/* Do not set atime.  */
+        -:  150:# define O_PATH		__O_PATH	/* Resolve pathname but do not open file.  */
+        -:  151:# define O_TMPFILE	__O_TMPFILE	/* Atomically create nameless file.  */
+        -:  152:#endif
+        -:  153:
+        -:  154:/* For now, Linux has no separate synchronicity options for read
+        -:  155:   operations.  We define O_RSYNC therefore as the same as O_SYNC
+        -:  156:   since this is a superset.  */
+        -:  157:#if defined __USE_POSIX199309 || defined __USE_UNIX98
+        -:  158:# define O_DSYNC	__O_DSYNC	/* Synchronize data.  */
+        -:  159:# if defined __O_RSYNC
+        -:  160:#  define O_RSYNC	__O_RSYNC	/* Synchronize read operations.  */
+        -:  161:# else
+        -:  162:#  define O_RSYNC	O_SYNC		/* Synchronize read operations.  */
+        -:  163:# endif
+        -:  164:#endif
+        -:  165:
+        -:  166:/* Values for the second argument to `fcntl'.  */
+        -:  167:#define F_DUPFD		0	/* Duplicate file descriptor.  */
+        -:  168:#define F_GETFD		1	/* Get file descriptor flags.  */
+        -:  169:#define F_SETFD		2	/* Set file descriptor flags.  */
+        -:  170:#define F_GETFL		3	/* Get file status flags.  */
+        -:  171:#define F_SETFL		4	/* Set file status flags.  */
+        -:  172:
+        -:  173:#ifndef __F_SETOWN
+        -:  174:# define __F_SETOWN	8
+        -:  175:# define __F_GETOWN	9
+        -:  176:#endif
+        -:  177:
+        -:  178:#if defined __USE_UNIX98 || defined __USE_XOPEN2K8
+        -:  179:# define F_SETOWN	__F_SETOWN /* Get owner (process receiving SIGIO).  */
+        -:  180:# define F_GETOWN	__F_GETOWN /* Set owner (process receiving SIGIO).  */
+        -:  181:#endif
+        -:  182:
+        -:  183:#ifndef __F_SETSIG
+        -:  184:# define __F_SETSIG	10	/* Set number of signal to be sent.  */
+        -:  185:# define __F_GETSIG	11	/* Get number of signal to be sent.  */
+        -:  186:#endif
+        -:  187:#ifndef __F_SETOWN_EX
+        -:  188:# define __F_SETOWN_EX	15	/* Get owner (thread receiving SIGIO).  */
+        -:  189:# define __F_GETOWN_EX	16	/* Set owner (thread receiving SIGIO).  */
+        -:  190:#endif
+        -:  191:
+        -:  192:#ifdef __USE_GNU
+        -:  193:# define F_SETSIG	__F_SETSIG	/* Set number of signal to be sent.  */
+        -:  194:# define F_GETSIG	__F_GETSIG	/* Get number of signal to be sent.  */
+        -:  195:# define F_SETOWN_EX	__F_SETOWN_EX	/* Get owner (thread receiving SIGIO).  */
+        -:  196:# define F_GETOWN_EX	__F_GETOWN_EX	/* Set owner (thread receiving SIGIO).  */
+        -:  197:#endif
+        -:  198:
+        -:  199:#ifdef __USE_GNU
+        -:  200:# define F_SETLEASE	1024	/* Set a lease.  */
+        -:  201:# define F_GETLEASE	1025	/* Enquire what lease is active.  */
+        -:  202:# define F_NOTIFY	1026	/* Request notifications on a directory.  */
+        -:  203:# define F_SETPIPE_SZ	1031	/* Set pipe page size array.  */
+        -:  204:# define F_GETPIPE_SZ	1032	/* Set pipe page size array.  */
+        -:  205:# define F_ADD_SEALS	1033	/* Add seals to file.  */
+        -:  206:# define F_GET_SEALS	1034	/* Get seals for file.  */
+        -:  207:/* Set / get write life time hints.  */
+        -:  208:# define F_GET_RW_HINT	1035
+        -:  209:# define F_SET_RW_HINT	1036
+        -:  210:# define F_GET_FILE_RW_HINT	1037
+        -:  211:# define F_SET_FILE_RW_HINT	1038
+        -:  212:#endif
+        -:  213:#ifdef __USE_XOPEN2K8
+        -:  214:# define F_DUPFD_CLOEXEC 1030	/* Duplicate file descriptor with
+        -:  215:				   close-on-exit set.  */
+        -:  216:#endif
+        -:  217:
+        -:  218:/* For F_[GET|SET]FD.  */
+        -:  219:#define FD_CLOEXEC	1	/* Actually anything with low bit set goes */
+        -:  220:
+        -:  221:#ifndef F_RDLCK
+        -:  222:/* For posix fcntl() and `l_type' field of a `struct flock' for lockf().  */
+        -:  223:# define F_RDLCK		0	/* Read lock.  */
+        -:  224:# define F_WRLCK		1	/* Write lock.  */
+        -:  225:# define F_UNLCK		2	/* Remove lock.  */
+        -:  226:#endif
+        -:  227:
+        -:  228:
+        -:  229:/* For old implementation of BSD flock.  */
+        -:  230:#ifndef F_EXLCK
+        -:  231:# define F_EXLCK		4	/* or 3 */
+        -:  232:# define F_SHLCK		8	/* or 4 */
+        -:  233:#endif
+        -:  234:
+        -:  235:#ifdef __USE_MISC
+        -:  236:/* Operations for BSD flock, also used by the kernel implementation.  */
+        -:  237:# define LOCK_SH	1	/* Shared lock.  */
+        -:  238:# define LOCK_EX	2	/* Exclusive lock.  */
+        -:  239:# define LOCK_NB	4	/* Or'd with one of the above to prevent
+        -:  240:				   blocking.  */
+        -:  241:# define LOCK_UN	8	/* Remove lock.  */
+        -:  242:#endif
+        -:  243:
+        -:  244:#ifdef __USE_GNU
+        -:  245:# define LOCK_MAND	32	/* This is a mandatory flock:  */
+        -:  246:# define LOCK_READ	64	/* ... which allows concurrent read operations.  */
+        -:  247:# define LOCK_WRITE	128	/* ... which allows concurrent write operations.  */
+        -:  248:# define LOCK_RW	192	/* ... Which allows concurrent read & write operations.  */
+        -:  249:#endif
+        -:  250:
+        -:  251:#ifdef __USE_GNU
+        -:  252:/* Types of directory notifications that may be requested with F_NOTIFY.  */
+        -:  253:# define DN_ACCESS	0x00000001	/* File accessed.  */
+        -:  254:# define DN_MODIFY	0x00000002	/* File modified.  */
+        -:  255:# define DN_CREATE	0x00000004	/* File created.  */
+        -:  256:# define DN_DELETE	0x00000008	/* File removed.  */
+        -:  257:# define DN_RENAME	0x00000010	/* File renamed.  */
+        -:  258:# define DN_ATTRIB	0x00000020	/* File changed attributes.  */
+        -:  259:# define DN_MULTISHOT	0x80000000	/* Don't remove notifier.  */
+        -:  260:#endif
+        -:  261:
+        -:  262:
+        -:  263:#ifdef __USE_GNU
+        -:  264:/* Owner types.  */
+        -:  265:enum __pid_type
+        -:  266:  {
+        -:  267:    F_OWNER_TID = 0,		/* Kernel thread.  */
+        -:  268:    F_OWNER_PID,		/* Process.  */
+        -:  269:    F_OWNER_PGRP,		/* Process group.  */
+        -:  270:    F_OWNER_GID = F_OWNER_PGRP	/* Alternative, obsolete name.  */
+        -:  271:  };
+        -:  272:
+        -:  273:/* Structure to use with F_GETOWN_EX and F_SETOWN_EX.  */
+        -:  274:struct f_owner_ex
+        -:  275:  {
+        -:  276:    enum __pid_type type;	/* Owner type of ID.  */
+        -:  277:    __pid_t pid;		/* ID of owner.  */
+        -:  278:  };
+        -:  279:#endif
+        -:  280:
+        -:  281:#ifdef __USE_GNU
+        -:  282:/* Types of seals.  */
+        -:  283:# define F_SEAL_SEAL	0x0001	/* Prevent further seals from being set.  */
+        -:  284:# define F_SEAL_SHRINK	0x0002	/* Prevent file from shrinking.  */
+        -:  285:# define F_SEAL_GROW	0x0004	/* Prevent file from growing.  */
+        -:  286:# define F_SEAL_WRITE	0x0008	/* Prevent writes.  */
+        -:  287:# define F_SEAL_FUTURE_WRITE	0x0010	/* Prevent future writes while
+        -:  288:					   mapped.  */
+        -:  289:#endif
+        -:  290:
+        -:  291:#ifdef __USE_GNU
+        -:  292:/* Hint values for F_{GET,SET}_RW_HINT.  */
+        -:  293:# define RWF_WRITE_LIFE_NOT_SET	0
+        -:  294:# define RWH_WRITE_LIFE_NONE	1
+        -:  295:# define RWH_WRITE_LIFE_SHORT	2
+        -:  296:# define RWH_WRITE_LIFE_MEDIUM	3
+        -:  297:# define RWH_WRITE_LIFE_LONG	4
+        -:  298:# define RWH_WRITE_LIFE_EXTREME	5
+        -:  299:#endif
+        -:  300:
+        -:  301:/* Define some more compatibility macros to be backward compatible with
+        -:  302:   BSD systems which did not managed to hide these kernel macros.  */
+        -:  303:#ifdef	__USE_MISC
+        -:  304:# define FAPPEND	O_APPEND
+        -:  305:# define FFSYNC		O_FSYNC
+        -:  306:# define FASYNC		O_ASYNC
+        -:  307:# define FNONBLOCK	O_NONBLOCK
+        -:  308:# define FNDELAY	O_NDELAY
+        -:  309:#endif /* Use misc.  */
+        -:  310:
+        -:  311:#ifndef __POSIX_FADV_DONTNEED
+        -:  312:#  define __POSIX_FADV_DONTNEED	4
+        -:  313:#  define __POSIX_FADV_NOREUSE	5
+        -:  314:#endif
+        -:  315:/* Advise to `posix_fadvise'.  */
+        -:  316:#ifdef __USE_XOPEN2K
+        -:  317:# define POSIX_FADV_NORMAL	0 /* No further special treatment.  */
+        -:  318:# define POSIX_FADV_RANDOM	1 /* Expect random page references.  */
+        -:  319:# define POSIX_FADV_SEQUENTIAL	2 /* Expect sequential page references.  */
+        -:  320:# define POSIX_FADV_WILLNEED	3 /* Will need these pages.  */
+        -:  321:# define POSIX_FADV_DONTNEED	__POSIX_FADV_DONTNEED /* Don't need these pages.  */
+        -:  322:# define POSIX_FADV_NOREUSE	__POSIX_FADV_NOREUSE /* Data will be accessed once.  */
+        -:  323:#endif
+        -:  324:
+        -:  325:
+        -:  326:#ifdef __USE_GNU
+        -:  327:/* Flags for SYNC_FILE_RANGE.  */
+        -:  328:# define SYNC_FILE_RANGE_WAIT_BEFORE	1 /* Wait upon writeout of all pages
+        -:  329:					     in the range before performing the
+        -:  330:					     write.  */
+        -:  331:# define SYNC_FILE_RANGE_WRITE		2 /* Initiate writeout of all those
+        -:  332:					     dirty pages in the range which are
+        -:  333:					     not presently under writeback.  */
+        -:  334:# define SYNC_FILE_RANGE_WAIT_AFTER	4 /* Wait upon writeout of all pages in
+        -:  335:					     the range after performing the
+        -:  336:					     write.  */
+        -:  337:/* SYNC_FILE_RANGE_WRITE_AND_WAIT ensures all pages in the range are
+        -:  338:   written to disk before returning.  */
+        -:  339:# define SYNC_FILE_RANGE_WRITE_AND_WAIT	(SYNC_FILE_RANGE_WRITE		\
+        -:  340:					 | SYNC_FILE_RANGE_WAIT_BEFORE	\
+        -:  341:					 | SYNC_FILE_RANGE_WAIT_AFTER)
+        -:  342:
+        -:  343:/* Flags for SPLICE and VMSPLICE.  */
+        -:  344:# define SPLICE_F_MOVE		1	/* Move pages instead of copying.  */
+        -:  345:# define SPLICE_F_NONBLOCK	2	/* Don't block on the pipe splicing
+        -:  346:					   (but we may still block on the fd
+        -:  347:					   we splice from/to).  */
+        -:  348:# define SPLICE_F_MORE		4	/* Expect more data.  */
+        -:  349:# define SPLICE_F_GIFT		8	/* Pages passed in are a gift.  */
+        -:  350:
+        -:  351:
+        -:  352:/* Flags for fallocate.  */
+        -:  353:# include <linux/falloc.h>
+        -:  354:
+        -:  355:
+        -:  356:/* File handle structure.  */
+        -:  357:struct file_handle
+        -:  358:{
+        -:  359:  unsigned int handle_bytes;
+        -:  360:  int handle_type;
+        -:  361:  /* File identifier.  */
+        -:  362:  unsigned char f_handle[0];
+        -:  363:};
+        -:  364:
+        -:  365:/* Maximum handle size (for now).  */
+        -:  366:# define MAX_HANDLE_SZ	128
+        -:  367:#endif
+        -:  368:
+        -:  369:/* Values for `*at' functions.  */
+        -:  370:#ifdef __USE_ATFILE
+        -:  371:# define AT_FDCWD		-100	/* Special value used to indicate
+        -:  372:					   the *at functions should use the
+        -:  373:					   current working directory. */
+        -:  374:# define AT_SYMLINK_NOFOLLOW	0x100	/* Do not follow symbolic links.  */
+        -:  375:# define AT_REMOVEDIR		0x200	/* Remove directory instead of
+        -:  376:					   unlinking file.  */
+        -:  377:# define AT_SYMLINK_FOLLOW	0x400	/* Follow symbolic links.  */
+        -:  378:# ifdef __USE_GNU
+        -:  379:#  define AT_NO_AUTOMOUNT	0x800	/* Suppress terminal automount
+        -:  380:					   traversal.  */
+        -:  381:#  define AT_EMPTY_PATH		0x1000	/* Allow empty relative pathname.  */
+        -:  382:#  define AT_STATX_SYNC_TYPE	0x6000
+        -:  383:#  define AT_STATX_SYNC_AS_STAT	0x0000
+        -:  384:#  define AT_STATX_FORCE_SYNC	0x2000
+        -:  385:#  define AT_STATX_DONT_SYNC	0x4000
+        -:  386:#  define AT_RECURSIVE		0x8000	/* Apply to the entire subtree.  */
+        -:  387:# endif
+        -:  388:# define AT_EACCESS		0x200	/* Test access permitted for
+        -:  389:					   effective IDs, not real IDs.  */
+        -:  390:#endif
+        -:  391:
+        -:  392:__BEGIN_DECLS
+        -:  393:
+        -:  394:#ifdef __USE_GNU
+        -:  395:
+        -:  396:/* Provide kernel hint to read ahead.  */
+        -:  397:extern __ssize_t readahead (int __fd, __off64_t __offset, size_t __count)
+        -:  398:    __THROW;
+        -:  399:
+        -:  400:
+        -:  401:/* Selective file content synch'ing.
+        -:  402:
+        -:  403:   This function is a possible cancellation point and therefore not
+        -:  404:   marked with __THROW.  */
+        -:  405:extern int sync_file_range (int __fd, __off64_t __offset, __off64_t __count,
+        -:  406:			    unsigned int __flags);
+        -:  407:
+        -:  408:
+        -:  409:/* Splice address range into a pipe.
+        -:  410:
+        -:  411:   This function is a possible cancellation point and therefore not
+        -:  412:   marked with __THROW.  */
+        -:  413:extern __ssize_t vmsplice (int __fdout, const struct iovec *__iov,
+        -:  414:			   size_t __count, unsigned int __flags);
+        -:  415:
+        -:  416:/* Splice two files together.
+        -:  417:
+        -:  418:   This function is a possible cancellation point and therefore not
+        -:  419:   marked with __THROW.  */
+        -:  420:extern __ssize_t splice (int __fdin, __off64_t *__offin, int __fdout,
+        -:  421:			 __off64_t *__offout, size_t __len,
+        -:  422:			 unsigned int __flags);
+        -:  423:
+        -:  424:/* In-kernel implementation of tee for pipe buffers.
+        -:  425:
+        -:  426:   This function is a possible cancellation point and therefore not
+        -:  427:   marked with __THROW.  */
+        -:  428:extern __ssize_t tee (int __fdin, int __fdout, size_t __len,
+        -:  429:		      unsigned int __flags);
+        -:  430:
+        -:  431:/* Reserve storage for the data of the file associated with FD.
+        -:  432:
+        -:  433:   This function is a possible cancellation point and therefore not
+        -:  434:   marked with __THROW.  */
+        -:  435:# ifndef __USE_FILE_OFFSET64
+function fallocate called 1 returned 100% blocks executed 29%
+        1:  436:extern int fallocate (int __fd, int __mode, __off_t __offset, __off_t __len);
+branch  0 taken 0 (fallthrough)
+branch  1 taken 1
+        -:  437:# else
+        -:  438:#  ifdef __REDIRECT
+        -:  439:extern int __REDIRECT (fallocate, (int __fd, int __mode, __off64_t __offset,
+        -:  440:				   __off64_t __len),
+        -:  441:		       fallocate64);
+        -:  442:#  else
+        -:  443:#   define fallocate fallocate64
+        -:  444:#  endif
+        -:  445:# endif
+        -:  446:# ifdef __USE_LARGEFILE64
+function fallocate64 called 2 returned 100% blocks executed 62%
+        2:  447:extern int fallocate64 (int __fd, int __mode, __off64_t __offset,
+branch  0 taken 0 (fallthrough)
+branch  1 taken 2
+        -:  448:			__off64_t __len);
+        -:  449:# endif
+        -:  450:
+        -:  451:
+        -:  452:/* Map file name to file handle.  */
+        -:  453:extern int name_to_handle_at (int __dfd, const char *__name,
+        -:  454:			      struct file_handle *__handle, int *__mnt_id,
+        -:  455:			      int __flags) __THROW;
+        -:  456:
+        -:  457:/* Open file using the file handle.
+        -:  458:
+        -:  459:   This function is a possible cancellation point and therefore not
+        -:  460:   marked with __THROW.  */
+        -:  461:extern int open_by_handle_at (int __mountdirfd, struct file_handle *__handle,
+        -:  462:			      int __flags);
+        -:  463:
+        -:  464:#endif	/* use GNU */
+        -:  465:
+        -:  466:__END_DECLS

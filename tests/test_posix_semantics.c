@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/uio.h>
+#include <sys/mman.h>
 #include <sys/xattr.h>
 #include <sys/stat.h>
 #include <time.h>
@@ -146,12 +147,48 @@ static int test_compressed(const char *path) {
     errno = 0;
     failed |= expect_erofs("ftruncate64", ftruncate64(fd, 1));
     errno = 0;
+    failed |= expect_erofs("fallocate", fallocate(fd, 0, 0, 4096));
+    errno = 0;
     failed |= expect_erofs("fallocate64", fallocate64(fd, 0, 0, 4096));
+    int alloc32_rc = posix_fallocate(fd, 0, 4096);
+    if (alloc32_rc != EROFS) {
+        fprintf(stderr, "FAIL: posix_fallocate returned %d; expected EROFS\n",
+                alloc32_rc);
+        failed = 1;
+    }
     int alloc_rc = posix_fallocate64(fd, 0, 4096);
     if (alloc_rc != EROFS) {
         fprintf(stderr, "FAIL: posix_fallocate64 returned %d; expected EROFS\n",
                 alloc_rc);
         failed = 1;
+    }
+    errno = 0;
+    failed |= expect_erofs("truncate", truncate(path, 1));
+    errno = 0;
+    failed |= expect_erofs("truncate64", truncate64(path, 1));
+    errno = 0;
+    void *shared = mmap(NULL, 4096, PROT_READ, MAP_SHARED, fd, 0);
+    if (shared != MAP_FAILED || errno != EOPNOTSUPP) {
+        fprintf(stderr,
+                "FAIL: managed MAP_SHARED must fail with EOPNOTSUPP\n");
+        if (shared != MAP_FAILED) munmap(shared, 4096);
+        failed = 1;
+    }
+    void *private_map = mmap(NULL, 8192, PROT_READ, MAP_PRIVATE, fd, 0);
+    if (private_map == MAP_FAILED) {
+        perror("FAIL: managed MAP_PRIVATE");
+        failed = 1;
+    } else {
+        errno = 0;
+        if (munmap(private_map, 4096) != -1 || errno != EOPNOTSUPP) {
+            fprintf(stderr,
+                    "FAIL: partial managed munmap must fail with EOPNOTSUPP\n");
+            failed = 1;
+        }
+        if (munmap(private_map, 8192) != 0) {
+            perror("FAIL: full managed munmap");
+            failed = 1;
+        }
     }
     close(fd);
     if (failed) return 1;

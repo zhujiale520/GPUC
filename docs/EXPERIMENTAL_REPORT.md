@@ -58,8 +58,9 @@ GPUC 使用 `LD_PRELOAD` 拦截一组 libc 文件接口，在 RAW 文件关闭�
 - 对齐格式的 `O_DIRECT` 标志保留、混合压缩/RAW block 和逻辑内容校验通过；
 - ASan/UBSan CPU Hook、shell 语法和 Markdown 本地链接检查通过。
 
-mmap 当前方案是在 `mmap()` 返回前同步准备完整逻辑映射，保证立即访问任意页正确；
-它不是 userfaultfd 按需页解压。
+mmap 默认通过 userfaultfd 捕获 missing-page fault，以 128 KiB GPUC block 为
+填充单位；不支持该机制的内核自动回退到同步完整填充。实验分别记录 `mmap()`
+返回、首次 fault 和完整扫描，避免把后移的解压成本描述成消失。
 
 ## 4. 主要结果
 
@@ -253,6 +254,47 @@ J/GiB：本机没有 RAPL、IPMI 或外部功率计，不能把板卡边界扩�
 且没有 ZFS/zpool；Oracle Vdbench 需要接受许可证，同时本机缺 Java/Vdbench。
 因此这两项保存了可复核的阻塞证据，但没有生成或伪造性能数字。
 
+### 4.16 userfaultfd mmap、故障恢复与覆盖率
+
+`results/final/mmap_userfaultfd_v100_20260729/` 在 64/256 MiB、单线程、每组五轮
+验证逐页非零 pattern，所有 mismatch 均为 0。256 MiB COMPRESSED 结果：
+
+| 指标 | 均值 | 95% CI |
+|---|---:|---:|
+| `mmap()` 返回 | 0.215 ms | ±0.011 ms |
+| 首次 fault | 146.502 ms | ±3.836 ms |
+| 完整扫描 | 5651.449 ms | ±367.254 ms |
+
+旧同步方案的 256 MiB `mmap()` 返回约 1.21 s；新方案降至约 0.22 ms，但首次
+fault 包含 CUDA lazy-init，完整扫描仍约 5.65 s。8 线程结果见
+`mmap_userfaultfd_threads8_v100_20260729/`：256 MiB 完整扫描
+5376.3 ± 159.1 ms，没有稳定的线性扩展。结论是返回延迟问题已解决，解压成本被
+推迟到访问阶段，吞吐仍需继续优化。
+
+`results/final/fault_recovery_v100_20260729/` 的五项确定性注入全部 PASS：
+Daemon ENOSPC 保留原 RAW 与 SHA 并清理临时文件；压缩中 SIGKILL 不改变原 inode；
+重启可覆盖残留临时文件并生成有效 COMPRESSED；GPU 不可见时 CPU fallback SHA
+一致；`/dev/full` 错误可向上传播。真实 GPU reset 和主机掉电需要管理员级隔离
+环境，本机未执行。
+
+`results/final/stability_10m_v100_20260729/` 对 256 MiB COMPRESSED 以 128 KiB
+单线程连续读取 600 秒：fio `error=0`，实际 runtime 600002 ms，带宽
+63.918 MiB/s，600 个一秒样本的变异系数 9.05%，p99 8454.1 µs；运行前后逻辑
+SHA-256 完全一致。脚本默认可运行 1 小时，但本报告只陈述实际完成的 10 分钟，
+不把配置能力冒充已执行时长。
+
+`results/final/coverage_cpu_20260729/` 使用 GCC gcov：
+
+| 源文件 | 行覆盖率 | 分支执行率 |
+|---|---:|---:|
+| `src/hook.c` | 41.38% | 50.06% |
+| `src/cpu_daemon.c` | 62.15% | 77.27% |
+| `src/cpu_compress.c` | 85.52% | 88.00% |
+| `src/cpu_lz4.c` | 70.83% | 94.74% |
+
+CI 将 Hook 行覆盖率 35% 设为最低门槛。GPU kernel 仍以功能、CRC/SHA 和集成测试
+覆盖，不能把 CPU gcov 数字外推为 CUDA 行覆盖率。
+
 ## 5. 决赛可陈述的结论
 
 可以陈述：
@@ -269,6 +311,12 @@ J/GiB：本机没有 RAPL、IPMI 或外部功率计，不能把板卡边界扩�
 - 随机/写入矩阵已覆盖 4/16/128 KiB、尾延迟和 Baseline QD 1/8/32；
 - V100 板卡增量边界约 0.482 J/GiB，但不是整机能效；
 - 不可压缩数据能回退 RAW，避免无收益压缩。
+- userfaultfd 将 256 MiB COMPRESSED 的 `mmap()` 返回降到约 0.215 ms，任意页
+  pattern 正确；首次 fault 与完整扫描成本需单独报告；
+- COMPRESSED/INLINE 是明确的只读归档对象；确定性 ENOSPC、SIGKILL、重启和
+  GPU 不可见恢复测试已通过；
+- V100 10 分钟持续读取 fio error=0，600 个带宽样本，前后 SHA 一致；
+- CPU Hook 已设置 35% gcov 行覆盖率门槛，当前为 41.38%。
 
 不能陈述：
 
@@ -276,7 +324,7 @@ J/GiB：本机没有 RAPL、IPMI 或外部功率计，不能把板卡边界扩�
 - GPU 绝对解压吞吐高于 CPU，或压缩文件读快于 Baseline；
 - 已测得 DRAM bandwidth/LLC miss，或 GPU 减少了主机 DRAM 容量；
 - 已完成 NVMe 性能验证；
-- mmap 是按访问页解压；
+- mmap 每次只解压一个 4 KiB 页，或完整扫描成本已经消失；
 - 对任意应用完全透明，或已达到生产级。
 
 ## 6. 下一步
@@ -284,6 +332,7 @@ J/GiB：本机没有 RAPL、IPMI 或外部功率计，不能把板卡边界扩�
 1. 在可挂载的独占 NVMe 上复跑 direct I/O，补队列深度、IOPS 与 p99；
 2. 安装匹配内核的 perf/Intel PCM，补 DRAM bandwidth、LLC miss；
 3. 减少 GPU D2H 返回拷贝和上下文切换，继续优化文件读路径；
-4. 实现 userfaultfd mmap 按需页解压；
+4. 优化 userfaultfd handler 的并发调度与首次 CUDA fault 延迟；
 5. 在公开数据库备份等二进制数据上继续扩展已完成的 Gutenberg workload；
-6. 在独立 btrfs 压缩卷验证 zstd 生效，并安装许可版 vdbench 后再恢复横向对比。
+6. 在独立 btrfs 压缩卷验证 zstd 生效，并安装许可版 vdbench 后再恢复横向对比；
+7. 供应商无关后端接口按当前赛程安排暂缓。

@@ -98,11 +98,19 @@ Hook 的 SGLZ 默认 batch 已改为 4；GPU 后端仍保留 32 块容量，供�
 
 该边界必须在部署说明中保留。
 
-## 8. mmap 名称与实现不符
+## 8. mmap 从同步完整填充改为 userfaultfd
 
-旧实现称为“按需解压”，但后台填充可能在应用提前访问时读到未完成页。
-当前实现改为在 `mmap()` 返回前同步准备完整逻辑映射，优先保证立即访问任意页正确。
-真正按访问页解压需要 userfaultfd，仍是后续工作。
+旧后台填充会在应用提前访问时暴露未完成页，之后改成返回前同步完整填充，保证了
+正确性但 256 MiB COMPRESSED 的 `mmap()` 返回约 1.21 s。
+
+当前默认通过 userfaultfd 注册 missing fault，handler 根据 fault 地址定位并填充
+128 KiB GPUC block。256 MiB V100 五轮中 `mmap()` 返回为
+0.215 ± 0.011 ms，首次 fault 为 146.502 ± 3.836 ms，完整扫描为
+5651.449 ± 367.254 ms，逐页 pattern mismatch 为 0。它解决了返回延迟，不代表
+完整解压成本消失；8 扫描线程也没有稳定线性加速。
+
+不支持 userfaultfd 的内核自动回退同步模式；`GPUC_MMAP_MODE=userfaultfd` 可要求
+严格失败。受管文件的 `MAP_SHARED`/`MAP_FIXED` 返回 `EOPNOTSUPP`。
 
 ## 9. 损坏格式防御
 
@@ -115,8 +123,9 @@ Hook 在 open 阶段验证：
 - offset 加法溢出、越界和表项重叠；
 - CRC32。
 
-损坏 header、非法 block table、超大字段、只读/只写 open 均有结构化回归。覆盖引导
-fuzz 尚未完成，不能宣称所有恶意输入均已验证。
+损坏 header、非法 block table、超大字段、只读/只写 open 均有结构化回归，并有
+2000 个确定性变异格式 smoke。覆盖引导 fuzz 尚未完成，不能宣称所有恶意输入均已
+验证。
 
 ## 10. “GPU 释放 CPU”从负结果到有边界的正结果
 
@@ -132,3 +141,23 @@ affinity 和固定约 4096 MiB/s 的 CPU/GPU公平口径。五轮结果：
 
 因此可以陈述固定吞吐下 GPU offload 减少主机 CPU 并减轻业务干扰，但不能陈述
 GPU 绝对吞吐高于 CPU、DRAM 容量下降或压缩文件读取快于 Baseline。
+
+## 11. 故障恢复缺少可重复证据
+
+仅写“原子 rename”无法证明中途失败不会损坏原文件。本轮为 CPU/GPU Daemon 增加
+仅测试使用的块计数故障点，`tests/fault_recovery.sh` 无需 root 即可复现：
+
+- 写两块后注入 ENOSPC，原 RAW 和 SHA 保持，正常失败路径清理临时文件；
+- 写一块后暂停并 SIGKILL，原 inode 保持；
+- 重启覆盖残留临时文件并生成可回读 COMPRESSED；
+- 隐藏 GPU 后验证 CPU fallback SHA；
+- `/dev/full` 验证内核写错误向上传播。
+
+真实 GPU reset 和掉电未在共享机器执行，不能写成已覆盖。
+
+## 12. 测试很多但缺覆盖率门槛
+
+新增 `tests/coverage_cpu.sh`，使用 GCC 自带 gcov，避免依赖未安装的 lcov。正式
+结果中 Hook/CPU Daemon/CPU SGLZ/CPU LZ4 行覆盖率分别为
+41.38%/62.15%/85.52%/70.83%，CI 要求 Hook 不低于 35%。CUDA kernel 继续由
+功能、CRC/SHA 和集成测试覆盖，不把 CPU gcov 数字外推到 GPU 代码。

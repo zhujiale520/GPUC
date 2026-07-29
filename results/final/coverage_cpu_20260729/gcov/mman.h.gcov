@@ -1,0 +1,161 @@
+        -:    0:Source:/usr/include/x86_64-linux-gnu/sys/mman.h
+        -:    1:/* Definitions for BSD-style memory management.
+        -:    2:   Copyright (C) 1994-2020 Free Software Foundation, Inc.
+        -:    3:   This file is part of the GNU C Library.
+        -:    4:
+        -:    5:   The GNU C Library is free software; you can redistribute it and/or
+        -:    6:   modify it under the terms of the GNU Lesser General Public
+        -:    7:   License as published by the Free Software Foundation; either
+        -:    8:   version 2.1 of the License, or (at your option) any later version.
+        -:    9:
+        -:   10:   The GNU C Library is distributed in the hope that it will be useful,
+        -:   11:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   12:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+        -:   13:   Lesser General Public License for more details.
+        -:   14:
+        -:   15:   You should have received a copy of the GNU Lesser General Public
+        -:   16:   License along with the GNU C Library; if not, see
+        -:   17:   <https://www.gnu.org/licenses/>.  */
+        -:   18:
+        -:   19:#ifndef	_SYS_MMAN_H
+        -:   20:#define	_SYS_MMAN_H	1
+        -:   21:
+        -:   22:#include <features.h>
+        -:   23:#include <bits/types.h>
+        -:   24:#define __need_size_t
+        -:   25:#include <stddef.h>
+        -:   26:
+        -:   27:#ifndef __off_t_defined
+        -:   28:# ifndef __USE_FILE_OFFSET64
+        -:   29:typedef __off_t off_t;
+        -:   30:# else
+        -:   31:typedef __off64_t off_t;
+        -:   32:# endif
+        -:   33:# define __off_t_defined
+        -:   34:#endif
+        -:   35:
+        -:   36:#ifndef __mode_t_defined
+        -:   37:typedef __mode_t mode_t;
+        -:   38:# define __mode_t_defined
+        -:   39:#endif
+        -:   40:
+        -:   41:#include <bits/mman.h>
+        -:   42:
+        -:   43:/* Return value of `mmap' in case of an error.  */
+        -:   44:#define MAP_FAILED	((void *) -1)
+        -:   45:
+        -:   46:__BEGIN_DECLS
+        -:   47:/* Map addresses starting near ADDR and extending for LEN bytes.  from
+        -:   48:   OFFSET into the file FD describes according to PROT and FLAGS.  If ADDR
+        -:   49:   is nonzero, it is the desired mapping address.  If the MAP_FIXED bit is
+        -:   50:   set in FLAGS, the mapping will be at ADDR exactly (which must be
+        -:   51:   page-aligned); otherwise the system chooses a convenient nearby address.
+        -:   52:   The return value is the actual mapping address chosen or MAP_FAILED
+        -:   53:   for errors (in which case `errno' is set).  A successful `mmap' call
+        -:   54:   deallocates any previous mapping for the affected region.  */
+        -:   55:
+        -:   56:#ifndef __USE_FILE_OFFSET64
+function mmap called 2 returned 100% blocks executed 40%
+        2:   57:extern void *mmap (void *__addr, size_t __len, int __prot,
+branch  0 taken 2 (fallthrough)
+branch  1 taken 0
+        -:   58:		   int __flags, int __fd, __off_t __offset) __THROW;
+        -:   59:#else
+        -:   60:# ifdef __REDIRECT_NTH
+        -:   61:extern void * __REDIRECT_NTH (mmap,
+        -:   62:			      (void *__addr, size_t __len, int __prot,
+        -:   63:			       int __flags, int __fd, __off64_t __offset),
+        -:   64:			      mmap64);
+        -:   65:# else
+        -:   66:#  define mmap mmap64
+        -:   67:# endif
+        -:   68:#endif
+        -:   69:#ifdef __USE_LARGEFILE64
+        -:   70:extern void *mmap64 (void *__addr, size_t __len, int __prot,
+        -:   71:		     int __flags, int __fd, __off64_t __offset) __THROW;
+        -:   72:#endif
+        -:   73:
+        -:   74:/* Deallocate any mapping for the region starting at ADDR and extending LEN
+        -:   75:   bytes.  Returns 0 if successful, -1 for errors (and sets errno).  */
+function munmap called 2 returned 100% blocks executed 81%
+        2:   76:extern int munmap (void *__addr, size_t __len) __THROW;
+branch  0 taken 0 (fallthrough)
+branch  1 taken 2
+        -:   77:
+        -:   78:/* Change the memory protection of the region starting at ADDR and
+        -:   79:   extending LEN bytes to PROT.  Returns 0 if successful, -1 for errors
+        -:   80:   (and sets errno).  */
+        -:   81:extern int mprotect (void *__addr, size_t __len, int __prot) __THROW;
+        -:   82:
+        -:   83:/* Synchronize the region starting at ADDR and extending LEN bytes with the
+        -:   84:   file it maps.  Filesystem operations on a file being mapped are
+        -:   85:   unpredictable before this is done.  Flags are from the MS_* set.
+        -:   86:
+        -:   87:   This function is a cancellation point and therefore not marked with
+        -:   88:   __THROW.  */
+function msync called 0 returned 0% blocks executed 0%
+    #####:   89:extern int msync (void *__addr, size_t __len, int __flags);
+branch  0 never executed
+branch  1 never executed
+        -:   90:
+        -:   91:#ifdef __USE_MISC
+        -:   92:/* Advise the system about particular usage patterns the program follows
+        -:   93:   for the region starting at ADDR and extending LEN bytes.  */
+        -:   94:extern int madvise (void *__addr, size_t __len, int __advice) __THROW;
+        -:   95:#endif
+        -:   96:#ifdef __USE_XOPEN2K
+        -:   97:/* This is the POSIX name for this function.  */
+        -:   98:extern int posix_madvise (void *__addr, size_t __len, int __advice) __THROW;
+        -:   99:#endif
+        -:  100:
+        -:  101:/* Guarantee all whole pages mapped by the range [ADDR,ADDR+LEN) to
+        -:  102:   be memory resident.  */
+        -:  103:extern int mlock (const void *__addr, size_t __len) __THROW;
+        -:  104:
+        -:  105:/* Unlock whole pages previously mapped by the range [ADDR,ADDR+LEN).  */
+        -:  106:extern int munlock (const void *__addr, size_t __len) __THROW;
+        -:  107:
+        -:  108:/* Cause all currently mapped pages of the process to be memory resident
+        -:  109:   until unlocked by a call to the `munlockall', until the process exits,
+        -:  110:   or until the process calls `execve'.  */
+        -:  111:extern int mlockall (int __flags) __THROW;
+        -:  112:
+        -:  113:/* All currently mapped pages of the process' address space become
+        -:  114:   unlocked.  */
+        -:  115:extern int munlockall (void) __THROW;
+        -:  116:
+        -:  117:#ifdef __USE_MISC
+        -:  118:/* mincore returns the memory residency status of the pages in the
+        -:  119:   current process's address space specified by [start, start + len).
+        -:  120:   The status is returned in a vector of bytes.  The least significant
+        -:  121:   bit of each byte is 1 if the referenced page is in memory, otherwise
+        -:  122:   it is zero.  */
+        -:  123:extern int mincore (void *__start, size_t __len, unsigned char *__vec)
+        -:  124:     __THROW;
+        -:  125:#endif
+        -:  126:
+        -:  127:#ifdef __USE_GNU
+        -:  128:/* Remap pages mapped by the range [ADDR,ADDR+OLD_LEN) to new length
+        -:  129:   NEW_LEN.  If MREMAP_MAYMOVE is set in FLAGS the returned address
+        -:  130:   may differ from ADDR.  If MREMAP_FIXED is set in FLAGS the function
+        -:  131:   takes another parameter which is a fixed address at which the block
+        -:  132:   resides after a successful call.  */
+        -:  133:extern void *mremap (void *__addr, size_t __old_len, size_t __new_len,
+        -:  134:		     int __flags, ...) __THROW;
+        -:  135:
+        -:  136:/* Remap arbitrary pages of a shared backing store within an existing
+        -:  137:   VMA.  */
+        -:  138:extern int remap_file_pages (void *__start, size_t __size, int __prot,
+        -:  139:			     size_t __pgoff, int __flags) __THROW;
+        -:  140:#endif
+        -:  141:
+        -:  142:
+        -:  143:/* Open shared memory segment.  */
+        -:  144:extern int shm_open (const char *__name, int __oflag, mode_t __mode);
+        -:  145:
+        -:  146:/* Remove shared memory segment.  */
+        -:  147:extern int shm_unlink (const char *__name);
+        -:  148:
+        -:  149:__END_DECLS
+        -:  150:
+        -:  151:#endif	/* sys/mman.h */

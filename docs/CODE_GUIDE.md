@@ -313,26 +313,36 @@ typedef struct {
 } fd_info_t;
 ```
 
-**mmap 跟踪表**（新增）：
+**mmap 跟踪表**：
 ```c
 #define MAX_MMAP_TRACK 64
 typedef struct {
+    int uffd;
+    int fd;
+    uint8_t *block;
+    fd_info_t *info;
+    pthread_t thread;
+    // 映射区间、逻辑 offset、stop/failed
+} mmap_uffd_ctx_t;
+
+typedef struct {
     void *addr;       // 返回给应用的地址
     size_t len;       // 映射长度
-    void *buf;        // 匿名内存基址
-    size_t buf_len;   // 匿名内存总长度
+    size_t buf_len;   // 页对齐后的完整映射长度
     int active;
+    mmap_uffd_ctx_t *uffd; // 同步回退时为 NULL
 } mmap_track_t;
 ```
-- 对 COMPRESSED 文件的 `mmap` 预解压到匿名内存
-- `munmap` 释放匿名内存
+- 默认通过 userfaultfd 对 RAW/INLINE/COMPRESSED 按 128 KiB block 填充
+- 不支持 userfaultfd 的内核同步填充完整匿名映射
+- 完整 `munmap` 关闭 userfaultfd、等待 handler 并释放匿名映射；部分 unmap 拒绝
 - `msync` 对匿名映射直接返回成功
 
 **辅助函数**：
 - `get_fd_info(fd)`：查表（加 mutex 锁）
 - `set_fd_info(fd, info)`：把 info 放进表（加锁，自动清理旧 entry）
 - `clear_fd_info(fd)`：关闭时清理（free blocks，释放内存）
-- `add_mmap_track()` / `remove_mmap_track()` / `is_tracked_mmap()`：mmap 跟踪
+- `add_mmap_track()` 与 mmap 表锁：记录和回收完整映射
 
 #### 第四层：拦截函数逐个解释
 
@@ -545,25 +555,23 @@ int __fxstat64(int ver, int fd, struct stat64 *buf) {
 
 ```c
 void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset) {
-    // 只处理 COMPRESSED 文件的 MAP_PRIVATE 读映射
-    if (!info || !info->has_header || !info->is_compressed) {
+    // 只处理受管 GPUC 文件的 MAP_PRIVATE 映射
+    if (!info || !info->has_header) {
         return real_mmap(addr, length, prot, flags, fd, offset);
     }
-    if (!(flags & MAP_PRIVATE)) return real_mmap(...);  // MAP_SHARED 暂不支持
-    
-    // 分配匿名内存
-    void *buf = real_mmap(NULL, length, PROT_READ | PROT_WRITE,
-                          MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-    
-    // 用 read_compressed_at 预解压数据到匿名内存
-    ssize_t nread = read_compressed_at(fd, info, buf, length, offset);
-    
-    // 调整保护位，记录映射
-    mprotect(buf, length, prot);
-    add_mmap_track(buf, length, buf, length);
-    return buf;
+    if (!(flags & MAP_PRIVATE) || (flags & MAP_FIXED)) {
+        errno = EOPNOTSUPP;
+        return MAP_FAILED;
+    }
+    // auto: setup_userfaultfd_mapping()；失败则同步完整填充
+    // userfaultfd: 失败直接 EOPNOTSUPP
+    // sync: mmap_sync_fill()
 }
 ```
+
+handler 在 `poll()` 收到 fault 后，将地址换算为 GPUC block，读取/解压整个
+128 KiB block，再用 `UFFDIO_COPY` 填充与映射相交的区间。完整扫描成本被推迟到
+访问阶段，并未消失。
 
 **`sendfile`**（新增）
 
@@ -797,7 +805,7 @@ read_compressed()
   ├─ Phase 3: 从解压缓冲区拷贝用户请求的部分到 buf
   └─ 更新 cur_offset
   ↓
-返回原始数据（用户完全无感知）
+返回原始数据（对已加载 Hook 且走受支持 libc 接口的应用透明）
 ```
 
 ### 流 5：应用 mmap 压缩文件
@@ -809,18 +817,20 @@ hook.c 的 mmap() 被调用
   ↓
 get_fd_info(fd) → info->is_compressed == true
   ↓
-分配匿名内存（MAP_PRIVATE | MAP_ANONYMOUS）
+分配匿名 missing 映射并注册 userfaultfd
   ↓
-read_compressed_at(fd, info, buf, length, offset) → 预解压到匿名内存
+返回映射地址
   ↓
-mprotect 调整保护位
+应用首次访问产生 missing fault
   ↓
-add_mmap_track() 记录映射
+handler 定位 128 KiB block → 读取/解压 → UFFDIO_COPY
   ↓
-返回匿名内存地址（用户无感知）
-  ↓
-应用访问内存 → 直接读解压后的数据
+应用读取正确逻辑内容
 ```
+
+如果内核不支持 userfaultfd，auto 模式同步填充完整映射；强制 userfaultfd 模式
+返回 `EOPNOTSUPP`。具体能力矩阵见
+[`SUPPORT_MATRIX.md`](SUPPORT_MATRIX.md)。
 
 ---
 

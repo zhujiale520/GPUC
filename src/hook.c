@@ -32,12 +32,19 @@
 #include <sys/stat.h>
 #include <sys/uio.h>
 #include <sys/xattr.h>
+#include <sys/ioctl.h>
 #include <unistd.h>
 #include <sys/syscall.h>
+#include <linux/userfaultfd.h>
+#include <poll.h>
 #include <stdint.h>
 #include <errno.h>
 #include <stdarg.h>
 #include <time.h>
+
+#ifndef UFFD_USER_MODE_ONLY
+#define UFFD_USER_MODE_ONLY 1
+#endif
 
 #include "file_header.h"
 #include "gpu_compress_api.h"
@@ -3000,23 +3007,24 @@ int __lxstat64(int ver, const char *pathname, struct stat64 *buf) {
 
 /* ============================================================
  *  mmap / munmap / msync 拦截
- *  对 COMPRESSED 文件：预解压到匿名内存，返回匿名地址
- *  对 RAW 文件：直接透传
+ *  受管文件默认由 userfaultfd 按 GPUC block 填充匿名映射
+ *  不支持 userfaultfd 的环境同步填充完整匿名映射
  * ============================================================ */
 
 #define MAX_MMAP_TRACK 64
 
-/* mmap 按需解压：后台异步解压上下文 */
 typedef struct {
-    int fd;               /* dup 的文件描述符 */
-    uint8_t *buf;         /* 匿名内存基址 */
-    size_t preload_len;   /* 已同步预解压的字节数 */
-    size_t total_len;     /* 总映射长度 */
-    off64_t offset;       /* 映射起始逻辑偏移 */
-    int final_prot;       /* 最终保护位（mmap 时请求的保护位） */
-    volatile int done;    /* 后台线程完成标志 */
+    int uffd;
+    int fd;
+    uint8_t *buf;
+    uint8_t *block;
+    fd_info_t *info;
+    size_t map_len;
+    off64_t offset;
+    volatile int stop;
+    volatile int failed;
     pthread_t thread;
-} mmap_bg_ctx_t;
+} mmap_uffd_ctx_t;
 
 typedef struct {
     void *addr;       /* 返回给应用的地址 */
@@ -3024,58 +3032,160 @@ typedef struct {
     void *buf;        /* 匿名内存基址（可能与 addr 相同） */
     size_t buf_len;   /* 匿名内存总长度 */
     int active;
-    mmap_bg_ctx_t *bg; /* 后台解压上下文（NULL 表示已全部同步解压） */
+    mmap_uffd_ctx_t *uffd; /* userfaultfd 按需页解压上下文 */
 } mmap_track_t;
 
 static mmap_track_t g_mmap_table[MAX_MMAP_TRACK];
 static pthread_mutex_t g_mmap_lock = PTHREAD_MUTEX_INITIALIZER;
 
-#ifndef MMAP_PRELOAD_MB
-#define MMAP_PRELOAD_MB 16
-#endif
-#define MMAP_PRELOAD_SIZE ((size_t)MMAP_PRELOAD_MB * 1024 * 1024)
+static void *mmap_userfaultfd_thread(void *arg) {
+    mmap_uffd_ctx_t *ctx = (mmap_uffd_ctx_t *)arg;
+    const size_t page_size = (size_t)sysconf(_SC_PAGESIZE);
+    uint8_t *block = ctx->block;
+    fd_info_t *info = ctx->info;
 
-/* 后台线程：异步解压 mmap 的剩余部分 */
-static void *mmap_background_decompress(void *arg) {
-    mmap_bg_ctx_t *ctx = (mmap_bg_ctx_t *)arg;
-
-    fd_info_t *info = (fd_info_t *)calloc(1, sizeof(fd_info_t));
-    if (info && read_header(ctx->fd, info) == 0 && info->is_compressed) {
-        ssize_t nread = read_compressed_at(ctx->fd, info,
-            ctx->buf + ctx->preload_len,
-            ctx->total_len - ctx->preload_len,
-            ctx->offset + (off64_t)ctx->preload_len);
-        if (nread < 0 || (size_t)nread < ctx->total_len - ctx->preload_len) {
-            fprintf(stderr, "[HOOK] mmap background decompress failed: nread=%zd, expected=%zu\n",
-                    nread, ctx->total_len - ctx->preload_len);
+    struct pollfd pfd = {.fd = ctx->uffd, .events = POLLIN};
+    while (!ctx->stop) {
+        int ready = poll(&pfd, 1, 100);
+        if (ready < 0) {
+            if (errno == EINTR) continue;
+            if (!ctx->stop) ctx->failed = 1;
+            break;
         }
-    }
+        if (ready == 0) continue;
+        if (!(pfd.revents & POLLIN)) {
+            if (ctx->stop || (pfd.revents & (POLLERR | POLLHUP | POLLNVAL)))
+                break;
+            continue;
+        }
 
-    if (info) {
-        free(info->blocks);
-        free(info);
-    }
+        struct uffd_msg msg;
+        ssize_t got = read(ctx->uffd, &msg, sizeof(msg));
+        if (got < 0 && (errno == EAGAIN || errno == EINTR)) continue;
+        if (got != (ssize_t)sizeof(msg) || msg.event != UFFD_EVENT_PAGEFAULT) {
+            if (!ctx->stop) ctx->failed = 1;
+            continue;
+        }
 
-    /* 解压完成后，将剩余部分调整为最终保护位 */
-    if (ctx->final_prot != 0 &&
-        (ctx->final_prot & (PROT_READ | PROT_WRITE | PROT_EXEC)) != (PROT_READ | PROT_WRITE)) {
-        size_t remaining = ctx->total_len - ctx->preload_len;
-        if (remaining > 0) {
-            if (mprotect(ctx->buf + ctx->preload_len, remaining, ctx->final_prot) != 0) {
-                fprintf(stderr, "[HOOK] mmap background mprotect failed: %s\n", strerror(errno));
+        uintptr_t fault = (uintptr_t)msg.arg.pagefault.address;
+        uintptr_t page_addr = fault & ~((uintptr_t)page_size - 1U);
+        if (page_addr < (uintptr_t)ctx->buf ||
+            page_addr >= (uintptr_t)ctx->buf + ctx->map_len) {
+            ctx->failed = 1;
+            continue;
+        }
+        size_t fault_map_off = (size_t)(page_addr - (uintptr_t)ctx->buf);
+        off64_t fault_logical = ctx->offset + (off64_t)fault_map_off;
+        off64_t block_start =
+            fault_logical / GPUC_BLOCK_SIZE * GPUC_BLOCK_SIZE;
+        off64_t file_logical_size = get_logical_size(info);
+        size_t want = 0;
+        if (block_start < file_logical_size) {
+            off64_t available = file_logical_size - block_start;
+            want = available < GPUC_BLOCK_SIZE ?
+                   (size_t)available : GPUC_BLOCK_SIZE;
+        }
+        memset(block, 0, GPUC_BLOCK_SIZE);
+
+        ssize_t nread = 0;
+        if (want > 0) {
+            if (info->is_compressed) {
+                nread = read_compressed_at(ctx->fd, info, block, want,
+                                           block_start);
+            } else {
+                nread = real_pread64(
+                    ctx->fd, block, want,
+                    (off64_t)info->hdr.header_size + block_start);
             }
         }
+        if (nread < 0 || (size_t)nread != want) ctx->failed = 1;
+
+        off64_t map_start = ctx->offset;
+        off64_t map_end = ctx->offset + (off64_t)ctx->map_len;
+        off64_t copy_start = block_start > map_start ? block_start : map_start;
+        off64_t block_end = block_start + GPUC_BLOCK_SIZE;
+        off64_t copy_end = block_end < map_end ? block_end : map_end;
+        if (copy_end <= copy_start) {
+            ctx->failed = 1;
+            continue;
+        }
+        struct uffdio_copy copy;
+        memset(&copy, 0, sizeof(copy));
+        copy.src = (unsigned long)(block + (copy_start - block_start));
+        copy.dst = (unsigned long)(ctx->buf + (copy_start - map_start));
+        copy.len = (unsigned long)(copy_end - copy_start);
+        if (ioctl(ctx->uffd, UFFDIO_COPY, &copy) != 0 && errno != EEXIST) {
+            if (!ctx->stop) ctx->failed = 1;
+            break;
+        }
     }
 
-    if (ctx->fd >= 0) {
-        close(ctx->fd);
-        ctx->fd = -1;
-    }
-    ctx->done = 1;
     return NULL;
 }
 
-static int add_mmap_track(void *addr, size_t len, void *buf, size_t buf_len, mmap_bg_ctx_t *bg) {
+static mmap_uffd_ctx_t *setup_userfaultfd_mmap(void *buf, size_t map_len,
+                                                int fd, off64_t offset) {
+#ifdef __NR_userfaultfd
+    mmap_uffd_ctx_t *ctx = (mmap_uffd_ctx_t *)calloc(1, sizeof(*ctx));
+    if (!ctx) return NULL;
+    ctx->fd = real_dup(fd);
+    ctx->info = (fd_info_t *)calloc(1, sizeof(*ctx->info));
+    size_t page_size = (size_t)sysconf(_SC_PAGESIZE);
+    if (ctx->fd < 0 || !ctx->info ||
+        posix_memalign((void **)&ctx->block, page_size, GPUC_BLOCK_SIZE) != 0 ||
+        read_header(ctx->fd, ctx->info) != 0 || !ctx->info->has_header) {
+        if (ctx->fd >= 0) real_close(ctx->fd);
+        free(ctx->block);
+        discard_unregistered_fd_info(ctx->info);
+        free(ctx);
+        return NULL;
+    }
+    ctx->info->phys_size = get_phys_size(ctx->fd);
+    ctx->info->open_flags = O_RDONLY;
+
+    int uffd = (int)syscall(__NR_userfaultfd,
+                            O_CLOEXEC | O_NONBLOCK | UFFD_USER_MODE_ONLY);
+    if (uffd < 0) goto fail_ctx;
+
+    struct uffdio_api api = {.api = UFFD_API, .features = 0};
+    if (ioctl(uffd, UFFDIO_API, &api) != 0) {
+        real_close(uffd);
+        goto fail_ctx;
+    }
+    struct uffdio_register reg;
+    memset(&reg, 0, sizeof(reg));
+    reg.range.start = (unsigned long)buf;
+    reg.range.len = map_len;
+    reg.mode = UFFDIO_REGISTER_MODE_MISSING;
+    if (ioctl(uffd, UFFDIO_REGISTER, &reg) != 0) {
+        real_close(uffd);
+        goto fail_ctx;
+    }
+    ctx->uffd = uffd;
+    ctx->buf = (uint8_t *)buf;
+    ctx->map_len = map_len;
+    ctx->offset = offset;
+    if (pthread_create(&ctx->thread, NULL,
+                       mmap_userfaultfd_thread, ctx) != 0) {
+        real_close(uffd);
+        goto fail_ctx;
+    }
+    return ctx;
+
+fail_ctx:
+    real_close(ctx->fd);
+    free(ctx->block);
+    discard_unregistered_fd_info(ctx->info);
+    free(ctx);
+    return NULL;
+#else
+    (void)buf; (void)map_len; (void)fd; (void)offset;
+    return NULL;
+#endif
+}
+
+static int add_mmap_track(void *addr, size_t len, void *buf, size_t buf_len,
+                          mmap_uffd_ctx_t *uffd) {
     pthread_mutex_lock(&g_mmap_lock);
     for (int i = 0; i < MAX_MMAP_TRACK; i++) {
         if (!g_mmap_table[i].active) {
@@ -3083,7 +3193,7 @@ static int add_mmap_track(void *addr, size_t len, void *buf, size_t buf_len, mma
             g_mmap_table[i].len = len;
             g_mmap_table[i].buf = buf;
             g_mmap_table[i].buf_len = buf_len;
-            g_mmap_table[i].bg = bg;
+            g_mmap_table[i].uffd = uffd;
             g_mmap_table[i].active = 1;
             pthread_mutex_unlock(&g_mmap_lock);
             return 0;
@@ -3093,31 +3203,8 @@ static int add_mmap_track(void *addr, size_t len, void *buf, size_t buf_len, mma
     return -1;
 }
 
-static void remove_mmap_track(void *addr) {
-    pthread_mutex_lock(&g_mmap_lock);
-    for (int i = 0; i < MAX_MMAP_TRACK; i++) {
-        if (g_mmap_table[i].active && g_mmap_table[i].addr == addr) {
-            g_mmap_table[i].active = 0;
-            break;
-        }
-    }
-    pthread_mutex_unlock(&g_mmap_lock);
-}
-
-static int is_tracked_mmap(void *addr) {
-    pthread_mutex_lock(&g_mmap_lock);
-    for (int i = 0; i < MAX_MMAP_TRACK; i++) {
-        if (g_mmap_table[i].active && g_mmap_table[i].addr == addr) {
-            pthread_mutex_unlock(&g_mmap_lock);
-            return 1;
-        }
-    }
-    pthread_mutex_unlock(&g_mmap_lock);
-    return 0;
-}
-
 void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset) {
-    mmap_bg_ctx_t *bg_ctx = NULL;
+    mmap_uffd_ctx_t *uffd_ctx = NULL;
 
     if (g_hooks_disabled || !real_mmap) {
         if (!real_mmap) { errno = ENOSYS; return MAP_FAILED; }
@@ -3129,10 +3216,10 @@ void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
         return real_mmap(addr, length, prot, flags, fd, offset);
     }
 
-    /* 只处理 MAP_PRIVATE 的读映射（最常见场景） */
-    if (!(flags & MAP_PRIVATE)) {
-        /* MAP_SHARED 暂不支持，透传（应用看到压缩数据） */
-        return real_mmap(addr, length, prot, flags, fd, offset);
+    /* 管理文件只支持匿名承载的 MAP_PRIVATE；禁止暴露物理压缩格式。 */
+    if (!(flags & MAP_PRIVATE) || (flags & MAP_FIXED)) {
+        errno = EOPNOTSUPP;
+        return MAP_FAILED;
     }
 
     /* 检查映射范围是否合理 */
@@ -3145,19 +3232,56 @@ void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
         length = (size_t)(log_size - offset);
     }
 
+    size_t page_size = (size_t)sysconf(_SC_PAGESIZE);
+    size_t map_len = (length + page_size - 1U) & ~(page_size - 1U);
+
     /* 分配匿名内存 */
-    void *buf = real_mmap(NULL, length, PROT_READ | PROT_WRITE,
+    void *buf = real_mmap(addr, map_len, PROT_READ | PROT_WRITE,
                           MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (buf == MAP_FAILED) return MAP_FAILED;
 
-    /*
-     * 正确性优先：在返回映射前同步填充完整范围。
-     *
-     * 旧实现只同步填充前 16 MB，随后让后台线程写入其余匿名页。应用若在
-     * 后台完成前访问后半段，会读到匿名页的初始零值，违反 mmap 的可见性
-     * 语义。真正的按需解压需要 userfaultfd（或等价的缺页同步机制），不能
-     * 用无同步的后台 memcpy 模拟。
-     */
+    const char *mmap_mode = getenv("GPUC_MMAP_MODE");
+    int force_sync = mmap_mode && strcmp(mmap_mode, "sync") == 0;
+    int force_uffd = mmap_mode && strcmp(mmap_mode, "userfaultfd") == 0;
+    if (!force_sync) {
+        uffd_ctx = setup_userfaultfd_mmap(buf, map_len, fd, (off64_t)offset);
+        if (uffd_ctx) {
+            if ((prot & (PROT_READ | PROT_WRITE | PROT_EXEC)) !=
+                (PROT_READ | PROT_WRITE)) {
+                if (mprotect(buf, map_len, prot) != 0) {
+                    uffd_ctx->stop = 1;
+                    real_close(uffd_ctx->uffd);
+                    pthread_join(uffd_ctx->thread, NULL);
+                    real_close(uffd_ctx->fd);
+                    free(uffd_ctx->block);
+                    discard_unregistered_fd_info(uffd_ctx->info);
+                    free(uffd_ctx);
+                    real_munmap(buf, map_len);
+                    return MAP_FAILED;
+                }
+            }
+            if (add_mmap_track(buf, length, buf, map_len, uffd_ctx) != 0) {
+                uffd_ctx->stop = 1;
+                real_close(uffd_ctx->uffd);
+                pthread_join(uffd_ctx->thread, NULL);
+                real_close(uffd_ctx->fd);
+                free(uffd_ctx->block);
+                discard_unregistered_fd_info(uffd_ctx->info);
+                free(uffd_ctx);
+                real_munmap(buf, map_len);
+                errno = ENOMEM;
+                return MAP_FAILED;
+            }
+            return buf;
+        }
+        if (force_uffd) {
+            real_munmap(buf, map_len);
+            errno = EOPNOTSUPP;
+            return MAP_FAILED;
+        }
+    }
+
+    /* auto 模式在 userfaultfd 不可用时同步填充完整范围，保证可见性。 */
     ssize_t nread;
     if (info->is_compressed) {
         nread = read_compressed_at(fd, info, buf, length, (off64_t)offset);
@@ -3166,40 +3290,24 @@ void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
                              (off64_t)info->hdr.header_size + (off64_t)offset);
     }
     if (nread < 0 || (size_t)nread < length) {
-        real_munmap(buf, length);
+        real_munmap(buf, map_len);
         errno = EIO;
         return MAP_FAILED;
     }
 
     /* 按请求调整保护位 */
-    if ((prot & (PROT_READ | PROT_WRITE | PROT_EXEC)) != (PROT_READ | PROT_WRITE)) {
-        if (bg_ctx) {
-            /* 大文件 + 后台线程：只保护预解压部分，剩余部分由后台线程完成后自行保护 */
-            if (mprotect(buf, MMAP_PRELOAD_SIZE, prot) != 0) {
-                if (!bg_ctx->done) pthread_join(bg_ctx->thread, NULL);
-                if (bg_ctx->fd >= 0) close(bg_ctx->fd);
-                free(bg_ctx);
-                real_munmap(buf, length);
-                errno = ENOMEM;
-                return MAP_FAILED;
-            }
-        } else {
-            if (mprotect(buf, length, prot) != 0) {
-                real_munmap(buf, length);
-                errno = ENOMEM;
-                return MAP_FAILED;
-            }
+    if ((prot & (PROT_READ | PROT_WRITE | PROT_EXEC)) !=
+        (PROT_READ | PROT_WRITE)) {
+        if (mprotect(buf, map_len, prot) != 0) {
+            real_munmap(buf, map_len);
+            errno = ENOMEM;
+            return MAP_FAILED;
         }
     }
 
     /* 记录映射 */
-    if (add_mmap_track(buf, length, buf, length, bg_ctx) != 0) {
-        if (bg_ctx) {
-            if (!bg_ctx->done) pthread_join(bg_ctx->thread, NULL);
-            if (bg_ctx->fd >= 0) close(bg_ctx->fd);
-            free(bg_ctx);
-        }
-        real_munmap(buf, length);
+    if (add_mmap_track(buf, length, buf, map_len, NULL) != 0) {
+        real_munmap(buf, map_len);
         errno = ENOMEM;
         return MAP_FAILED;
     }
@@ -3208,28 +3316,42 @@ void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
 }
 
 int munmap(void *addr, size_t length) {
-    (void)length;
     if (!real_munmap) { errno = ENOSYS; return -1; }
 
     pthread_mutex_lock(&g_mmap_lock);
     for (int i = 0; i < MAX_MMAP_TRACK; i++) {
-        if (g_mmap_table[i].active && g_mmap_table[i].addr == addr) {
-            mmap_track_t *track = &g_mmap_table[i];
-            mmap_bg_ctx_t *bg = track->bg;
-            track->bg = NULL;
+        mmap_track_t *track = &g_mmap_table[i];
+        if (!track->active) continue;
+        uintptr_t start = (uintptr_t)track->addr;
+        uintptr_t end = start + track->buf_len;
+        uintptr_t requested = (uintptr_t)addr;
+        if (requested >= start && requested < end) {
+            /*
+             * A partial unmap would require splitting the registered UFFD
+             * range and ownership record. Reject it instead of silently
+             * unmapping the full logical mapping or leaving a stale tracker.
+             */
+            if (addr != track->addr || length < track->len) {
+                pthread_mutex_unlock(&g_mmap_lock);
+                errno = EOPNOTSUPP;
+                return -1;
+            }
+            mmap_uffd_ctx_t *uffd = track->uffd;
+            size_t buf_len = track->buf_len;
+            track->uffd = NULL;
             track->active = 0;
             pthread_mutex_unlock(&g_mmap_lock);
 
-            if (bg) {
-                if (!bg->done) {
-                    pthread_join(bg->thread, NULL);
-                }
-                if (bg->fd >= 0) {
-                    close(bg->fd);
-                }
-                free(bg);
+            if (uffd) {
+                uffd->stop = 1;
+                real_close(uffd->uffd);
+                pthread_join(uffd->thread, NULL);
+                real_close(uffd->fd);
+                free(uffd->block);
+                discard_unregistered_fd_info(uffd->info);
+                free(uffd);
             }
-            return real_munmap(addr, length);
+            return real_munmap(addr, buf_len);
         }
     }
     pthread_mutex_unlock(&g_mmap_lock);
@@ -3243,13 +3365,7 @@ int msync(void *addr, size_t length, int flags) {
     pthread_mutex_lock(&g_mmap_lock);
     for (int i = 0; i < MAX_MMAP_TRACK; i++) {
         if (g_mmap_table[i].active && g_mmap_table[i].addr == addr) {
-            mmap_bg_ctx_t *bg = g_mmap_table[i].bg;
             pthread_mutex_unlock(&g_mmap_lock);
-
-            if (bg && !bg->done) {
-                /* 等待后台解压完成后再返回 */
-                pthread_join(bg->thread, NULL);
-            }
             /* 匿名 MAP_PRIVATE 映射不需要 sync */
             return 0;
         }

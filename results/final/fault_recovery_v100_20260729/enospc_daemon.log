@@ -1,0 +1,2 @@
+[cpu_daemon] injected ENOSPC after 2 blocks
+[daemon] Compressing: /tmp/gpuc-fault-recovery-Fu58Hg/enospc/data.bin (67108864 bytes, 512 blocks)

@@ -17,5 +17,7 @@ jobs:
         run: make cpu-only && make smoke-test
       - name: Sanitizers
         run: GPUC_LSAN=1 bash tests/sanitizer_cpu.sh
+      - name: CPU coverage
+        run: GPUC_COVERAGE_MIN_LINES=35 bash tests/coverage_cpu.sh
       - name: Documentation links
         run: python3 scripts/check_docs_links.py

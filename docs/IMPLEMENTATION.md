@@ -206,15 +206,27 @@ CPU-only 构建产物。
 
 ### 3.5 mmap 路径
 
-`mmap()` 拦截实现：
+默认 `mmap()` 拦截使用 userfaultfd：
 
-1. 对 RAW/COMPRESSED/INLINE 文件的 `MAP_PRIVATE` 读映射分配匿名内存；
-2. RAW 同步读取全部逻辑内容，COMPRESSED/INLINE 同步解压并填充全部内容；
-3. 内容全部就绪后才返回映射地址；
-4. `munmap()` 释放匿名映射；
-5. `msync()` 对 `MAP_PRIVATE` 匿名映射直接返回成功。
+1. 只接受受管 RAW/COMPRESSED/INLINE 文件的 `MAP_PRIVATE` 映射；
+2. 创建匿名 missing 映射，并以 `UFFD_USER_MODE_ONLY` 创建 userfaultfd；
+3. 使用 `UFFDIO_REGISTER_MODE_MISSING` 注册地址区间；
+4. handler 收到 page fault 后，将 fault 地址换算为 128 KiB GPUC block；
+5. RAW 使用物理 `pread`，COMPRESSED/INLINE 使用逻辑读取/解压，再以
+   `UFFDIO_COPY` 填充该 block 与映射的交集；
+6. `munmap()` 关闭 userfaultfd、等待 handler 退出并释放完整匿名映射。
 
-限制：暂不支持 `MAP_SHARED` 写映射，也尚未实现 `userfaultfd` 页级按需解压。
+`GPUC_MMAP_MODE` 控制实现：
+
+- 未设置/`auto`：优先 userfaultfd，系统不支持时同步填充完整映射；
+- `userfaultfd`：强制按缺页路径，初始化失败返回 `EOPNOTSUPP`；
+- `sync`：强制旧的同步完整填充路径。
+
+`MAP_SHARED` 和 `MAP_FIXED` 对受管文件返回 `EOPNOTSUPP`，避免共享写和固定地址
+覆盖暴露压缩物理布局；部分 `munmap()` 同样返回 `EOPNOTSUPP`，只支持完整回收。
+填充粒度是 GPUC 的 128 KiB block，不是单独解压一个 4 KiB 页。`msync()` 对
+只读 `MAP_PRIVATE` 匿名映射返回成功。受管映射不应跨 `fork()` 继承，子进程需
+重新 open/mmap。
 
 ### 3.6 数据库文件白名单
 
@@ -451,6 +463,10 @@ make ABLATION_FLAGS="-DGPUC_NO_BATCH -DGPUC_NO_IOURING -DGPUC_NO_READAHEAD"
 - `GPUC_NO_PINNED`：使用 `malloc` 代替 `cudaHostAlloc`；
 - `GPUC_NO_VERIFY_CRC`：跳过 CRC32 校验；
 - `GPUC_NO_PIPELINE`：关闭双缓冲流水线。
+- `GPUC_MMAP_MODE=auto|userfaultfd|sync`：选择 mmap 缺页或同步实现；
+- `GPUC_FAULT_PAUSE_AFTER_BLOCKS=N`：Daemon 写完 N 块后暂停（仅测试）；
+- `GPUC_FAULT_PAUSE_SECONDS=N`：故障注入暂停秒数（仅测试）；
+- `GPUC_FAULT_ENOSPC_AFTER_BLOCKS=N`：Daemon 在 N 块后注入 ENOSPC（仅测试）。
 
 ### 9.4 无 GPU 编译
 
@@ -471,6 +487,7 @@ make bin/libcpuhook.so bin/cpu_compress_daemon
 | 压缩算法 | `src/gpu_compress.cu` 第 33-260 行 kernel 部分 |
 | 读路径优化 | `src/hook.c` 中 `read_compressed()`、`ensure_batch_tls_buffers()`、`gpuc_iouring_*` |
 | 写路径 | `src/hook.c` 中 `write()`、`flush_raw_header()` |
-| mmap 实现 | `src/hook.c` 中 `mmap()`、`mmap_bg_decompress_thread()`、`munmap()` |
+| mmap 实现 | `src/hook.c` 中 `mmap()`、`setup_userfaultfd_mapping()`、`mmap_userfaultfd_thread()`、`munmap()` |
 | Daemon | `src/daemon.c` 中 `compress_one_file()`、`scan_directory()` |
 | 问题排查 | `docs/ISSUES_AND_SOLUTIONS.md` |
+| 能力边界 | `docs/SUPPORT_MATRIX.md` |

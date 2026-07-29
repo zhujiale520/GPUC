@@ -1,0 +1,178 @@
+        -:    0:Source:/usr/include/x86_64-linux-gnu/sys/uio.h
+        -:    1:/* Copyright (C) 1991-2020 Free Software Foundation, Inc.
+        -:    2:   This file is part of the GNU C Library.
+        -:    3:
+        -:    4:   The GNU C Library is free software; you can redistribute it and/or
+        -:    5:   modify it under the terms of the GNU Lesser General Public
+        -:    6:   License as published by the Free Software Foundation; either
+        -:    7:   version 2.1 of the License, or (at your option) any later version.
+        -:    8:
+        -:    9:   The GNU C Library is distributed in the hope that it will be useful,
+        -:   10:   but WITHOUT ANY WARRANTY; without even the implied warranty of
+        -:   11:   MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+        -:   12:   Lesser General Public License for more details.
+        -:   13:
+        -:   14:   You should have received a copy of the GNU Lesser General Public
+        -:   15:   License along with the GNU C Library; if not, see
+        -:   16:   <https://www.gnu.org/licenses/>.  */
+        -:   17:
+        -:   18:#ifndef _SYS_UIO_H
+        -:   19:#define _SYS_UIO_H	1
+        -:   20:
+        -:   21:#include <features.h>
+        -:   22:#include <sys/types.h>
+        -:   23:#include <bits/types/struct_iovec.h>
+        -:   24:#include <bits/uio_lim.h>
+        -:   25:#ifdef __IOV_MAX
+        -:   26:# define UIO_MAXIOV __IOV_MAX
+        -:   27:#else
+        -:   28:# undef UIO_MAXIOV
+        -:   29:#endif
+        -:   30:
+        -:   31:__BEGIN_DECLS
+        -:   32:
+        -:   33:/* Read data from file descriptor FD, and put the result in the
+        -:   34:   buffers described by IOVEC, which is a vector of COUNT 'struct iovec's.
+        -:   35:   The buffers are filled in the order specified.
+        -:   36:   Operates just like 'read' (see <unistd.h>) except that data are
+        -:   37:   put in IOVEC instead of a contiguous buffer.
+        -:   38:
+        -:   39:   This function is a cancellation point and therefore not marked with
+        -:   40:   __THROW.  */
+function readv called 0 returned 0% blocks executed 0%
+    #####:   41:extern ssize_t readv (int __fd, const struct iovec *__iovec, int __count)
+branch  0 never executed
+branch  1 never executed
+        -:   42:  __wur;
+        -:   43:
+        -:   44:/* Write data pointed by the buffers described by IOVEC, which
+        -:   45:   is a vector of COUNT 'struct iovec's, to file descriptor FD.
+        -:   46:   The data is written in the order specified.
+        -:   47:   Operates just like 'write' (see <unistd.h>) except that the data
+        -:   48:   are taken from IOVEC instead of a contiguous buffer.
+        -:   49:
+        -:   50:   This function is a cancellation point and therefore not marked with
+        -:   51:   __THROW.  */
+function writev called 2 returned 100% blocks executed 56%
+        2:   52:extern ssize_t writev (int __fd, const struct iovec *__iovec, int __count)
+branch  0 taken 0 (fallthrough)
+branch  1 taken 2
+        -:   53:  __wur;
+        -:   54:
+        -:   55:
+        -:   56:#ifdef __USE_MISC
+        -:   57:# ifndef __USE_FILE_OFFSET64
+        -:   58:/* Read data from file descriptor FD at the given position OFFSET
+        -:   59:   without change the file pointer, and put the result in the buffers
+        -:   60:   described by IOVEC, which is a vector of COUNT 'struct iovec's.
+        -:   61:   The buffers are filled in the order specified.  Operates just like
+        -:   62:   'pread' (see <unistd.h>) except that data are put in IOVEC instead
+        -:   63:   of a contiguous buffer.
+        -:   64:
+        -:   65:   This function is a cancellation point and therefore not marked with
+        -:   66:   __THROW.  */
+        -:   67:extern ssize_t preadv (int __fd, const struct iovec *__iovec, int __count,
+        -:   68:		       __off_t __offset) __wur;
+        -:   69:
+        -:   70:/* Write data pointed by the buffers described by IOVEC, which is a
+        -:   71:   vector of COUNT 'struct iovec's, to file descriptor FD at the given
+        -:   72:   position OFFSET without change the file pointer.  The data is
+        -:   73:   written in the order specified.  Operates just like 'pwrite' (see
+        -:   74:   <unistd.h>) except that the data are taken from IOVEC instead of a
+        -:   75:   contiguous buffer.
+        -:   76:
+        -:   77:   This function is a cancellation point and therefore not marked with
+        -:   78:   __THROW.  */
+        -:   79:extern ssize_t pwritev (int __fd, const struct iovec *__iovec, int __count,
+        -:   80:			__off_t __offset) __wur;
+        -:   81:
+        -:   82:# else
+        -:   83:#  ifdef __REDIRECT
+        -:   84:extern ssize_t __REDIRECT (preadv, (int __fd, const struct iovec *__iovec,
+        -:   85:				    int __count, __off64_t __offset),
+        -:   86:			   preadv64) __wur;
+        -:   87:extern ssize_t __REDIRECT (pwritev, (int __fd, const struct iovec *__iovec,
+        -:   88:				     int __count, __off64_t __offset),
+        -:   89:			   pwritev64) __wur;
+        -:   90:#  else
+        -:   91:#   define preadv preadv64
+        -:   92:#   define pwritev pwritev64
+        -:   93:#  endif
+        -:   94:# endif
+        -:   95:
+        -:   96:# ifdef __USE_LARGEFILE64
+        -:   97:/* Read data from file descriptor FD at the given position OFFSET
+        -:   98:   without change the file pointer, and put the result in the buffers
+        -:   99:   described by IOVEC, which is a vector of COUNT 'struct iovec's.
+        -:  100:   The buffers are filled in the order specified.  Operates just like
+        -:  101:   'pread' (see <unistd.h>) except that data are put in IOVEC instead
+        -:  102:   of a contiguous buffer.
+        -:  103:
+        -:  104:   This function is a cancellation point and therefore not marked with
+        -:  105:   __THROW.  */
+        -:  106:extern ssize_t preadv64 (int __fd, const struct iovec *__iovec, int __count,
+        -:  107:			 __off64_t __offset) __wur;
+        -:  108:
+        -:  109:/* Write data pointed by the buffers described by IOVEC, which is a
+        -:  110:   vector of COUNT 'struct iovec's, to file descriptor FD at the given
+        -:  111:   position OFFSET without change the file pointer.  The data is
+        -:  112:   written in the order specified.  Operates just like 'pwrite' (see
+        -:  113:   <unistd.h>) except that the data are taken from IOVEC instead of a
+        -:  114:   contiguous buffer.
+        -:  115:
+        -:  116:   This function is a cancellation point and therefore not marked with
+        -:  117:   __THROW.  */
+        -:  118:extern ssize_t pwritev64 (int __fd, const struct iovec *__iovec, int __count,
+        -:  119:			  __off64_t __offset) __wur;
+        -:  120:# endif
+        -:  121:#endif	/* Use misc.  */
+        -:  122:
+        -:  123:
+        -:  124:#ifdef __USE_GNU
+        -:  125:# ifndef __USE_FILE_OFFSET64
+        -:  126:/* Same as preadv but with an additional flag argumenti defined at uio.h.  */
+        -:  127:extern ssize_t preadv2 (int __fp, const struct iovec *__iovec, int __count,
+        -:  128:			__off_t __offset, int ___flags) __wur;
+        -:  129:
+        -:  130:/* Same as preadv but with an additional flag argument defined at uio.h.  */
+        -:  131:extern ssize_t pwritev2 (int __fd, const struct iovec *__iodev, int __count,
+        -:  132:			 __off_t __offset, int __flags) __wur;
+        -:  133:
+        -:  134:# else
+        -:  135:#  ifdef __REDIRECT
+        -:  136:extern ssize_t __REDIRECT (pwritev2, (int __fd, const struct iovec *__iovec,
+        -:  137:				      int __count, __off64_t __offset,
+        -:  138:				      int __flags),
+        -:  139:			   pwritev64v2) __wur;
+        -:  140:extern ssize_t __REDIRECT (preadv2, (int __fd, const struct iovec *__iovec,
+        -:  141:				     int __count, __off64_t __offset,
+        -:  142:				     int __flags),
+        -:  143:			   preadv64v2) __wur;
+        -:  144:#  else
+        -:  145:#   define preadv2 preadv64v2
+        -:  146:#   define pwritev2 pwritev64v2
+        -:  147:#  endif
+        -:  148:# endif
+        -:  149:
+        -:  150:# ifdef __USE_LARGEFILE64
+        -:  151:/* Same as preadv but with an additional flag argumenti defined at uio.h.  */
+        -:  152:extern ssize_t preadv64v2 (int __fp, const struct iovec *__iovec,
+        -:  153:			   int __count, __off64_t __offset,
+        -:  154:			   int ___flags) __wur;
+        -:  155:
+        -:  156:/* Same as preadv but with an additional flag argument defined at uio.h.  */
+        -:  157:extern ssize_t pwritev64v2 (int __fd, const struct iovec *__iodev,
+        -:  158:			    int __count, __off64_t __offset,
+        -:  159:			    int __flags) __wur;
+        -:  160:# endif
+        -:  161:#endif /* Use GNU.  */
+        -:  162:
+        -:  163:__END_DECLS
+        -:  164:
+        -:  165:/* Some operating systems provide system-specific extensions to this
+        -:  166:   header.  */
+        -:  167:#ifdef __USE_GNU
+        -:  168:# include <bits/uio-ext.h>
+        -:  169:#endif
+        -:  170:
+        -:  171:#endif /* sys/uio.h */

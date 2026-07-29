@@ -1,0 +1,402 @@
+        -:    0:Source:/home/ubuntu/project3136859-386240/src/cpu_compress.c
+        -:    1:/*
+        -:    2: * cpu_compress.c - Pure CPU implementation of SGLZ (Simple GPU LZ)
+        -:    3: *
+        -:    4: * 用途：作为 GPU offload 方案的对比基准，体现 "纯 CPU 实现" 的性能开销。
+        -:    5: * 算法与 gpu_compress.cu 完全一致，仅在 CPU 上串行执行。
+        -:    6: */
+        -:    7:
+        -:    8:#include <stdio.h>
+        -:    9:#include <stdlib.h>
+        -:   10:#include <string.h>
+        -:   11:#include <stdint.h>
+        -:   12:
+        -:   13:/* 从 gpu_compress.cuh 复制所需常量（避免依赖 CUDA 头文件） */
+        -:   14:#define SGLZ_CHUNK_SIZE   4096
+        -:   15:#define SGLZ_NCHUNKS      32
+        -:   16:#define SGLZ_BLOCK_SIZE   (SGLZ_CHUNK_SIZE * SGLZ_NCHUNKS)
+        -:   17:#define SGLZ_HASH_BITS    8
+        -:   18:#define SGLZ_HASH_SIZE    (1 << SGLZ_HASH_BITS)
+        -:   19:#define SGLZ_MIN_MATCH    4
+        -:   20:#define SGLZ_MAX_MATCH    255
+        -:   21:#define SGLZ_MAX_OFFSET   2048
+        -:   22:#define SGLZ_SLOT_SIZE    (SGLZ_CHUNK_SIZE + 256)
+        -:   23:#define SGLZ_MAX_BATCH_BLOCKS 32
+        -:   24:
+        -:   25:/* ============================================================
+        -:   26: *  CPU-side compression (single chunk)
+        -:   27: * ============================================================ */
+        -:   28:
+function sglz_hash3_cpu called 132858 returned 100% blocks executed 100%
+   132858:   29:static inline uint32_t sglz_hash3_cpu(const uint8_t *p) {
+   132858:   30:    return ((uint32_t)p[0] * 31 + (uint32_t)p[1] * 17 + (uint32_t)p[2]) & (SGLZ_HASH_SIZE - 1);
+        -:   31:}
+        -:   32:
+function sglz_compress_chunk_cpu called 96 returned 100% blocks executed 96%
+       96:   33:static int sglz_compress_chunk_cpu(const uint8_t *src, uint8_t *dst, int src_len) {
+        -:   34:    int hash_tbl[SGLZ_HASH_SIZE];
+    24672:   35:    for (int h = 0; h < SGLZ_HASH_SIZE; h++) hash_tbl[h] = -1;
+branch  0 taken 24576
+branch  1 taken 96 (fallthrough)
+        -:   36:
+       96:   37:    uint8_t *out = dst + 2;
+       96:   38:    int out_pos = 0;
+       96:   39:    int i = 0;
+        -:   40:
+     1754:   41:    while (i < src_len) {
+branch  0 taken 1658
+branch  1 taken 96 (fallthrough)
+     1658:   42:        int best_len = 0;
+     1658:   43:        int best_off = 0;
+        -:   44:
+     1658:   45:        if (i + SGLZ_MIN_MATCH <= src_len) {
+branch  0 taken 1658 (fallthrough)
+branch  1 taken 0
+     1658:   46:            uint32_t h = sglz_hash3_cpu(&src[i]);
+call    0 returned 1658
+     1658:   47:            int prev = hash_tbl[h];
+     1658:   48:            if (prev >= 0 && (i - prev) <= SGLZ_MAX_OFFSET) {
+branch  0 taken 1562 (fallthrough)
+branch  1 taken 96
+branch  2 taken 1562 (fallthrough)
+branch  3 taken 0
+     1562:   49:                int max_len = src_len - i;
+     1562:   50:                if (max_len > SGLZ_MAX_MATCH) max_len = SGLZ_MAX_MATCH;
+branch  0 taken 1472 (fallthrough)
+branch  1 taken 90
+     1562:   51:                int len = 0;
+   263932:   52:                while (len < max_len && src[prev + len] == src[i + len])
+branch  0 taken 262844 (fallthrough)
+branch  1 taken 1088
+branch  2 taken 262370
+branch  3 taken 474 (fallthrough)
+   262370:   53:                    len++;
+     1562:   54:                if (len >= SGLZ_MIN_MATCH) {
+branch  0 taken 1088 (fallthrough)
+branch  1 taken 474
+     1088:   55:                    best_len = len;
+     1088:   56:                    best_off = i - prev;
+        -:   57:                }
+        -:   58:            }
+     1658:   59:            hash_tbl[h] = i;
+        -:   60:        }
+        -:   61:
+     1658:   62:        if (best_len > 0) {
+branch  0 taken 1088 (fallthrough)
+branch  1 taken 570
+    1088*:   63:            if (out_pos + 5 > SGLZ_SLOT_SIZE - 2) break;
+branch  0 taken 0 (fallthrough)
+branch  1 taken 1088
+     1088:   64:            out[out_pos++] = 0x01;
+     1088:   65:            out[out_pos++] = best_off & 0xFF;
+     1088:   66:            out[out_pos++] = (best_off >> 8) & 0xFF;
+     1088:   67:            out[out_pos++] = best_len & 0xFF;
+     1088:   68:            out[out_pos++] = (best_len >> 8) & 0xFF;
+     1088:   69:            i += best_len;
+        -:   70:        } else {
+      570:   71:            int lit_start = i;
+      570:   72:            i++;
+   131328:   73:            while (i < src_len) {
+branch  0 taken 131296
+branch  1 taken 32 (fallthrough)
+   131296:   74:                if (i + SGLZ_MIN_MATCH <= src_len) {
+branch  0 taken 131200 (fallthrough)
+branch  1 taken 96
+   131200:   75:                    uint32_t h = sglz_hash3_cpu(&src[i]);
+call    0 returned 131200
+   131200:   76:                    int prev = hash_tbl[h];
+   131200:   77:                    if (prev >= 0 && (i - prev) <= SGLZ_MAX_OFFSET && src[prev] == src[i])
+branch  0 taken 122848 (fallthrough)
+branch  1 taken 8352
+branch  2 taken 122836 (fallthrough)
+branch  3 taken 12
+branch  4 taken 538 (fallthrough)
+branch  5 taken 122298
+      538:   78:                        break;
+   130662:   79:                    hash_tbl[h] = i;
+        -:   80:                }
+   130758:   81:                i++;
+        -:   82:            }
+      570:   83:            int lit_len = i - lit_start;
+      570:   84:            if (out_pos + 3 + lit_len > SGLZ_SLOT_SIZE - 2) {
+branch  0 taken 0 (fallthrough)
+branch  1 taken 570
+    #####:   85:                i = lit_start;
+    #####:   86:                break;
+        -:   87:            }
+      570:   88:            out[out_pos++] = 0x00;
+      570:   89:            out[out_pos++] = lit_len & 0xFF;
+      570:   90:            out[out_pos++] = (lit_len >> 8) & 0xFF;
+   131898:   91:            for (int k = 0; k < lit_len; k++)
+branch  0 taken 131328
+branch  1 taken 570 (fallthrough)
+   131328:   92:                out[out_pos++] = src[lit_start + k];
+        -:   93:        }
+        -:   94:    }
+        -:   95:
+       96:   96:    if (i < src_len || (out_pos + 2) >= src_len) {
+branch  0 taken 96 (fallthrough)
+branch  1 taken 0
+branch  2 taken 32 (fallthrough)
+branch  3 taken 64
+       32:   97:        uint16_t *cl = (uint16_t *)dst;
+       32:   98:        *cl = 0xFFFF;
+   131104:   99:        for (int k = 0; k < src_len; k++)
+branch  0 taken 131072
+branch  1 taken 32 (fallthrough)
+   131072:  100:            dst[2 + k] = src[k];
+       32:  101:        return 2 + src_len;
+        -:  102:    }
+        -:  103:
+       64:  104:    uint16_t *cl = (uint16_t *)dst;
+       64:  105:    *cl = (uint16_t)(out_pos + 2);
+       64:  106:    return out_pos + 2;
+        -:  107:}
+        -:  108:
+        -:  109:/* ============================================================
+        -:  110: *  CPU-side decompression (single chunk)
+        -:  111: * ============================================================ */
+        -:  112:
+function sglz_decompress_chunk_cpu called 32 returned 100% blocks executed 73%
+       32:  113:static int sglz_decompress_chunk_cpu(const uint8_t *src, uint8_t *dst, int dst_len) {
+       32:  114:    uint16_t comp_len = *(const uint16_t *)src;
+       32:  115:    if (comp_len == 0xFFFF) {
+branch  0 taken 0 (fallthrough)
+branch  1 taken 32
+    #####:  116:        for (int i = 0; i < dst_len && i < SGLZ_CHUNK_SIZE; i++)
+branch  0 never executed
+branch  1 never executed
+branch  2 never executed
+branch  3 never executed
+    #####:  117:            dst[i] = src[2 + i];
+    #####:  118:        return 2 + dst_len;
+        -:  119:    }
+        -:  120:
+       32:  121:    int in_pos = 2;
+       32:  122:    int out_pos = 0;
+      608:  123:    while (in_pos < comp_len && out_pos < dst_len) {
+branch  0 taken 576 (fallthrough)
+branch  1 taken 32
+branch  2 taken 576
+branch  3 taken 0 (fallthrough)
+      576:  124:        uint8_t tag = src[in_pos++];
+      576:  125:        if (tag == 0x00) {
+branch  0 taken 32 (fallthrough)
+branch  1 taken 544
+       32:  126:            int len = src[in_pos] | (src[in_pos + 1] << 8);
+       32:  127:            in_pos += 2;
+      256:  128:            for (int k = 0; k < len && out_pos < dst_len; k++)
+branch  0 taken 224 (fallthrough)
+branch  1 taken 32
+branch  2 taken 224
+branch  3 taken 0
+      224:  129:                dst[out_pos++] = src[in_pos++];
+      544:  130:        } else if (tag == 0x01) {
+branch  0 taken 544 (fallthrough)
+branch  1 taken 0
+      544:  131:            int off = src[in_pos] | (src[in_pos + 1] << 8);
+      544:  132:            in_pos += 2;
+      544:  133:            int len = src[in_pos] | (src[in_pos + 1] << 8);
+      544:  134:            in_pos += 2;
+   131392:  135:            for (int k = 0; k < len && out_pos < dst_len; k++) {
+branch  0 taken 130848 (fallthrough)
+branch  1 taken 544
+branch  2 taken 130848
+branch  3 taken 0
+   130848:  136:                dst[out_pos] = dst[out_pos - off];
+   130848:  137:                out_pos++;
+        -:  138:            }
+        -:  139:        } else {
+    #####:  140:            break;
+        -:  141:        }
+        -:  142:    }
+       32:  143:    return comp_len;
+        -:  144:}
+        -:  145:
+        -:  146:/* ============================================================
+        -:  147: *  Host-side wrappers (same API as GPU version)
+        -:  148: * ============================================================ */
+        -:  149:
+function cpu_compress_block called 3 returned 100% blocks executed 92%
+        3:  150:int cpu_compress_block(const uint8_t *in_buf, uint8_t *out_buf, size_t out_cap) {
+        -:  151:    (void)out_cap; /* caller guarantees enough space */
+        -:  152:
+        3:  153:    int total_comp = 0;
+       99:  154:    for (int j = 0; j < SGLZ_NCHUNKS; j++) {
+branch  0 taken 96
+branch  1 taken 3 (fallthrough)
+       96:  155:        int chunk_off = j * SGLZ_CHUNK_SIZE;
+       96:  156:        int chunk_len = (chunk_off + SGLZ_CHUNK_SIZE <= SGLZ_BLOCK_SIZE)
+        -:  157:                            ? SGLZ_CHUNK_SIZE
+      96*:  158:                            : SGLZ_BLOCK_SIZE - chunk_off;
+branch  0 taken 0 (fallthrough)
+branch  1 taken 96
+       96:  159:        uint8_t *slot = out_buf + j * SGLZ_SLOT_SIZE;
+       96:  160:        int cs = sglz_compress_chunk_cpu(in_buf + chunk_off, slot, chunk_len);
+call    0 returned 96
+       96:  161:        total_comp += cs;
+        -:  162:    }
+        -:  163:
+        3:  164:    if (total_comp == 0 || total_comp >= SGLZ_BLOCK_SIZE) {
+branch  0 taken 3 (fallthrough)
+branch  1 taken 0
+branch  2 taken 1 (fallthrough)
+branch  3 taken 2
+        1:  165:        return 0; /* uncompressible */
+        -:  166:    }
+        2:  167:    return total_comp;
+        -:  168:}
+        -:  169:
+function cpu_decompress_block called 0 returned 0% blocks executed 0%
+    #####:  170:int cpu_decompress_block(const uint8_t *in_buf, size_t in_len,
+        -:  171:                         uint8_t *out_buf, size_t out_len) {
+        -:  172:    (void)in_len;
+    #####:  173:    for (int j = 0; j < SGLZ_NCHUNKS; j++) {
+branch  0 never executed
+branch  1 never executed
+    #####:  174:        int chunk_off = j * SGLZ_CHUNK_SIZE;
+    #####:  175:        int chunk_out_len = (chunk_off + SGLZ_CHUNK_SIZE <= (int)out_len)
+        -:  176:                                ? SGLZ_CHUNK_SIZE
+    #####:  177:                                : (int)out_len - chunk_off;
+branch  0 never executed
+branch  1 never executed
+    #####:  178:        if (chunk_out_len <= 0) break;
+branch  0 never executed
+branch  1 never executed
+    #####:  179:        const uint8_t *slot = in_buf + j * SGLZ_SLOT_SIZE;
+    #####:  180:        sglz_decompress_chunk_cpu(slot, out_buf + chunk_off, chunk_out_len);
+call    0 never executed
+        -:  181:    }
+    #####:  182:    return 0;
+        -:  183:}
+        -:  184:
+        -:  185:/* ============================================================
+        -:  186: *  C-compatible public API
+        -:  187: * ============================================================ */
+        -:  188:
+function cpu_compress_init called 4 returned 100% blocks executed 100%
+        4:  189:int cpu_compress_init(void) {
+        -:  190:    /* CPU version needs no special init */
+        4:  191:    return 0;
+        -:  192:}
+        -:  193:
+function cpu_compress_fini called 9 returned 100% blocks executed 100%
+        9:  194:void cpu_compress_fini(void) {
+        -:  195:    /* nothing to clean up */
+        9:  196:}
+        -:  197:
+function cpu_compress_128k called 3 returned 100% blocks executed 100%
+        3:  198:int cpu_compress_128k(const uint8_t *in, uint8_t *out, size_t out_cap) {
+        3:  199:    return cpu_compress_block(in, out, out_cap);
+call    0 returned 3
+        -:  200:}
+        -:  201:
+function cpu_decompress_128k called 0 returned 0% blocks executed 0%
+    #####:  202:int cpu_decompress_128k(const uint8_t *in, size_t in_len, uint8_t *out, size_t out_len) {
+    #####:  203:    return cpu_decompress_block(in, in_len, out, out_len);
+call    0 never executed
+        -:  204:}
+        -:  205:
+function cpu_decompress_batch called 0 returned 0% blocks executed 0%
+    #####:  206:int cpu_decompress_batch(int n,
+        -:  207:                         const uint8_t **in_bufs, const size_t *in_lens,
+        -:  208:                         uint8_t **out_bufs, const size_t *out_lens) {
+    #####:  209:    for (int i = 0; i < n; i++) {
+branch  0 never executed
+branch  1 never executed
+    #####:  210:        cpu_decompress_block(in_bufs[i], in_lens[i], out_bufs[i], out_lens[i]);
+call    0 never executed
+        -:  211:    }
+    #####:  212:    return n;
+        -:  213:}
+        -:  214:
+        -:  215:/*
+        -:  216: * Compact-format batch decompress: each chunk is addressed via chunk_offsets
+        -:  217: * without requiring slot-layout padding. Input is still logically slot-formatted
+        -:  218: * (2-byte length prefix per chunk), just packed tightly.
+        -:  219: */
+function cpu_decompress_batch_compact called 1 returned 100% blocks executed 86%
+        1:  220:int cpu_decompress_batch_compact(int n,
+        -:  221:                                  const uint8_t *in_buf, size_t in_total_len,
+        -:  222:                                  const int *chunk_offsets,
+        -:  223:                                  uint8_t **out_bufs, const size_t *out_lens) {
+        -:  224:    (void)in_total_len;
+        2:  225:    for (int i = 0; i < n; i++) {
+branch  0 taken 1
+branch  1 taken 1 (fallthrough)
+       33:  226:        for (int j = 0; j < SGLZ_NCHUNKS; j++) {
+branch  0 taken 32
+branch  1 taken 1 (fallthrough)
+       32:  227:            int chunk_off = j * SGLZ_CHUNK_SIZE;
+       64:  228:            int chunk_out_len = (chunk_off + SGLZ_CHUNK_SIZE <= (int)out_lens[i])
+        -:  229:                                    ? SGLZ_CHUNK_SIZE
+      32*:  230:                                    : (int)out_lens[i] - chunk_off;
+branch  0 taken 0 (fallthrough)
+branch  1 taken 32
+      32*:  231:            if (chunk_out_len <= 0) break;
+branch  0 taken 0 (fallthrough)
+branch  1 taken 32
+       32:  232:            const uint8_t *slot = in_buf + chunk_offsets[i * SGLZ_NCHUNKS + j];
+       32:  233:            sglz_decompress_chunk_cpu(slot, out_bufs[i] + chunk_off, chunk_out_len);
+call    0 returned 32
+        -:  234:        }
+        -:  235:    }
+        1:  236:    return n;
+        -:  237:}
+        -:  238:
+        -:  239:/* ============================================================
+        -:  240: *  Async pipeline stubs (CPU backend: no real async, just deferred execution)
+        -:  241: * ============================================================ */
+        -:  242:
+        -:  243:typedef struct {
+        -:  244:    int valid;
+        -:  245:    int n;
+        -:  246:    uint8_t comp_buf[SGLZ_MAX_BATCH_BLOCKS * SGLZ_NCHUNKS * SGLZ_SLOT_SIZE];
+        -:  247:    int chunk_offsets[SGLZ_MAX_BATCH_BLOCKS * SGLZ_NCHUNKS];
+        -:  248:    size_t out_lens[SGLZ_MAX_BATCH_BLOCKS];
+        -:  249:} cpu_pending_t;
+        -:  250:
+        -:  251:static cpu_pending_t g_cpu_pending[2];
+        -:  252:
+function cpu_decompress_batch_compact_async called 1 returned 100% blocks executed 71%
+        1:  253:int cpu_decompress_batch_compact_async(int n,
+        -:  254:                                        const uint8_t *in_buf, size_t in_total_len,
+        -:  255:                                        const int *chunk_offsets,
+        -:  256:                                        const size_t *out_lens,
+        -:  257:                                        int stream_id) {
+       1*:  258:    if (stream_id < 0 || stream_id >= 2) return -1;
+branch  0 taken 1 (fallthrough)
+branch  1 taken 0
+branch  2 taken 0 (fallthrough)
+branch  3 taken 1
+        1:  259:    cpu_pending_t *p = &g_cpu_pending[stream_id];
+        1:  260:    p->valid = 1;
+        1:  261:    p->n = n;
+       1*:  262:    if (in_total_len > sizeof(p->comp_buf)) return -1;
+branch  0 taken 0 (fallthrough)
+branch  1 taken 1
+        1:  263:    memcpy(p->comp_buf, in_buf, in_total_len);
+        1:  264:    memcpy(p->chunk_offsets, chunk_offsets, n * SGLZ_NCHUNKS * sizeof(int));
+        1:  265:    memcpy(p->out_lens, out_lens, n * sizeof(size_t));
+        1:  266:    return n;
+        -:  267:}
+        -:  268:
+function cpu_decompress_batch_compact_wait called 1 returned 100% blocks executed 75%
+        1:  269:int cpu_decompress_batch_compact_wait(int stream_id, int n,
+        -:  270:                                       uint8_t **out_bufs, const size_t *out_lens) {
+        -:  271:    (void)n;
+       1*:  272:    if (stream_id < 0 || stream_id >= 2) return -1;
+branch  0 taken 1 (fallthrough)
+branch  1 taken 0
+branch  2 taken 0 (fallthrough)
+branch  3 taken 1
+        1:  273:    cpu_pending_t *p = &g_cpu_pending[stream_id];
+       1*:  274:    if (!p->valid) return -1;
+branch  0 taken 0 (fallthrough)
+branch  1 taken 1
+        1:  275:    int ret = cpu_decompress_batch_compact(p->n, p->comp_buf, 0,
+        1:  276:                                            p->chunk_offsets, out_bufs, p->out_lens);
+call    0 returned 1
+        1:  277:    p->valid = 0;
+        1:  278:    return ret;
+        -:  279:}

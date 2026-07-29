@@ -39,6 +39,26 @@
 #define SCAN_INTERVAL_SEC  60
 
 static volatile int g_running = 1;
+
+/* Deterministic fault hooks used only when explicitly enabled by tests. */
+static int daemon_fault_point(uint32_t processed_blocks) {
+    const char *pause_after = getenv("GPUC_FAULT_PAUSE_AFTER_BLOCKS");
+    if (pause_after && processed_blocks >= (uint32_t)strtoul(pause_after, NULL, 10)) {
+        unsigned seconds = 30;
+        const char *duration = getenv("GPUC_FAULT_PAUSE_SECONDS");
+        if (duration) seconds = (unsigned)strtoul(duration, NULL, 10);
+        sleep(seconds ? seconds : 1);
+    }
+    const char *enospc_after = getenv("GPUC_FAULT_ENOSPC_AFTER_BLOCKS");
+    if (enospc_after &&
+        processed_blocks >= (uint32_t)strtoul(enospc_after, NULL, 10)) {
+        errno = ENOSPC;
+        fprintf(stderr, "[daemon] injected ENOSPC after %u blocks\n",
+                processed_blocks);
+        return -1;
+    }
+    return 0;
+}
 static int g_use_lz4 = 0;
 
 static int copy_fd_xattrs(int srcfd, int dstfd) {
@@ -492,6 +512,14 @@ static int compress_one_file(const char *path) {
         }
 
         i = batch_end;
+        if (daemon_fault_point(i) != 0) {
+            for (uint32_t b = 0; b < BATCH_SIZE; b++) {
+                free(batch_in[b]); free(batch_out[b]);
+            }
+            free(batch_in); free(batch_out);
+            free(batch_in_lens); free(batch_out_caps); free(batch_out_lens);
+            goto fail;
+        }
     }
 
     for (uint32_t b = 0; b < BATCH_SIZE; b++) {

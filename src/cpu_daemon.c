@@ -42,6 +42,26 @@ int cpu_compress_128k(const uint8_t *in, uint8_t *out, size_t out_cap);
 
 static volatile int g_running = 1;
 
+/* Deterministic fault hooks used only when explicitly enabled by tests. */
+static int daemon_fault_point(uint32_t processed_blocks) {
+    const char *pause_after = getenv("GPUC_FAULT_PAUSE_AFTER_BLOCKS");
+    if (pause_after && processed_blocks >= (uint32_t)strtoul(pause_after, NULL, 10)) {
+        unsigned seconds = 30;
+        const char *duration = getenv("GPUC_FAULT_PAUSE_SECONDS");
+        if (duration) seconds = (unsigned)strtoul(duration, NULL, 10);
+        sleep(seconds ? seconds : 1);
+    }
+    const char *enospc_after = getenv("GPUC_FAULT_ENOSPC_AFTER_BLOCKS");
+    if (enospc_after &&
+        processed_blocks >= (uint32_t)strtoul(enospc_after, NULL, 10)) {
+        errno = ENOSPC;
+        fprintf(stderr, "[cpu_daemon] injected ENOSPC after %u blocks\n",
+                processed_blocks);
+        return -1;
+    }
+    return 0;
+}
+
 static int copy_fd_xattrs(int srcfd, int dstfd) {
     ssize_t names_len = flistxattr(srcfd, NULL, 0);
     if (names_len <= 0) return names_len < 0 && errno != ENOTSUP ? -1 : 0;
@@ -266,6 +286,7 @@ static int compress_one_file(const char *path) {
         }
         phys_off = next_phys_off;
         src_data_off += to_read;
+        if (daemon_fault_point(i + 1) != 0) goto fail;
     }
 
     /* 回填块索引表 */
