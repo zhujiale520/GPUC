@@ -121,7 +121,9 @@ __attribute__((weak)) void gpu_tls_free_pinned(void *ptr) {
 /* nvCOMP LZ4 has substantially higher launch overhead than the custom SGLZ
  * kernel. Keep its sequential read-ahead batch independent from the SGLZ
  * tuning result. */
-#define LZ4_BATCH_BLOCKS 4
+#ifndef LZ4_BATCH_BLOCKS
+#define LZ4_BATCH_BLOCKS 32
+#endif
 #define TLS_BATCH_CAPACITY LZ4_BATCH_BLOCKS
 
 /* ============================================================
@@ -317,6 +319,8 @@ typedef struct {
     off64_t phys_size;    /* 物理文件大小 */
     /* read-ahead cache */
     uint8_t *ra_buf;
+    size_t ra_capacity;
+    int ra_buf_pinned;
     off64_t ra_start_offset;
     size_t ra_valid_len;
     int ra_active;
@@ -339,7 +343,8 @@ static void release_fd_info_locked(fd_info_t *info) {
     if (!info) return;
     if (--info->refcount > 0) return;
     free(info->blocks);
-    free(info->ra_buf);
+    if (info->ra_buf_pinned) gpu_tls_free_pinned(info->ra_buf);
+    else free(info->ra_buf);
     free(info->cache_buf);
     free(info);
 }
@@ -440,7 +445,9 @@ static int read_header(int fd, fd_info_t *info) {
     if (hdr.state == GPUC_STATE_COMPRESSED && hdr.num_blocks > 0) {
         /* 根据 header_size 推断 entry 大小，兼容旧格式（16字节）和新格式（24字节） */
         size_t entry_size = 0;
-        if (hdr.header_size > sizeof(hdr) && hdr.num_blocks > 0) {
+        if (hdr.reserved & GPUC_HEADER_FLAG_DIRECT_ALIGNED) {
+            entry_size = sizeof(struct gpuc_block_entry);
+        } else if (hdr.header_size > sizeof(hdr) && hdr.num_blocks > 0) {
             entry_size = (hdr.header_size - sizeof(hdr)) / hdr.num_blocks;
         }
         if (entry_size != 16 && entry_size != 24) {
@@ -476,6 +483,7 @@ static int read_header(int fd, fd_info_t *info) {
             dst->offset   = *(uint64_t *)(src + 8);
             if (entry_size >= 24) {
                 dst->crc32 = *(uint32_t *)(src + 16);
+                dst->reserved = *(uint32_t *)(src + 20);
             }
             if (dst->orig_len == 0 || dst->orig_len > GPUC_BLOCK_SIZE ||
                 dst->comp_len == 0 ||
@@ -483,6 +491,19 @@ static int read_header(int fd, fd_info_t *info) {
                 dst->offset < hdr.header_size ||
                 dst->offset > (uint64_t)phys_size ||
                 dst->comp_len > (uint64_t)phys_size - dst->offset) {
+                free(block_buf);
+                free(info->blocks);
+                info->blocks = NULL;
+                errno = EINVAL;
+                return -1;
+            }
+            if ((hdr.reserved & GPUC_HEADER_FLAG_DIRECT_ALIGNED) &&
+                ((hdr.header_size % GPUC_IO_ALIGNMENT) != 0 ||
+                 (dst->offset % GPUC_IO_ALIGNMENT) != 0 ||
+                 dst->reserved < dst->comp_len ||
+                 dst->reserved > GPUC_BLOCK_SIZE ||
+                 (dst->reserved % GPUC_IO_ALIGNMENT) != 0 ||
+                 dst->reserved > (uint64_t)phys_size - dst->offset)) {
                 free(block_buf);
                 free(info->blocks);
                 info->blocks = NULL;
@@ -515,23 +536,29 @@ static int probe_header(int fd, fd_info_t *info) {
 static int normalize_managed_fd_flags(int fd, fd_info_t *info) {
     int flags = fcntl(fd, F_GETFL);
     if (flags < 0) return -1;
-    /*
-     * GPUC's 56-byte RAW header and compact compressed block offsets are not
-     * O_DIRECT aligned. Clear it for managed descriptors and expose this
-     * limitation explicitly in experiments instead of silently reading the
-     * physical format as if it were logical data.
-     */
-    if (flags & O_DIRECT) {
+    int direct_aligned =
+        info->hdr.state == GPUC_STATE_COMPRESSED &&
+        (info->hdr.reserved & GPUC_HEADER_FLAG_DIRECT_ALIGNED);
+    if ((flags & O_DIRECT) && !direct_aligned) {
         if (fcntl(fd, F_SETFL, flags & ~O_DIRECT) != 0) return -1;
         info->open_flags &= ~O_DIRECT;
     }
     return 0;
 }
 
+static size_t physical_block_read_len(const fd_info_t *info,
+                                      const struct gpuc_block_entry *be) {
+    if ((info->open_flags & O_DIRECT) &&
+        (info->hdr.reserved & GPUC_HEADER_FLAG_DIRECT_ALIGNED))
+        return be->reserved;
+    return be->comp_len;
+}
+
 static void discard_unregistered_fd_info(fd_info_t *info) {
     if (!info) return;
     free(info->blocks);
-    free(info->ra_buf);
+    if (info->ra_buf_pinned) gpu_tls_free_pinned(info->ra_buf);
+    else free(info->ra_buf);
     free(info->cache_buf);
     free(info);
 }
@@ -644,6 +671,23 @@ static int ensure_batch_tls_buffers(void) {
         g_tls_batch_out_lens = (size_t *)malloc(TLS_BATCH_CAPACITY * sizeof(size_t));
         if (!g_tls_batch_out_lens) return -1;
     }
+    return 0;
+}
+
+static int ensure_readahead_buffer(fd_info_t *info, size_t size) {
+    if (info->ra_buf && info->ra_capacity >= size) return 0;
+    if (info->ra_buf_pinned) gpu_tls_free_pinned(info->ra_buf);
+    else free(info->ra_buf);
+    info->ra_buf = NULL;
+    info->ra_capacity = 0;
+    info->ra_buf_pinned = 0;
+    if (gpu_tls_alloc_pinned((void **)&info->ra_buf, size) == 0) {
+        info->ra_buf_pinned = 1;
+    } else {
+        info->ra_buf = (uint8_t *)malloc(size);
+    }
+    if (!info->ra_buf) return -1;
+    info->ra_capacity = size;
     return 0;
 }
 
@@ -1019,10 +1063,8 @@ static ssize_t read_compressed(int fd, fd_info_t *info, void *buf, size_t count)
             }
 
             if (g_tls_pipe_nblocks[prev] > g_tls_pipe_user_nblocks[prev] && count == 0) {
-                if (!info->ra_buf) {
-                    info->ra_buf = (uint8_t *)malloc(MAX_BATCH_BLOCKS * GPUC_BLOCK_SIZE);
-                }
-                if (info->ra_buf) {
+                if (ensure_readahead_buffer(
+                        info, MAX_BATCH_BLOCKS * GPUC_BLOCK_SIZE) == 0) {
                     size_t ra_len = 0;
                     for (int i = g_tls_pipe_user_nblocks[prev]; i < g_tls_pipe_nblocks[prev]; i++) {
                         uint32_t bid = g_tls_pipe_first_block[prev] + i;
@@ -1079,7 +1121,8 @@ static ssize_t read_compressed(int fd, fd_info_t *info, void *buf, size_t count)
                     ? g_tls_pipe_decomp_bufs[pipe_id] + i * GPUC_BLOCK_SIZE
                     : g_tls_iouring_raw_bufs[pipe_id] + i * GPUC_BLOCK_SIZE;
                 iouring_bufs[i] = read_buf;
-                if (gpuc_iouring_submit_pread(fd, read_buf, be->comp_len,
+                if (gpuc_iouring_submit_pread(
+                        fd, read_buf, physical_block_read_len(info, be),
                                              (off64_t)be->offset) < 0) {
                     use_iouring = 0;
                     break;
@@ -1096,7 +1139,9 @@ static ssize_t read_compressed(int fd, fd_info_t *info, void *buf, size_t count)
                     for (int i = 0; i < decompress_nblocks; i++) {
                         uint32_t bid = first_block + i;
                         struct gpuc_block_entry *be = &info->blocks[bid];
-                        if (iouring_results[i] < 0 || (size_t)iouring_results[i] != be->comp_len) {
+                        if (iouring_results[i] < 0 ||
+                            (size_t)iouring_results[i] !=
+                                physical_block_read_len(info, be)) {
                             fprintf(stderr, "[HOOK] io_uring read failed at block %u: %d\n",
                                     bid, iouring_results[i]);
                             use_iouring = 0;
@@ -1111,12 +1156,13 @@ static ssize_t read_compressed(int fd, fd_info_t *info, void *buf, size_t count)
         for (int i = 0; i < decompress_nblocks; i++) {
             uint32_t bid = first_block + i;
             struct gpuc_block_entry *be = &info->blocks[bid];
+            size_t read_len = physical_block_read_len(info, be);
 
             if (be->comp_len == be->orig_len) {
                 if (!use_iouring) {
                     ssize_t nr = real_pread64(fd, g_tls_pipe_decomp_bufs[pipe_id] + i * GPUC_BLOCK_SIZE,
-                                              be->comp_len, (off64_t)be->offset);
-                    if (nr != (ssize_t)be->comp_len) {
+                                              read_len, (off64_t)be->offset);
+                    if (nr != (ssize_t)read_len) {
                         return (total_read > 0) ? (ssize_t)total_read : -1;
                     }
                 }
@@ -1128,8 +1174,8 @@ static ssize_t read_compressed(int fd, fd_info_t *info, void *buf, size_t count)
                 : g_tls_comp_buf;
 
             if (!use_iouring) {
-                ssize_t nr = real_pread64(fd, raw_buf, be->comp_len, (off64_t)be->offset);
-                if (nr != (ssize_t)be->comp_len) {
+                ssize_t nr = real_pread64(fd, raw_buf, read_len, (off64_t)be->offset);
+                if (nr != (ssize_t)read_len) {
                     return (total_read > 0) ? (ssize_t)total_read : -1;
                 }
             }
@@ -1202,10 +1248,8 @@ static ssize_t read_compressed(int fd, fd_info_t *info, void *buf, size_t count)
             total_read += to_copy;
         }
         if (g_tls_pipe_nblocks[last] > g_tls_pipe_user_nblocks[last]) {
-            if (!info->ra_buf) {
-                info->ra_buf = (uint8_t *)malloc(MAX_BATCH_BLOCKS * GPUC_BLOCK_SIZE);
-            }
-            if (info->ra_buf) {
+            if (ensure_readahead_buffer(
+                    info, MAX_BATCH_BLOCKS * GPUC_BLOCK_SIZE) == 0) {
                 size_t ra_len = 0;
                 for (int i = g_tls_pipe_user_nblocks[last]; i < g_tls_pipe_nblocks[last]; i++) {
                     uint32_t bid = g_tls_pipe_first_block[last] + i;
@@ -1257,12 +1301,10 @@ static int fill_lz4_readahead(int fd, fd_info_t *info, uint32_t first_block,
         errno = ENOMEM;
         return -1;
     }
-    if (!info->ra_buf) {
-        info->ra_buf = (uint8_t *)malloc(LZ4_BATCH_BLOCKS * GPUC_BLOCK_SIZE);
-        if (!info->ra_buf) {
-            errno = ENOMEM;
-            return -1;
-        }
+    if (ensure_readahead_buffer(
+            info, LZ4_BATCH_BLOCKS * GPUC_BLOCK_SIZE) != 0) {
+        errno = ENOMEM;
+        return -1;
     }
 
     uint32_t remaining = info->hdr.num_blocks - first_block;
@@ -1274,13 +1316,14 @@ static int fill_lz4_readahead(int fd, fd_info_t *info, uint32_t first_block,
     for (int i = 0; i < nblocks; i++) {
         struct gpuc_block_entry *be = &info->blocks[first_block + (uint32_t)i];
         uint8_t *out = info->ra_buf + logical_len;
+        size_t read_len = physical_block_read_len(info, be);
         if (be->comp_len == be->orig_len) {
-            ssize_t nr = real_pread64(fd, out, be->comp_len, (off64_t)be->offset);
-            if (nr != (ssize_t)be->comp_len) return -1;
+            ssize_t nr = real_pread64(fd, out, read_len, (off64_t)be->offset);
+            if (nr != (ssize_t)read_len) return -1;
         } else {
             uint8_t *in = g_tls_batch_comp_bufs + (size_t)ncompressed * input_stride;
-            ssize_t nr = real_pread64(fd, in, be->comp_len, (off64_t)be->offset);
-            if (nr != (ssize_t)be->comp_len) return -1;
+            ssize_t nr = real_pread64(fd, in, read_len, (off64_t)be->offset);
+            if (nr != (ssize_t)read_len) return -1;
             g_tls_batch_in_ptrs[ncompressed] = in;
             g_tls_batch_in_lens[ncompressed] = be->comp_len;
             g_tls_batch_out_ptrs[ncompressed] = out;
@@ -1511,7 +1554,8 @@ static ssize_t read_compressed_at(int fd, fd_info_t *info, void *buf, size_t cou
                     ? g_tls_pipe_decomp_bufs[pipe_id] + i * GPUC_BLOCK_SIZE
                     : g_tls_iouring_raw_bufs[pipe_id] + i * GPUC_BLOCK_SIZE;
                 iouring_bufs[i] = read_buf;
-                if (gpuc_iouring_submit_pread(fd, read_buf, be->comp_len,
+                if (gpuc_iouring_submit_pread(
+                        fd, read_buf, physical_block_read_len(info, be),
                                              (off64_t)be->offset) < 0) {
                     use_iouring = 0;
                     break;
@@ -1528,7 +1572,9 @@ static ssize_t read_compressed_at(int fd, fd_info_t *info, void *buf, size_t cou
                     for (int i = 0; i < nblocks; i++) {
                         uint32_t bid = first_block + i;
                         struct gpuc_block_entry *be = &info->blocks[bid];
-                        if (iouring_results[i] < 0 || (size_t)iouring_results[i] != be->comp_len) {
+                        if (iouring_results[i] < 0 ||
+                            (size_t)iouring_results[i] !=
+                                physical_block_read_len(info, be)) {
                             fprintf(stderr, "[HOOK] io_uring read failed at block %u: %d\n",
                                     bid, iouring_results[i]);
                             use_iouring = 0;
@@ -1543,12 +1589,13 @@ static ssize_t read_compressed_at(int fd, fd_info_t *info, void *buf, size_t cou
         for (int i = 0; i < nblocks; i++) {
             uint32_t bid = first_block + i;
             struct gpuc_block_entry *be = &info->blocks[bid];
+            size_t read_len = physical_block_read_len(info, be);
 
             if (be->comp_len == be->orig_len) {
                 if (!use_iouring) {
                     ssize_t nr = real_pread64(fd, g_tls_pipe_decomp_bufs[pipe_id] + i * GPUC_BLOCK_SIZE,
-                                              be->comp_len, (off64_t)be->offset);
-                    if (nr != (ssize_t)be->comp_len) {
+                                              read_len, (off64_t)be->offset);
+                    if (nr != (ssize_t)read_len) {
                         return (total_read > 0) ? (ssize_t)total_read : -1;
                     }
                 }
@@ -1560,8 +1607,8 @@ static ssize_t read_compressed_at(int fd, fd_info_t *info, void *buf, size_t cou
                 : g_tls_comp_buf;
 
             if (!use_iouring) {
-                ssize_t nr = real_pread64(fd, raw_buf, be->comp_len, (off64_t)be->offset);
-                if (nr != (ssize_t)be->comp_len) {
+                ssize_t nr = real_pread64(fd, raw_buf, read_len, (off64_t)be->offset);
+                if (nr != (ssize_t)read_len) {
                     return (total_read > 0) ? (ssize_t)total_read : -1;
                 }
             }

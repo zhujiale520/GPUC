@@ -2,7 +2,8 @@
 
 > 更新日期：2026-07-29
 > 本报告只采用 `results/final/` 中可复核的结果。此前报告中的 jobs=32
-> “99.8%”、混合缓存口径、伪 O_DIRECT 和未重复实验均已撤下。
+> “99.8%”、混合缓存口径和未重复实验均已撤下；2026-07-29 已完成对齐格式，
+> 新的 O_DIRECT 结果与旧的伪 O_DIRECT 结果严格区分。
 
 ## 1. 项目与实验问题
 
@@ -11,12 +12,14 @@ GPUC 使用 `LD_PRELOAD` 拦截一组 libc 文件接口，在 RAW 文件关闭�
 接口访问普通文件的程序，不覆盖静态链接、直接 syscall、应用自行提交的 io_uring
 或任意内核文件路径。
 
-本轮实验回答四个问题：
+本轮实验回答六个问题：
 
 1. 文件语义和并发替换是否正确；
 2. warm/cold cache 下真实吞吐如何；
 3. read-ahead、batch、pinned memory 等优化是否有贡献；
-4. GPU 解压是否真正释放 CPU 并提高并行业务吞吐。
+4. 长期 GPU worker 是否能释放 CPU 并提高并行业务吞吐；
+5. SQLite 真实业务的 QPS 和尾延迟是否受益；
+6. 对齐压缩格式能否保留真正的 `O_DIRECT`。
 
 ## 2. 环境与方法
 
@@ -29,8 +32,9 @@ GPUC 使用 `LD_PRELOAD` 拦截一组 libc 文件接口，在 RAW 文件关闭�
 - warm-cache 在计时前完整逻辑预读；cold-cache 在底层 inode 上执行
   `POSIX_FADV_DONTNEED` 后只读一遍。
 
-GPUC 紧凑格式的 56 字节头和压缩块 offset 不满足真正 O_DIRECT 的对齐要求。
-Hook 对已识别的 GPUC 文件显式清除 `O_DIRECT`，因此不报告 O_DIRECT 性能。
+新版 COMPRESSED 格式把 header、每个 block offset 和物理读取跨度对齐到
+4 KiB，并在 block entry 中记录 padded span。旧格式仍兼容，但 Hook 只对新版
+对齐格式保留 `O_DIRECT`，对 RAW、INLINE 和旧 COMPRESSED 格式清除该标志。
 
 原始数据、fio JSON、环境与脚本索引见
 [`../results/final/README.md`](../results/final/README.md)。
@@ -49,6 +53,9 @@ Hook 对已识别的 GPUC 文件显式清除 `O_DIRECT`，因此不报告 O_DIRE
 - 损坏 header、block table、非法 offset 和超大字段在 open 时拒绝；
 - io_uring 全局 ring 的提交/完成队列加事务锁，并按 `user_data` 归属 CQE；
 - CUDA stream 池扩为 64，覆盖 32 个双流水线线程，避免 stream 重用覆盖；
+- nvCOMP LZ4 改为长期 worker、持久化 CUDA stream/event/device buffer 和
+  pinned host buffer，不再每次请求 `cudaMalloc/cudaFree`；
+- 对齐格式的 `O_DIRECT` 标志保留、混合压缩/RAW block 和逻辑内容校验通过；
 - ASan/UBSan CPU Hook、shell 语法和 Markdown 本地链接检查通过。
 
 mmap 当前方案是在 `mmap()` 返回前同步准备完整逻辑映射，保证立即访问任意页正确；
@@ -109,13 +116,20 @@ SGLZ 默认批大小由 16 调整为 4；4 之后没有显著收益，并可降�
 
 | 路径 | allocated bytes | 占原始比例 | warm mean MiB/s |
 |---|---:|---:|---:|
-| Baseline | 37,703,680 | 100.0% | 9666.0 ± 22.2 |
-| Hook RAW | 37,707,776 | 100.0% | 10519.2 ± 207.7 |
-| SGLZ | 30,851,072 | 81.8% | 107.8 ± 0.3 |
-| nvCOMP LZ4 | 14,356,480 | 38.1% | 81.0 ± 0.1 |
+| Baseline | 37,703,680 | 100.0% | 11000.2 ± 49.4 |
+| Hook RAW | 37,707,776 | 100.0% | 14476.8 ± 199.8 |
+| SGLZ | 30,851,072 | 81.8% | 44.2 ± 1.8 |
+| nvCOMP LZ4 | 14,356,480 | 38.1% | 178.6 ± 14.6 |
 
-LZ4 读路径由逐块同步改为 4 块 batch 后，从修复前诊断值 29.4 提升到
-81.0 MiB/s，但仍慢于 SGLZ。LZ4 的优势目前是空间，不是读取速度。
+LZ4 读路径在长期 worker、持久化 buffer 和 32-block read-ahead 后，由上一轮
+正式值 81.0 提升到 178.6 MiB/s，约为 2.21 倍。该提升不能拆分归因给单一优化。
+SGLZ 本轮只有 44.2 MiB/s，说明不同后端的同步策略仍需继续剖析。两种压缩读取
+都远慢于 warm Baseline，因此文件读取主结论仍为负。
+
+独立内存微基准中，GPU nvCOMP LZ4 为 5456.1 ±87.7 MiB/s，CPU liblz4 为
+10900.6 ±399.4 MiB/s；4 个 caller 并发提交的数据一致性也通过。持久 worker
+已显著降低 GPU 路径开销，但没有使 GPU 绝对吞吐超过此 Xeon CPU；固定
+4096 MiB/s 的业务实验仍低于两者能力上限。
 
 ### 4.6 可压缩率梯度
 
@@ -132,22 +146,60 @@ LZ4 读路径由逐块同步改为 4 块 batch 后，从修复前诊断值 29.4 
 0% 数据被 85% 阈值正确保留为 RAW。格式 `stat` 长度包含稀疏区，空间结论必须
 使用 allocated bytes。
 
-### 4.7 CPU 业务与 GPU 卸载
+### 4.7 同吞吐 CPU 卸载
 
-| 业务线程 | CPU LZ4 保留业务吞吐 | GPU LZ4 保留业务吞吐 | CPU/GPU 解压 MiB/s |
-|---:|---:|---:|---:|
-| 4 | 87.5% | 87.1% | 8950 / 2074 |
-| 1 | 50.1% | 48.6% | 10374 / 2093 |
+为避免“CPU 路径处理得更多所以占 CPU 更多”的混淆，CPU 与 GPU 都限速到约
+4096 MiB/s、运行 5 秒并重复 5 次。
 
-当前同步 GPU API 没有提高业务吞吐，GPU 提交线程仍占用共享核心。因而“GPU
-卸载释放 CPU”不是已证明贡献。后续需要独立服务进程、持久化 nvCOMP device
-内存池和真正异步完成通知，再重新验证。
+| 场景 | CPU LZ4 | GPU LZ4 | 解释 |
+|---|---:|---:|---|
+| 解压与业务争用 core 0：业务保留率 | 89.85% | **97.17%** | GPU 比 CPU 多保留 7.32 个百分点 |
+| 解压隔离到 core 4：额外主机 CPU core | 0.566 | **0.403** | GPU 主机 CPU 成本低约 28.8% |
+| 隔离场景最大 RSS | 148260.8 KiB | 150420.8 KiB | GPU 多约 2.1 MiB，不是 DRAM 容量节省 |
 
-4 workers 场景中，GPU 板卡平均功耗约 45.2 W，解压约 2074 MiB/s，对应约
-22.3 J/GiB 的板卡总能耗；相对 idle 44.1 W 的增量约 0.55 J/GiB。该值不包含
-CPU/整机功耗，不能与 CPU LZ4 做完整能效结论。
+这组结果证明的是：在固定约 4 GiB/s 的 LZ4 任务下，长期 GPU worker 可减少主机
+CPU 时间，并在共享核心争用时保护更多业务吞吐。它不证明 GPU 的绝对解压吞吐
+超过 CPU，也不证明主机 DRAM 容量下降。
 
-### 4.8 压缩成本与 break-even
+GPU 单请求平均分段为 queue 0.019 ms、pack 0.003 ms、H2D 0.560 ms、
+kernel 0.143 ms、D2H 1.451 ms、unpack 0.001 ms，总计 2.423 ms。D2H 是当前
+最大阶段，说明下一轮应优先减少返回拷贝和同步，而不是继续只优化 kernel。
+
+### 4.8 SQLite 真实业务
+
+SQLite 采用 100000 行、每行 512 B payload、只读 indexed range aggregate
+（span=1024），4 个进程固定核心；解压任务仍固定约 4096 MiB/s，并与 CPU/GPU
+worker 在 core 0 公平争用。
+
+| 场景 | QPS mean | 相对 baseline | p99 mean |
+|---|---:|---:|---:|
+| 无解压 | 20093 | 100.0% | 278.9 μs |
+| CPU LZ4 | 19131 | 95.2% | 1158.3 μs |
+| GPU LZ4 | **20523** | **102.1%** | **573.0 μs** |
+
+GPU 相对 CPU 路径 QPS 高约 7.3%，p99 低约 50.5%。但 GPU p99 仍约为无解压
+baseline 的 2.05 倍，且 baseline 与 GPU 的小幅 QPS差异不能外推为数据库加速；
+可支持的结论是 GPU offload 显著减轻了 CPU 解压造成的业务干扰。
+
+### 4.9 O_DIRECT 与设备边界
+
+512 MiB、128 KiB、15 秒的 fio 实验中，测试程序确认 `F_GETFL` 仍含
+`O_DIRECT`，header 与 block span 均满足 4 KiB 对齐，逻辑内容校验通过；
+fio 错误数为 0，读取为 62.9 MiB/s。
+
+该结果运行在项目盘 `/dev/sda2`（ext4、SATA SSD）。机器虽存在
+`nvme0n1`（Fanxiang S500Pro 1TB），但设备未挂载且当前会话无挂载权限，因而
+不能把 62.9 MiB/s 写成 NVMe 性能。
+
+### 4.10 主机内存与性能计数器边界
+
+统一 CSV 已包含 CPU time、RSS、page fault、context switch、GPU utilization、
+power 和 GPU pipeline 分段。当前系统的 `/usr/bin/perf` 缺少 5.15.0 对应工具，
+`perf_event_paranoid=2`，未安装 Intel PCM 且无提权权限，因此没有可靠的 IMC
+DRAM bandwidth 或 LLC miss 数据。报告明确保留这一缺口，不用 PCIe copy bytes、
+磁盘压缩率或 RSS 冒充 DRAM 带宽。
+
+### 4.11 压缩成本与 break-even
 
 `results/final/break_even.csv` 对 cold-cache、Linux headers 和 25–100%
 可压缩率梯度逐项比较实测读取吞吐。所有 COMPRESSED 路径都慢于对应 Baseline；
@@ -162,25 +214,29 @@ CPU/整机功耗，不能与 CPU LZ4 做完整能效结论。
 可以陈述：
 
 - 已完成文件语义、损坏格式和 daemon 原子替换的系统性修复；
+- 固定 4 GiB/s 下，GPU 路径较 CPU 路径减少约 28.8% 的额外主机 CPU 成本；
+- CPU 争用场景中 GPU 保留 97.17% 业务吞吐，CPU 为 89.85%；
+- SQLite 并行场景中 GPU 相对 CPU 路径 QPS 高约 7.3%、p99 低约 50.5%；
+- 新版对齐压缩格式已通过真正 `O_DIRECT` 的标志、正确性和 fio 验证；
 - SGLZ 在 1→16 线程有约 2 倍扩展，但 32 线程饱和；
 - batch/read-ahead 各带来约 11% 单线程提升，最优批大小约 4；
-- LZ4 将文本样例空间占用降至约 38%，但当前读吞吐低于 SGLZ；
+- LZ4 将文本样例空间占用降至约 38%，新版读路径约为旧正式值的 2.21 倍；
 - 不可压缩数据能回退 RAW，避免无收益压缩。
 
 不能陈述：
 
 - 顺序读普遍快于 Baseline；
-- 当前版本已经释放 CPU 并提高业务吞吐；
-- 支持真正 O_DIRECT；
+- GPU 绝对解压吞吐高于 CPU，或压缩文件读快于 Baseline；
+- 已测得 DRAM bandwidth/LLC miss，或 GPU 减少了主机 DRAM 容量；
+- 已完成 NVMe 性能验证；
 - mmap 是按访问页解压；
 - 对任意应用完全透明，或已达到生产级。
 
 ## 6. 下一步
 
-1. 为 nvCOMP LZ4 建持久化 device/host buffer pool，去掉每批
-   `cudaMalloc/cudaFree`；
-2. 将 GPU 解压迁到独立服务进程或长生命周期 worker，应用线程异步等待完成；
-3. 实现 userfaultfd mmap 按需页解压；
-4. 在有来源、版本和 SHA-256 的公开日志/模型数据集上补真实 workload；
-5. 若要支持 O_DIRECT，重新设计对齐 header、block offset 和 padded length；
+1. 在可挂载的独占 NVMe 上复跑 direct I/O，补队列深度、IOPS 与 p99；
+2. 安装匹配内核的 perf/Intel PCM，补 DRAM bandwidth、LLC miss；
+3. 减少 GPU D2H 返回拷贝和上下文切换，继续优化文件读路径；
+4. 实现 userfaultfd mmap 按需页解压；
+5. 在公开、可下载的数据集上扩展真实 workload；
 6. 在独立 btrfs 压缩卷验证 zstd 生效后，才恢复文件系统压缩对比。

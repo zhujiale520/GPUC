@@ -27,7 +27,9 @@ rows.append(("cold_cache", "sglz", cold["baseline"], cold["gpu_compressed"]))
 
 backends = {
     r["scenario"]: float(r["mean_mib_s"])
-    for r in read_summary(FINAL / "backends_v100_20260729" / "summary.csv")
+    for r in read_summary(
+        FINAL / "backends_worker_batch32_v100_20260729" / "summary.csv"
+    )
 }
 rows.extend(
     [
@@ -54,7 +56,7 @@ for ratio in (25, 50, 75, 100):
 
 out_path = FINAL / "break_even.csv"
 with out_path.open("w", newline="") as f:
-    out = csv.writer(f)
+    out = csv.writer(f, lineterminator="\n")
     out.writerow(
         [
             "workload",

@@ -35,7 +35,8 @@ src/
 
 - **自描述**：每个被管理文件头部附加固定大小 header，包含魔数、版本、状态、压缩算法、原始大小等信息；
 - **固定块大小**：128 KB 分块，便于 GPU 并行处理；
-- **向后兼容**：旧版 16 B block entry（无 CRC32）仍可通过 `header_size` 自动识别。
+- **向后兼容**：旧版 16 B block entry（无 CRC32）仍可识别；新版对齐格式通过
+  header flag 区分，避免把 4 KiB padding 误判为 entry 大小。
 
 ### 2.2 Header 结构
 
@@ -48,7 +49,7 @@ struct gpuc_header {
     uint32_t num_blocks;     // 总块数
     uint8_t  state;          // RAW / COMPRESSED / BUSY / INLINE
     uint8_t  comp_algo;      // NONE / SGLZ / LZ4 / Snappy
-    uint16_t reserved;       // 对齐填充
+    uint16_t reserved;       // 格式 flag；bit0 表示 direct-aligned
     uint64_t header_size;    // 头 + 索引表总大小
     uint64_t mtime;          // 修改时间
     uint64_t ctime;          // 创建时间
@@ -65,11 +66,15 @@ struct gpuc_block_entry {
     uint32_t comp_len;       // 压缩后长度
     uint64_t offset;         // 该块在文件中的物理偏移
     uint32_t crc32;          // 数据校验
-    uint32_t reserved;       // 对齐预留
+    uint32_t reserved;       // 新格式中为 padded physical span
 };
 ```
 
-每个 entry 24 字节，向后兼容 16 字节旧版本：Hook 读取时根据 `header_size` 与 `num_blocks` 的比值判断 entry 大小。
+每个 entry 24 字节。新版 COMPRESSED 格式设置
+`GPUC_HEADER_FLAG_DIRECT_ALIGNED`，header 向上对齐到 4 KiB，每块 offset 和
+`reserved` 记录的物理读取跨度也满足 4 KiB 对齐；当前跨度为 128 KiB。Hook
+据 flag 固定按 24 字节读取 entry。没有该 flag 的旧格式继续根据
+`header_size/num_blocks` 兼容 16/24 字节 entry。
 
 ### 2.4 文件状态机
 
@@ -181,6 +186,11 @@ CPU-only 构建产物。
    - CRC32 校验（可通过 `-DGPUC_NO_VERIFY_CRC` 关闭）；
    - 拷贝请求范围到用户 buf。
 
+对以 `O_DIRECT` 打开的新版对齐文件，物理层按 entry 的 padded span 读取，再仅将
+`comp_len` 交给解压器。这样用户缓冲、offset 和读取长度同时满足 direct I/O
+约束。旧 COMPRESSED、RAW 和 INLINE 文件不具备该布局，Hook 会清除
+`O_DIRECT`，避免产生“命令写了 direct=1、实际却是 buffered I/O”的伪结果。
+
 #### 多 CUDA Stream
 
 - `SGLZ_NUM_STREAMS = 16`；
@@ -259,7 +269,10 @@ main()
 
 ### 4.4 稀疏对齐
 
-压缩后的 block 物理紧凑存放，但逻辑上仍占 128 KB。Daemon 通过 `lseek` 制造稀疏文件空洞，使文件逻辑大小保持不变，同时物理空间最小化。
+新版 header 向上对齐到 4 KiB；每个 block 从 4 KiB 对齐 offset 开始，占用一个
+128 KiB 的稀疏物理 span。压缩 payload 放在 span 开头，其余区域通过 `lseek`
+形成空洞。该布局使 O_DIRECT 的物理读取长度也保持对齐，同时 allocated bytes
+仍主要由实际 payload 决定。
 
 ### 4.5 CPU Daemon
 
@@ -346,6 +359,14 @@ int sglz_decompress_batch_compact_wait(int stream_id, int n, ...);
 
 - 每个 128 KB block 作为一个独立 chunk；
 - 输出格式：`[1B flag][payload]`，`flag=0` 表示未压缩存储，`flag=1` 表示 LZ4 payload；
+- 前端线程通过请求队列提交到进程内长期 worker；
+- worker 持有 CUDA stream、event、device buffers、metadata 和 pinned host
+  buffers，不在每个请求中反复 `cudaMalloc/cudaFree`；
+- 默认使用 `cudaDeviceScheduleBlockingSync`，可用
+  `GPUC_CUDA_SPIN_WAIT=1` 恢复 busy-spin 做诊断；
+- `GPUC_WORKER_CPU` 可固定 worker 核心，用于公平的 CPU/GPU 争用实验；
+- `gpu_lz4_get_last_profile()` 返回 queue、pack、H2D、kernel、D2H、unpack、
+  total 和 worker CPU 时间；
 - 提供与 SGLZ 同形态的 batch API，便于 Hook 和 Daemon 统一调用。
 
 ### 6.2 CPU Fallback

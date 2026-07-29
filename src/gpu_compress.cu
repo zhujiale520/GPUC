@@ -692,6 +692,11 @@ int gpu_decompress_batch_compact_wait(int stream_id, int n,
 /* -------- Pinned Memory allocation for hook TLS buffers -------- */
 int gpu_tls_alloc_pinned(void **ptr, size_t size) {
     /* Quick check: if no CUDA device available, silently fall back to malloc */
+    const char *spin = getenv("GPUC_CUDA_SPIN_WAIT");
+    if (!spin || strcmp(spin, "1") != 0) {
+        (void)cudaSetDeviceFlags(cudaDeviceScheduleBlockingSync);
+        (void)cudaGetLastError();
+    }
     int device_count = 0;
     cudaError_t err = cudaGetDeviceCount(&device_count);
     if (err != cudaSuccess || device_count == 0) {

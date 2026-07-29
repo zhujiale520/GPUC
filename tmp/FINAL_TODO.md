@@ -6,6 +6,26 @@
 
 ## P0：决赛前必须完成
 
+### P0 核心赛题闭环（2026-07-29）
+
+- [x] nvCOMP LZ4 改为长期 worker，请求通过队列提交。
+- [x] 建立持久化 CUDA stream/event/device buffer 与 pinned host buffer。
+- [x] 增加 queue/pack/H2D/kernel/D2H/unpack/total 分段 profile。
+- [x] CPU/GPU 使用同一 LZ4 输入、同一约 4096 MiB/s 吞吐和相同核心亲和性，
+  重复 5 次并保存 95% CI。
+  - 同 core 争用：CPU/GPU 分别保留 89.85%/97.17% 业务吞吐。
+  - 隔离核心：GPU 额外主机 CPU 约 0.403 core，CPU 为 0.566 core。
+- [x] 增加 SQLite range aggregate 真实业务：GPU 相对 CPU 路径 QPS 约 +7.3%，
+  p99 约 -50.5%；同时保留无解压 baseline。
+- [x] 重设计 4 KiB 对齐 header、block offset 与 padded span；验证
+  `O_DIRECT` 标志保留、逻辑内容正确和 fio 0 error。
+- [x] 输出统一 CPU time、RSS、page fault、context switch、GPU utilization/power
+  和 pipeline profile CSV。
+- [!] DRAM IMC bandwidth/LLC miss：当前缺少匹配内核的 perf/Intel PCM，
+  `perf_event_paranoid=2` 且无提权权限；能力审计已留证，不能伪造结果。
+- [!] 独占 NVMe 性能：机器有未挂载的 `nvme0n1`，当前会话不能挂载；
+  O_DIRECT 软件路径已验收，正式 NVMe 性能需在有设备权限环境复跑。
+
 ### A. 构建与复现
 
 - [x] 修复 GPU 架构自动检测：`nvidia-smi` 异常时不得生成非法 `sm_*` 参数。
@@ -24,7 +44,8 @@
 - [x] 所有核心实验至少重复 5 次，输出 mean/std/95% CI。
 - [x] 分开报告 warm-cache、cold-cache、O_DIRECT，不混合解释。
 - [x] 把 CSV、fio JSON、环境信息、Git commit 和命令行保存到仓库 `results/`。
-- [x] 核验 O_DIRECT：当前紧凑格式不满足对齐，Hook 对托管文件显式清除该标志，不发布伪 O_DIRECT 结果。
+- [x] 旧格式核验：不满足对齐时清除 `O_DIRECT`，不发布伪结果；随后已实现并验证
+  新版 4 KiB 对齐 COMPRESSED 格式。
 - [x] 在修复后重跑以下核心实验：
   - [x] 正确性与基础 DEMO（V100 `make test`、CPU `make smoke-test`）
   - [x] Baseline / RAW / SGLZ / LZ4 顺序读
@@ -84,8 +105,10 @@
 
 - [x] 使用同一 LZ4 数据与格式对比 CPU liblz4 和 GPU nvCOMP LZ4。
 - [x] 同时运行 CPU 业务任务，测量 GPU 卸载后业务吞吐是否提升。
-  - 结论：当前同步实现未提升业务吞吐，4 worker 下 CPU/GPU 分别保留 87.5%/87.1%。
-- [-] 已记录解压带宽、CPU user/sys、GPU 利用率和功耗；单核峰值与 J/GB 待补。
+  - 旧同步实现为负；长期 worker 后同吞吐同 core 场景 CPU/GPU 分别保留
+    89.85%/97.17%，95% CI 不重叠。
+- [x] 已记录解压带宽、CPU user/sys、worker/submit CPU、RSS、fault、context
+  switch、GPU 利用率/功耗和 pipeline profile。
 - [x] 增加压缩耗时并计算读取摊销：所有已测 COMPRESSED 读取慢于 Baseline，
   当前不存在正的性能 break-even，见 `results/final/break_even.csv`。
 - [!] 文件大小 × 可压缩率 × 并发数的正向 break-even 图：当前没有交叉点，

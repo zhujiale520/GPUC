@@ -183,7 +183,10 @@ static int compress_one_file(const char *path) {
     new_hdr.num_blocks = num_blocks;
     new_hdr.state = GPUC_STATE_COMPRESSED;
     new_hdr.comp_algo = GPUC_ALGO_SGLZ;
-    new_hdr.header_size = sizeof(new_hdr) + num_blocks * sizeof(*blocks);
+    new_hdr.reserved = GPUC_HEADER_FLAG_DIRECT_ALIGNED;
+    new_hdr.header_size = gpuc_align_up_u64(
+        sizeof(new_hdr) + (uint64_t)num_blocks * sizeof(*blocks),
+        GPUC_IO_ALIGNMENT);
     new_hdr.mtime = (uint64_t)time(NULL);
 
     /* 先写入 header 占位（最后回填） */
@@ -192,6 +195,10 @@ static int compress_one_file(const char *path) {
     }
     if (write(fd_tmp, blocks, num_blocks * sizeof(*blocks)) !=
         (ssize_t)(num_blocks * sizeof(*blocks))) {
+        goto fail;
+    }
+    if (lseek64(fd_tmp, (off64_t)new_hdr.header_size - 1, SEEK_SET) < 0 ||
+        write(fd_tmp, "", 1) != 1) {
         goto fail;
     }
 
@@ -223,6 +230,7 @@ static int compress_one_file(const char *path) {
 
         blocks[i].orig_len = (uint32_t)to_read;
         blocks[i].offset = (uint64_t)phys_off;
+        blocks[i].reserved = GPUC_BLOCK_SIZE;
 
         if (comp_ret > 0 && comp_ret < (int)to_read) {
             /* 压缩成功：将 slot 布局转换为紧凑格式写入 */

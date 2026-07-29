@@ -37,6 +37,12 @@ extern "C" {
 
 /* 小文件内联阈值：<=1KB 的文件直接内联到 header 后，无需 block entry */
 #define GPUC_INLINE_THRESHOLD 1024
+#define GPUC_IO_ALIGNMENT 4096u
+#define GPUC_HEADER_FLAG_DIRECT_ALIGNED 0x0001u
+
+static inline uint64_t gpuc_align_up_u64(uint64_t value, uint64_t alignment) {
+    return (value + alignment - 1) / alignment * alignment;
+}
 
 /*
  * 文件头部结构（固定大小，便于 open() 时一次性读取）

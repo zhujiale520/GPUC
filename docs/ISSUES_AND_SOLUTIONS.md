@@ -118,12 +118,17 @@ Hook 在 open 阶段验证：
 损坏 header、非法 block table、超大字段、只读/只写 open 均有结构化回归。覆盖引导
 fuzz 尚未完成，不能宣称所有恶意输入均已验证。
 
-## 10. “GPU 释放 CPU”负结果
+## 10. “GPU 释放 CPU”从负结果到有边界的正结果
 
-CPU 业务并发实验没有观察到优势：
+旧同步 API 在未固定处理量和 worker affinity 时没有观察到优势，且 GPU worker
+可能偷用空闲核心，因此旧的 87.5%/87.1% 结果只保留为历史诊断。
 
-- 4 workers：CPU LZ4 保留 87.5%，GPU LZ4 保留 87.1%；
-- 1 worker：CPU LZ4 保留 50.1%，GPU LZ4 保留 48.6%。
+修复包括长期请求 worker、持久 CUDA/pinned buffer、blocking sync、worker
+affinity 和固定约 4096 MiB/s 的 CPU/GPU公平口径。五轮结果：
 
-同步 CUDA 提交线程仍占用共享核心。后续需使用独立服务进程/worker 和异步完成机制，
-在重测前不得把“释放 CPU”作为已完成贡献。
+- 与业务争用 core 0：CPU/GPU 分别保留 89.85%/97.17%，95% CI 不重叠；
+- 解压隔离到 core 4：GPU 额外主机 CPU 约 0.403 core，CPU 为 0.566 core；
+- SQLite：GPU 相对 CPU 路径 QPS 高约 7.3%，p99 低约 50.5%。
+
+因此可以陈述固定吞吐下 GPU offload 减少主机 CPU 并减轻业务干扰，但不能陈述
+GPU 绝对吞吐高于 CPU、DRAM 容量下降或压缩文件读取快于 Baseline。

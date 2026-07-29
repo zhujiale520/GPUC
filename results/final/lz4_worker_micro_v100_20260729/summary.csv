@@ -1,0 +1,3 @@
+backend,n,mean_mib_s,stddev_mib_s,ci95_mib_s
+cpu_liblz4,5,10900.622,455.626,399.374
+gpu_nvcomp_lz4,5,5456.147,100.040,87.689

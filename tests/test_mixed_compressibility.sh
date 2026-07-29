@@ -75,8 +75,12 @@ with open(path, 'rb') as f:
         print(f"FAIL: Expected COMPRESSED state, got {state}")
         sys.exit(1)
     
-    # 读取 block 表（兼容旧格式 16 字节和新格式 24 字节）
-    entry_size = (header_size - 56) // num_blocks
+    # 对齐格式的 header_size 包含 4 KiB padding，entry 仍固定为 24 字节。
+    flags = struct.unpack('<H', hdr[26:28])[0]
+    entry_size = 24 if flags & 1 else (header_size - 56) // num_blocks
+    if entry_size not in (16, 24):
+        print(f"FAIL: Invalid block entry size: {entry_size}")
+        sys.exit(1)
     blocks = []
     for i in range(num_blocks):
         entry = f.read(entry_size)
@@ -92,6 +96,9 @@ with open(path, 'rb') as f:
         status = "RAW" if cl == ol else "COMPRESSED"
         crc_str = f", crc32={crc:08x}" if entry_size >= 24 else ""
         print(f"  Block {i}: orig_len={ol}, comp_len={cl}, offset={off}{crc_str} [{status}]")
+        if ol == 0 or cl == 0 or off < header_size:
+            print(f"FAIL: Invalid block {i}")
+            sys.exit(1)
         if cl == ol:
             uncompressed_found = True
     

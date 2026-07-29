@@ -1,20 +1,24 @@
 # GPUC 决赛后续优化路线
 
 依据 2026-07-29 V100 正式实验排序。已完成事项见
-[`FINAL_TODO.md`](FINAL_TODO.md)，原始证据见 `results/final/`。
+阶段性任务清单暂存于 [`../tmp/FINAL_TODO.md`](../tmp/FINAL_TODO.md)，原始证据见
+`results/final/`。
 
 ## P0：展示前必须完成
 
 1. 只使用 `docs/EXPERIMENTAL_REPORT.md` 的有效结果制作图表；
-2. PPT 明确区分 warm/cold cache，删除旧 99.8% 与伪 O_DIRECT；
+2. PPT 明确区分 warm/cold/direct，删除旧 99.8% 与伪 O_DIRECT，只引用新版
+   对齐格式的 SATA/ext4 direct 结果；
 3. PPT 把 mmap 写成“同步完整逻辑映射”，不是按需页解压；
-4. 将“GPU 释放 CPU”展示为负结果与下一步，不制作正向宣传图；
+4. “GPU 释放 CPU”只使用同吞吐同亲和性的长期 worker 结果，旧同步负结果作为
+   优化前历史；
 5. 视频只演示可复现的 build、正确性、原子 daemon 替换和结果读取。
 
-## P1：LZ4 持久化资源池
+## 已完成：LZ4 持久化资源池
 
-证据：4 块 batch 将 LZ4 从 29.4 提高到 81.0 MiB/s，但当前 batch 函数仍为每批
-分配和释放 device memory；直接扩大到 32 块出现严重退化。
+长期 worker、持久 CUDA stream/event/device buffer、pinned host buffer 和
+32-block read-ahead 已完成。Linux headers 五轮均值从旧正式值 81.0 提升到
+178.6 MiB/s；该整体结果不能单项归因，文件读取仍远慢于 Baseline。
 
 实施：
 
@@ -30,9 +34,10 @@
 - 无 CRC/SHA256 错误；
 - 目标先达到或超过 SGLZ 107.8 MiB/s，再讨论默认后端切换。
 
-## P1：真正的 CPU 卸载架构
+## 已完成：进程内长期 CPU 卸载架构
 
-证据：同步 API 下 GPU 业务吞吐不优于 CPU。
+证据：固定约 4096 MiB/s 后，GPU 额外主机 CPU 约 0.403 core，CPU 为
+0.566 core；同 core 争用时 GPU/CPU 分别保留 97.17%/89.85% 业务吞吐。
 
 实施：
 
@@ -72,15 +77,15 @@
 
 验收：返回延迟、首次页、随机页、全量扫描、并发 fault 和 RSS 峰值分别报告。
 
-## P2：格式与 O_DIRECT
+## 已完成软件路径：格式与 O_DIRECT
 
-当前格式不支持真正 O_DIRECT。若比赛后确需支持：
+- header/index 已 padding 到 4 KiB；
+- 每块 offset 与物理读取 span 已对齐；
+- entry 同时保存真实 `comp_len` 与 padded span；
+- pinned host buffer 满足 direct I/O 对齐；
+- `F_GETFL`、内容和 fio 0 error 已验证。
 
-- header/index padding 到 4 KiB；
-- 每块 offset 与 I/O length 对齐；
-- 保存真实 compressed length 与 padded length；
-- 对齐 host buffer，并在解压前剥离 padding；
-- 冷缓存 direct 实验只在内核实际接受 O_DIRECT 后发布。
+当前正式结果来自 SATA/ext4；独占 NVMe 性能仍需有挂载权限的环境复跑。
 
 ## P2：真实 workload 与 break-even
 

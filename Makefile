@@ -49,7 +49,8 @@ BINDIR     = bin
 TARGETS    = $(BINDIR)/libgpuhook.so $(BINDIR)/libcpuhook.so \
              $(BINDIR)/gpu_compress_daemon $(BINDIR)/cpu_compress_daemon \
              $(BINDIR)/test_cpu_vs_gpu $(BINDIR)/test_lz4_cpu_gpu $(BINDIR)/test_cpu_offload \
-             $(BINDIR)/test_compress $(BINDIR)/test_hook $(BINDIR)/test_cold_read
+             $(BINDIR)/test_compress $(BINDIR)/test_hook $(BINDIR)/test_cold_read \
+             $(BINDIR)/test_odirect_compressed
 
 .PHONY: all clean test dirs unit-test integration-test check-env check-gpu-deps cpu-only smoke-test sanitizer-test docs-check
 
@@ -158,6 +159,9 @@ $(BINDIR)/test_hook: dirs $(SRCDIR)/test_hook.c
 	$(GCC) -I$(INCDIR) $(filter-out dirs,$^) -o $@
 
 $(BINDIR)/test_cold_read: dirs tests/test_cold_read.c
+	$(GCC) -O3 $(filter-out dirs,$^) -o $@
+
+$(BINDIR)/test_odirect_compressed: dirs tests/test_odirect_compressed.c
 	$(GCC) -O3 $(filter-out dirs,$^) -o $@
 
 # ----------------------------------------------------------

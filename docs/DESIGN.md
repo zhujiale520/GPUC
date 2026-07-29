@@ -122,8 +122,10 @@
 - **nvCOMP LZ4**：
   - 对本机 Linux headers 文本语料的 allocated ratio 显著优于 SGLZ
     （81.8% → 38.1%）；
-  - 4-block batch 修复后的 warm read 为 81.0 MiB/s，仍低于 SGLZ
-    107.8 MiB/s；当前优势是空间而不是读取速度；
+  - 长期 worker、持久 buffer 和 32-block read-ahead 后 warm read 为
+    178.6 MiB/s，约为旧正式值 81.0 MiB/s 的 2.21 倍；
+  - 仍远低于普通文件 warm Baseline；当前价值是 CPU offload 与空间，不是文件
+    读取加速；
   - 作为可选后端，通过 `GPUC_ALGO=lz4` 启用，保持向后兼容。
 
 双后端共存使系统保留自研核心算法，同时可在空间优先场景选择成熟库；后端选择

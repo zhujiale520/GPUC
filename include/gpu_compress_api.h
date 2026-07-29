@@ -47,6 +47,26 @@ int gpu_lz4_compress_batch(int n,
 int gpu_lz4_decompress_batch(int n,
                              const uint8_t **in_bufs, const size_t *in_lens,
                              uint8_t **out_bufs, const size_t *out_lens);
+
+typedef struct gpu_lz4_profile {
+    double queue_ms;
+    double pack_ms;
+    double h2d_ms;
+    double kernel_ms;
+    double d2h_ms;
+    double unpack_ms;
+    double total_ms;
+    double worker_user_ms;
+    double worker_sys_ms;
+    size_t compressed_blocks;
+    size_t input_bytes;
+    size_t output_bytes;
+} gpu_lz4_profile_t;
+
+/* 返回当前调用线程最近一次 gpu_lz4_decompress_batch() 的分阶段计时。 */
+int gpu_lz4_get_last_profile(gpu_lz4_profile_t *profile);
+int gpu_lz4_host_alloc(void **ptr, size_t size);
+void gpu_lz4_host_free(void *ptr);
 int gpu_lz4_compress_128k(const uint8_t *in, uint8_t *out, size_t out_cap);
 int gpu_lz4_decompress_128k(const uint8_t *in, size_t in_len, uint8_t *out, size_t out_len);
 

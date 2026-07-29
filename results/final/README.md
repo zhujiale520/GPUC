@@ -1,8 +1,9 @@
 # V100 决赛实验结果索引
 
-本目录只收录完成正确性校验、具有环境记录和原始 CSV/JSON 的结果。实验基于
-Git HEAD `56a64bc25b2cf7e1eab6a5527b1fe8272af8b23c` 之后的工作区修复版；
-由于尚未提交，关键源码与脚本的 SHA-256 见 `SOURCE_MANIFEST.sha256`。
+本目录只收录完成正确性校验、具有环境记录和原始 CSV/JSON 的结果。P0 新实验以
+checkpoint `035e42b02a5a2a929c14c0de8fa1f1a5e86088b8` 为起点，随后加入对齐格式与
+文档收口；未提交工作区的关键源码与脚本 SHA-256 见
+`SOURCE_MANIFEST.sha256`。
 
 硬件为 Tesla V100-SXM2-32GB（compute capability 7.0），驱动 570.181，
 内核 5.15.0，fio 3.16。每个子目录的 `environment.txt` 是该实验的权威环境记录。
@@ -16,9 +17,14 @@ Git HEAD `56a64bc25b2cf7e1eab6a5527b1fe8272af8b23c` 之后的工作区修复版�
 | `ablation_v100_20260729/` | 256 MiB，5 次 | read-ahead 与 batch 各贡献约 11%；pinned memory 约 2.6%；io_uring/双流水线未测出收益 |
 | `batch_size_v100_20260729/` | 1/2/4/8/16/32，5 次 | 4 块达到 183.2 MiB/s，之后无显著收益 |
 | `compressibility_v100_20260729/` | 0/25/50/75/100%，5 次 | 0% 自动保留 RAW；真实空间占用随可压缩页比例从 134.2 MiB 降到 4.2 MiB |
-| `backends_v100_20260729/` | 同一 `/usr/include` 归档，warm cache，5 次 | Baseline 9666、RAW 10519、SGLZ 107.8、批量 LZ4 81.0 MiB/s；LZ4 占用 38.1%，SGLZ 81.8% |
-| `cpu_offload_4workers_v100_20260729/` | 4 个业务线程，5 次 | CPU/GPU 解压分别保留 87.5%/87.1% 业务吞吐，当前实现未证明 GPU 卸载优势 |
-| `cpu_offload_1worker_v100_20260729/` | 1 个业务线程，3 次敏感性分析 | CPU/GPU 解压分别保留 50.1%/48.6%，结论同上 |
+| `backends_v100_20260729/` | 优化前历史正式值 | LZ4 81.0 MiB/s；用于和新 worker 版本做整体前后对比 |
+| `backends_worker_batch32_v100_20260729/` | 长期 worker + 持久 buffer + 32-block read-ahead，5 次 | LZ4 178.6 ±14.6 MiB/s，为旧正式值约 2.21 倍；仍远慢于 Baseline |
+| `lz4_worker_micro_v100_20260729/` | 同一内存中 LZ4 数据，CPU/GPU 各 5 次；4 caller 并发校验 | GPU 5456.1 ±87.7 MiB/s；CPU 10900.6 ±399.4 MiB/s，GPU 绝对吞吐仍较低 |
+| `cpu_offload_fixed4g_samecore_v100_20260729/` | CPU/GPU 都限速约 4096 MiB/s，与业务争用 core 0，5 次 | CPU/GPU 分别保留 89.85%/97.17% 业务吞吐，95% CI 不重叠 |
+| `cpu_offload_fixed4g_isolated_v100_20260729/` | 同吞吐，解压隔离到 core 4，5 次 | GPU 额外主机 CPU 约 0.403 core，CPU 为 0.566 core，降低约 28.8% |
+| `sqlite_range_offload_fixed4g_samecore_v100_20260729/` | SQLite range aggregate + 同吞吐解压，5 次 | GPU 比 CPU QPS 高约 7.3%，p99 低约 50.5%；GPU p99 仍高于无解压 baseline |
+| `odirect_aligned_v100_20260729/` | 512 MiB、128 KiB、15 秒、`direct=1` | O_DIRECT 标志保留、内容正确、0 error、62.9 MiB/s；设备为 SATA/ext4 |
+| `p0_resource_capability_v100_20260729/` | 资源计数器与存储设备审计 | 说明已有 CPU/RSS/fault/context/profile 指标及 DRAM/NVMe 的环境限制 |
 
 `break_even.csv` 根据 cold、headers 和可压缩率梯度的实测均值计算。所有已测
 COMPRESSED 读取都慢于对应 Baseline，因此即使离线压缩成本按 0 计算，也不存在
@@ -27,8 +33,10 @@ COMPRESSED 读取都慢于对应 Baseline，因此即使离线压缩成本按 0 
 ## 结果边界
 
 - warm-cache 与 cold-cache 分开解释；没有把 page cache 带宽当磁盘带宽。
-- GPUC 紧凑块偏移不满足真正 `O_DIRECT` 对齐。Hook 对托管文件显式清除
-  `O_DIRECT`，因此本轮不发布伪 O_DIRECT 成绩。
+- 新版 COMPRESSED 格式支持 4 KiB 对齐 direct I/O；旧格式、RAW 和 INLINE 仍会
+  清除 `O_DIRECT`。正式 direct 结果来自 SATA/ext4，不是 NVMe。
+- 当前环境缺少可用 perf/Intel PCM 和提权权限，因此没有 DRAM 控制器带宽或 LLC
+  miss 数字；不能用 RSS、PCIe bytes 或压缩率替代。
 - `stat` 的格式长度包含稀疏逻辑区，不等于磁盘占用；空间结论使用
   `du -B1` 的 allocated bytes。
 - `results/final/high_concurrency_v100_20260725/` 是保留的历史无效结果，

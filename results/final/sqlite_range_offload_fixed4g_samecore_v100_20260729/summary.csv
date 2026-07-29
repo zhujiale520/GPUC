@@ -1,0 +1,4 @@
+scenario,n,qps_mean,qps_std,qps_ci95,qps_vs_baseline_pct,latency_p99_mean_us,decomp_mean_mib_s,decomp_process_cpu_mean_sec,maxrss_mean_kib
+baseline,5,20093.274,54.103,47.424,100.000,278.882,0.000,0.004632,147928.0
+cpu,5,19131.337,8.662,7.593,95.213,1158.308,4095.687,1.797495,147802.4
+gpu,5,20522.990,77.907,68.288,102.139,573.039,4095.646,1.230991,149810.4

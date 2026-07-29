@@ -1,0 +1,13 @@
+date_utc=2026-07-29T14:30:06Z
+hostname=ubuntu-super
+kernel=5.15.0
+filesystem=ext4
+source=/dev/sda2
+gpu=Tesla V100-SXM2-32GB, 570.181
+size=512M
+block_size=128k
+runtime_s=15
+header_size=102400
+direct_flag_retained=yes
+fio_errors=0
+read_mib_s=62.9

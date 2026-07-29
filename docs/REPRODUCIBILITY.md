@@ -265,6 +265,43 @@ bash tests/production_metrics.sh
 该脚本输出单机工程观测值。一次测试不能证明“生产级”，必须保留 fio JSON、
 环境信息、重复次数和置信区间，并在不同硬件与真实工作负载上复测。
 
+### 4.11 同吞吐 CPU/GPU 卸载
+
+```bash
+GPUC_RUNTIME=5 GPUC_REPEATS=5 GPUC_BUSINESS_WORKERS=4 \
+GPUC_TARGET_MIB_S=4096 GPUC_DECOMP_CPU=0 GPUC_WORKER_CPU=0 \
+bash tests/cpu_offload_business.sh
+```
+
+CPU 与 GPU 使用相同的 CPU-generated LZ4 blocks，并限制到同一解压吞吐。
+`GPUC_DECOMP_CPU` 和 `GPUC_WORKER_CPU` 必须显式记录，避免 GPU worker 偷用空闲
+核心造成不公平结果。输出包含业务吞吐、进程/submit/worker CPU、RSS、fault、
+context switch、GPU 利用率/功耗和各 pipeline 阶段。
+
+### 4.12 SQLite 并行业务
+
+```bash
+GPUC_RUNTIME=5 GPUC_REPEATS=5 GPUC_BUSINESS_WORKERS=4 \
+GPUC_SQLITE_ROWS=100000 GPUC_SQLITE_SPAN=1024 \
+GPUC_TARGET_MIB_S=4096 GPUC_DECOMP_CPU=0 GPUC_WORKER_CPU=0 \
+bash tests/sqlite_offload_business.sh
+```
+
+脚本生成确定性的 SQLite 数据库，执行 indexed range aggregate，并随机轮转
+baseline/CPU/GPU 场景，报告 QPS、p50/p95/p99 和并行解压资源指标。
+
+### 4.13 对齐压缩格式与 O_DIRECT
+
+```bash
+GPUC_SIZE=512M GPUC_RUNTIME=15 \
+GPUC_RESULT_DIR=results/local/odirect \
+bash tests/odirect_read.sh
+```
+
+脚本同时验证 header flag/4 KiB 对齐、`F_GETFL` 仍保留 `O_DIRECT`、逻辑内容与
+fio error。报告时必须引用 `environment.txt` 中的实际 source/filesystem；在
+SATA 上运行不能写成 NVMe 成绩。
+
 ---
 
 ## 5. 关键环境变量
@@ -280,6 +317,8 @@ bash tests/production_metrics.sh
 | `GPUC_WHITELIST` | 追加自定义后缀白名单 | 空 |
 | `GPUC_NO_HOOK` | 保留 Hook 加载但禁用拦截 | `0` |
 | `GPUC_ENABLE_NVIDIA_SMI_FALLBACK` | 允许低频调用 `nvidia-smi` 做负载 fallback 探索；默认关闭，避免读路径创建进程 | `0` |
+| `GPUC_WORKER_CPU` | 固定长期 LZ4 GPU worker 的 CPU affinity | 不固定 |
+| `GPUC_CUDA_SPIN_WAIT` | `1` 使用 CUDA busy-spin；默认 blocking sync 节省主机 CPU | `0` |
 
 ---
 

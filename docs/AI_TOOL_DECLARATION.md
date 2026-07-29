@@ -41,6 +41,8 @@
      尚未公平复测的结论。最终数据筛选、比赛表述与提交责任仍由团队成员确认。
    - 修复多线程共享 io_uring/CQE 归属、CUDA stream 重用、白名单原子 rename、
      LZ4 batch read-ahead 和 O_DIRECT 探测等问题。
+   - 实现长期 LZ4 GPU worker、持久化 CUDA/pinned buffer、分段 profile、
+     4 KiB 对齐 O_DIRECT 格式，并新增同吞吐 CPU/GPU 与 SQLite 业务实验。
 ## 3. 成果说明
 
 AI 工具辅助产生的关键成果包括：
@@ -48,10 +50,13 @@ AI 工具辅助产生的关键成果包括：
 - 完成 **nvCOMP LZ4 GPU 压缩后端** 的端到端集成（压缩 → 存储 → 解压 → 校验）。
 - 在本机 Linux headers 固定归档上，LZ4 allocated bytes 约为原始文件的
   **38.1%**，SGLZ 约为 **81.8%**。
-- LZ4 Hook 从逐块同步改为 4-block batch 后，诊断吞吐从 **29.4 MiB/s**
-  提升到正式五轮均值 **81.0 MiB/s**；该值仍低于 SGLZ **107.8 MiB/s**。
+- LZ4 Hook 在长期 worker、持久 buffer 和 32-block read-ahead 后，正式五轮
+  均值由 **81.0 MiB/s** 提升到 **178.6 MiB/s**；该整体提升不能拆分归因给
+  单一优化，且仍远低于普通文件 warm Baseline。
 - 新增并发、损坏格式、POSIX 语义、sanitizer、冷缓存、消融、批大小、压缩率梯度
-  与 CPU 业务卸载测试。CPU 卸载实验为负结果，未被包装为项目优势。
+  与 CPU 业务卸载测试。修复后的同吞吐实验显示 GPU 额外主机 CPU 成本降低约
+  28.8%，SQLite 相对 CPU 路径 QPS 高约 7.3%、p99 低约 50.5%；结果边界和
+  DRAM/NVMe 环境缺口均在报告中保留。
 
 AI 辅助内容已完成编译、自动测试和结果交叉核验；最终提交前仍由团队进行人工审查
 并决定是否纳入 git 版本管理。

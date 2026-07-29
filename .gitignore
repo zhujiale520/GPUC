@@ -28,6 +28,7 @@ node_modules/
 results/local/
 !results/final/**/*.json
 !results/final/**/*.log
+results/final/**/workload.sqlite
 
 # Temporary files
 tmp/

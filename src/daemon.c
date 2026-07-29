@@ -326,7 +326,10 @@ static int compress_one_file(const char *path) {
     new_hdr.num_blocks = num_blocks;
     new_hdr.state = GPUC_STATE_COMPRESSED;
     new_hdr.comp_algo = g_use_lz4 ? GPUC_ALGO_LZ4 : GPUC_ALGO_SGLZ;
-    new_hdr.header_size = sizeof(new_hdr) + num_blocks * sizeof(*blocks);
+    new_hdr.reserved = GPUC_HEADER_FLAG_DIRECT_ALIGNED;
+    new_hdr.header_size = gpuc_align_up_u64(
+        sizeof(new_hdr) + (uint64_t)num_blocks * sizeof(*blocks),
+        GPUC_IO_ALIGNMENT);
     new_hdr.mtime = (uint64_t)time(NULL);
 
     #define MIN_COMP_RATIO_PCT 85  /* 至少压缩 15% 才值得存压缩数据 */
@@ -337,6 +340,10 @@ static int compress_one_file(const char *path) {
     }
     if (write(fd_tmp, blocks, num_blocks * sizeof(*blocks)) !=
         (ssize_t)(num_blocks * sizeof(*blocks))) {
+        goto fail;
+    }
+    if (lseek64(fd_tmp, (off64_t)new_hdr.header_size - 1, SEEK_SET) < 0 ||
+        write(fd_tmp, "", 1) != 1) {
         goto fail;
     }
 
@@ -413,6 +420,7 @@ static int compress_one_file(const char *path) {
 
             blocks[block_id].orig_len = (uint32_t)to_read;
             blocks[block_id].offset = (uint64_t)phys_off;
+            blocks[block_id].reserved = GPUC_BLOCK_SIZE;
             /* CRC32 始终对原始数据计算（压缩前） */
             blocks[block_id].crc32 = gpuc_crc32(batch_in[bi], to_read);
 

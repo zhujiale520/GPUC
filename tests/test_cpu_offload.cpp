@@ -24,10 +24,15 @@ struct Context {
     std::atomic<uint64_t> decoded_bytes{0};
     const char *scenario = nullptr;
     int cpu = 0;
+    double target_mib_s = 0.0;
     std::vector<const uint8_t *> in;
     std::vector<size_t> in_lens;
     std::vector<uint8_t *> out;
     std::vector<size_t> out_lens;
+    uint64_t decomp_calls = 0;
+    double submit_user_sec = 0.0;
+    double submit_sys_sec = 0.0;
+    gpu_lz4_profile_t profile_sum{};
 };
 
 static void pin_this_thread(int cpu) {
@@ -36,6 +41,8 @@ static void pin_this_thread(int cpu) {
     CPU_SET(cpu, &set);
     (void)pthread_setaffinity_np(pthread_self(), sizeof(set), &set);
 }
+
+static double timeval_sec(const timeval &tv);
 
 static void business_worker(Context *ctx, int cpu) {
     pin_this_thread(cpu);
@@ -58,7 +65,12 @@ static void business_worker(Context *ctx, int cpu) {
 static void decompression_worker(Context *ctx) {
     pin_this_thread(ctx->cpu);
     while (!ctx->start.load(std::memory_order_acquire)) std::this_thread::yield();
+    rusage before{}, after{};
+    getrusage(RUSAGE_THREAD, &before);
     uint64_t bytes = 0;
+    uint64_t calls = 0;
+    gpu_lz4_profile_t sum{};
+    auto throttle_begin = std::chrono::steady_clock::now();
     while (!ctx->stop.load(std::memory_order_relaxed)) {
         int rc;
         if (std::strcmp(ctx->scenario, "cpu") == 0) {
@@ -73,8 +85,35 @@ static void decompression_worker(Context *ctx) {
             std::abort();
         }
         bytes += TOTAL;
+        calls++;
+        if (std::strcmp(ctx->scenario, "gpu") == 0) {
+            gpu_lz4_profile_t p{};
+            if (gpu_lz4_get_last_profile(&p) == 0) {
+                sum.queue_ms += p.queue_ms;
+                sum.pack_ms += p.pack_ms;
+                sum.h2d_ms += p.h2d_ms;
+                sum.kernel_ms += p.kernel_ms;
+                sum.d2h_ms += p.d2h_ms;
+                sum.unpack_ms += p.unpack_ms;
+                sum.total_ms += p.total_ms;
+                sum.worker_user_ms += p.worker_user_ms;
+                sum.worker_sys_ms += p.worker_sys_ms;
+            }
+        }
+        if (ctx->target_mib_s > 0.0) {
+            double target_seconds = (bytes / 1048576.0) / ctx->target_mib_s;
+            auto wake = throttle_begin +
+                std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+                    std::chrono::duration<double>(target_seconds));
+            std::this_thread::sleep_until(wake);
+        }
     }
+    getrusage(RUSAGE_THREAD, &after);
     ctx->decoded_bytes.store(bytes, std::memory_order_relaxed);
+    ctx->decomp_calls = calls;
+    ctx->submit_user_sec = timeval_sec(after.ru_utime) - timeval_sec(before.ru_utime);
+    ctx->submit_sys_sec = timeval_sec(after.ru_stime) - timeval_sec(before.ru_stime);
+    ctx->profile_sum = sum;
 }
 
 static double timeval_sec(const timeval &tv) {
@@ -82,27 +121,40 @@ static double timeval_sec(const timeval &tv) {
 }
 
 int main(int argc, char **argv) {
-    if (argc != 4) {
-        std::fprintf(stderr, "usage: %s baseline|cpu|gpu DURATION_SEC BUSINESS_WORKERS\n", argv[0]);
+    if (argc < 4 || argc > 6) {
+        std::fprintf(stderr,
+                     "usage: %s baseline|cpu|gpu DURATION_SEC BUSINESS_WORKERS "
+                     "[DECOMP_CPU] [TARGET_MIB_S]\n", argv[0]);
         return 2;
     }
     const char *scenario = argv[1];
     double duration = std::atof(argv[2]);
     int workers = std::atoi(argv[3]);
+    int decomp_cpu = argc >= 5 ? std::atoi(argv[4]) : 0;
+    double target_mib_s = argc >= 6 ? std::atof(argv[5]) : 0.0;
     if ((std::strcmp(scenario, "baseline") != 0 &&
          std::strcmp(scenario, "cpu") != 0 &&
          std::strcmp(scenario, "gpu") != 0) ||
-        duration <= 0 || workers <= 0) return 2;
+        duration <= 0 || workers < 0) return 2;
 
-    uint8_t *src = (uint8_t *)aligned_alloc(4096, TOTAL);
-    uint8_t *decoded = (uint8_t *)aligned_alloc(4096, TOTAL);
+    uint8_t *src = nullptr;
+    uint8_t *decoded = nullptr;
+    bool pinned = gpu_lz4_host_alloc((void **)&src, TOTAL) == 0 &&
+                  gpu_lz4_host_alloc((void **)&decoded, TOTAL) == 0;
+    if (!pinned) {
+        if (src) gpu_lz4_host_free(src);
+        if (decoded) gpu_lz4_host_free(decoded);
+        src = (uint8_t *)aligned_alloc(4096, TOTAL);
+        decoded = (uint8_t *)aligned_alloc(4096, TOTAL);
+    }
     if (!src || !decoded) return 1;
     for (size_t p = 0; p < TOTAL / 4096; p++)
         std::memset(src + p * 4096, 1 + (p * 37) % 251, 4096);
 
     Context ctx;
     ctx.scenario = scenario;
-    ctx.cpu = 0;
+    ctx.cpu = decomp_cpu;
+    ctx.target_mib_s = target_mib_s;
     ctx.in.resize(BLOCKS);
     ctx.in_lens.resize(BLOCKS);
     ctx.out.resize(BLOCKS);
@@ -111,7 +163,9 @@ int main(int argc, char **argv) {
     std::vector<size_t> caps(BLOCKS, CAP), comp_lens(BLOCKS);
     std::vector<const uint8_t *> plain(BLOCKS);
     for (int i = 0; i < BLOCKS; i++) {
-        comp[i] = (uint8_t *)aligned_alloc(4096, CAP);
+        if (pinned && gpu_lz4_host_alloc((void **)&comp[i], CAP) != 0)
+            return 1;
+        if (!pinned) comp[i] = (uint8_t *)aligned_alloc(4096, CAP);
         plain[i] = src + (size_t)i * BLOCK;
         ctx.out[i] = decoded + (size_t)i * BLOCK;
         if (!comp[i]) return 1;
@@ -157,12 +211,33 @@ int main(int argc, char **argv) {
     double sys = timeval_sec(after.ru_stime) - timeval_sec(before.ru_stime);
     double business = ctx.business_ops.load() / elapsed;
     double decomp = ctx.decoded_bytes.load() / 1048576.0 / elapsed;
-    std::printf("%s,%.6f,%d,%.3f,%.3f,%.6f,%.6f\n",
-                scenario, elapsed, workers, business, decomp, user, sys);
+    double calls = ctx.decomp_calls ? (double)ctx.decomp_calls : 1.0;
+    std::printf(
+        "%s,%.6f,%d,%.3f,%.3f,%.6f,%.6f,%.6f,%.6f,%ld,%ld,%ld,%ld,%ld,"
+        "%llu,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%.6f,%d\n",
+        scenario, elapsed, workers, business, decomp, user, sys,
+        ctx.submit_user_sec, ctx.submit_sys_sec, after.ru_maxrss,
+        after.ru_minflt - before.ru_minflt, after.ru_majflt - before.ru_majflt,
+        after.ru_nvcsw - before.ru_nvcsw, after.ru_nivcsw - before.ru_nivcsw,
+        (unsigned long long)ctx.decomp_calls,
+        ctx.profile_sum.queue_ms / calls, ctx.profile_sum.pack_ms / calls,
+        ctx.profile_sum.h2d_ms / calls, ctx.profile_sum.kernel_ms / calls,
+        ctx.profile_sum.d2h_ms / calls, ctx.profile_sum.unpack_ms / calls,
+        ctx.profile_sum.total_ms / calls,
+        ctx.profile_sum.worker_user_ms / 1000.0,
+        ctx.profile_sum.worker_sys_ms / 1000.0, pinned ? 1 : 0);
 
     if (std::strcmp(scenario, "gpu") == 0) gpu_lz4_fini();
-    for (auto p : comp) std::free(p);
-    std::free(src);
-    std::free(decoded);
+    for (auto p : comp) {
+        if (pinned) gpu_lz4_host_free(p);
+        else std::free(p);
+    }
+    if (pinned) {
+        gpu_lz4_host_free(src);
+        gpu_lz4_host_free(decoded);
+    } else {
+        std::free(src);
+        std::free(decoded);
+    }
     return 0;
 }
