@@ -43,6 +43,9 @@
      LZ4 batch read-ahead 和 O_DIRECT 探测等问题。
    - 实现长期 LZ4 GPU worker、持久化 CUDA/pinned buffer、分段 profile、
      4 KiB 对齐 O_DIRECT 格式，并新增同吞吐 CPU/GPU 与 SQLite 业务实验。
+   - 补齐 fio 预分配相关 64 位 POSIX 接口，新增随机/写入/尾延迟矩阵、公开
+     Gutenberg 数据集、pidstat/sar 原始采样与 V100 板卡 J/GiB 边界实验；
+     对缺少权限、许可软件或硬件计数器的项目保留可复核阻塞记录。
 ## 3. 成果说明
 
 AI 工具辅助产生的关键成果包括：

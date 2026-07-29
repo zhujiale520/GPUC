@@ -1,0 +1,1 @@
+SKIP: install licensed Oracle Vdbench and set VDBENCH_HOME.

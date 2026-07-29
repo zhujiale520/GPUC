@@ -1,0 +1,5 @@
+official_download=https://www.oracle.com/downloads/server-storage/vdbench-downloads.html
+license=Oracle Technology Network license acceptance required
+VDBENCH_HOME=unset
+java=unavailable
+vdbench=unavailable

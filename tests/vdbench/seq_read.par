@@ -1,0 +1,4 @@
+* Replace @LUN@ and @SIZE@ through tests/vdbench_benchmark.sh.
+sd=sd1,lun=@LUN@,openflags=o_direct,size=@SIZE@
+wd=seqread,sd=sd1,xfersize=128k,rdpct=100,seekpct=0
+rd=seqread,wd=seqread,iorate=max,elapsed=@ELAPSED@,interval=1

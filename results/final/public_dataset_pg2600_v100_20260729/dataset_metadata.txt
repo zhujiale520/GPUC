@@ -1,0 +1,10 @@
+dataset=Project Gutenberg ebook #2600, War and Peace
+artifact=UTF-8 plain text
+download_url=https://www.gutenberg.org/ebooks/2600.txt.utf-8
+catalog_url=https://www.gutenberg.org/ebooks/2600
+license_url=https://www.gutenberg.org/policy/license
+catalog_last_updated=2022-06-14
+catalog_rights=Public domain in the USA
+logical_bytes=3359610
+sha256=2d5bb2ad5f422765e714617e21fa31bbaf8958aa79682c86fca6660fcc5d1b2b
+verification=exact SHA-256 required before every run

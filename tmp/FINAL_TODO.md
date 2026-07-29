@@ -101,6 +101,36 @@
 
 ## P1：增强决赛说服力
 
+### P1 补充实验（2026-07-29）
+
+- [!] 鲲鹏 920/AArch64：按用户安排暂不实施；当前没有对应硬件，不能用 x86
+  交叉编译冒充实测。
+- [!] RTX 3050/4090：脚本可直接复跑，按用户安排等个人电脑和实验室 4090
+  最后补；当前正式数据仍为 V100。
+- [!] Btrfs/ZFS/DM 公平基线：已增加只读能力审计并保存
+  `results/final/storage_baseline_capability_v100_20260729/`。本机无 root/CAP_SYS_ADMIN、
+  无可见 loop 节点，ZFS/zpool 不存在，因此没有格式化或伪造文件系统结果。
+- [!] vdbench：已增加顺序读、4 KiB 随机读和 70:30 混合读写参数及运行脚本；
+  Oracle Vdbench 需要接受许可证且本机没有 Java/Vdbench，阻塞证据保存在
+  `results/final/vdbench_capability_v100_20260729/`。
+- [x] fio I/O 矩阵：4/16/128 KiB，顺序/随机读、顺序/随机/70:30 混合写，
+  1/4 应用线程，Baseline libaio QD 1/8/32，五轮、p95/p99/p99.9 和 95% CI。
+  压缩读固定单线程；并发扩展沿用独立的 128 KiB 五轮实验。
+- [!] 新矩阵中 fio thread 模式的 COMPRESSED 多线程读出现超长不返回；为避免
+  混淆变量，本矩阵固定压缩读单线程。现有 128 KiB 并发专项结果仍有效，但该
+  thread-mode 卡顿需作为独立稳定性问题继续定位。
+- [x] 修复 fio 混合读写触发的 RAW 长度错误：补齐 `ftruncate64`、
+  `fallocate(64)`、`posix_fallocate(64)`，并禁止内部物理长度查询再次经过 Hook。
+- [x] 公开真实数据集：Project Gutenberg #2600，固定 URL、许可证、更新时间、
+  3,359,610 字节及 SHA-256；五轮结果保存在
+  `results/final/public_dataset_pg2600_v100_20260729/`。
+- [x] 系统资源：五轮保存 pidstat `-u -r -w`、sar `-u -r -B -W`、
+  nvidia-smi 200 ms 原始日志和统一摘要，见
+  `results/final/system_resource_v100_20260729/`。
+- [-] 能效：已输出 GPU 板卡总功耗边界和相对空闲板卡的增量 J/GiB；
+  V100 GPU 路径约 0.482 J/GiB（增量板卡边界）。本机无 RAPL/IPMI/外部功率计，
+  因而尚不能称为 CPU package 或整机能效。
+
 ### F. 证明“GPU 资源卸载”的核心价值
 
 - [x] 使用同一 LZ4 数据与格式对比 CPU liblz4 和 GPU nvCOMP LZ4。
@@ -116,8 +146,8 @@
 
 ### G. 真实 workload
 
-- [-] 已使用固定元数据的本机 `/usr/include` 文本语料并记录 SHA-256；
-  系统包版本可追溯，但带公开 URL/许可证清单的独立数据集仍待补。
+- [x] 已增加 Project Gutenberg #2600 公开真实文本，记录固定下载 URL、目录页、
+  许可证页、版本日期、字节数和 SHA-256，并完成五轮空间、压缩及 cold/warm 读取。
 - [x] 不再把 `/dev/urandom` 文件称为 ImageNet 风格 workload；相关旧结果已从核心报告移除。
 - [x] ccache、小文件和旧日志结果未达到当前方法学要求，已从核心报告/PPT移除；
   若后续恢复，必须分开 cold/warm 并重新五轮测试。

@@ -151,6 +151,12 @@ static volatile int     (*real_lxstat)(int, const char *, struct stat *);
 static volatile int     (*real_lxstat64)(int, const char *, struct stat64 *);
 static int     (*real_ftruncate)(int, off_t);
 static int     (*real_truncate)(const char *, off_t);
+static int     (*real_ftruncate64)(int, off64_t);
+static int     (*real_truncate64)(const char *, off64_t);
+static int     (*real_fallocate)(int, int, off_t, off_t);
+static int     (*real_fallocate64)(int, int, off64_t, off64_t);
+static int     (*real_posix_fallocate)(int, off_t, off_t);
+static int     (*real_posix_fallocate64)(int, off64_t, off64_t);
 static int     (*real_rename)(const char *, const char *);
 static int     (*real_dup)(int);
 static int     (*real_dup2)(int, int);
@@ -390,8 +396,13 @@ static void clear_fd_info(int fd) {
  * ============================================================ */
 
 static off64_t get_phys_size(int fd) {
-    struct stat64 st;
-    if (fstat64(fd, &st) < 0) return 0;
+    struct stat st;
+    /*
+     * 不可调用 fstat/fstat64 公共符号：它们也由本库拦截并会返回逻辑
+     * 长度。写路径若把该值重新存入 phys_size，每次写都会再减一次
+     * GPUC header，最终使随机混合读写在文件尾提前遇到 EOF。
+     */
+    if (syscall(SYS_fstat, fd, &st) < 0) return 0;
     return st.st_size;
 }
 
@@ -1729,6 +1740,12 @@ void __attribute__((constructor(101))) hook_init(void) {
     real_lxstat64 = dlsym(RTLD_NEXT, "__lxstat64");
     real_ftruncate = dlsym(RTLD_NEXT, "ftruncate");
     real_truncate  = dlsym(RTLD_NEXT, "truncate");
+    real_ftruncate64 = dlsym(RTLD_NEXT, "ftruncate64");
+    real_truncate64  = dlsym(RTLD_NEXT, "truncate64");
+    real_fallocate = dlsym(RTLD_NEXT, "fallocate");
+    real_fallocate64 = dlsym(RTLD_NEXT, "fallocate64");
+    real_posix_fallocate = dlsym(RTLD_NEXT, "posix_fallocate");
+    real_posix_fallocate64 = dlsym(RTLD_NEXT, "posix_fallocate64");
     real_rename    = dlsym(RTLD_NEXT, "rename");
     real_dup       = dlsym(RTLD_NEXT, "dup");
     real_dup2      = dlsym(RTLD_NEXT, "dup2");
@@ -1761,6 +1778,12 @@ void __attribute__((constructor(101))) hook_init(void) {
     if (!real_lxstat64) fprintf(stderr, "[HOOK] WARN: dlsym(__lxstat64) failed\n");
     if (!real_ftruncate) fprintf(stderr, "[HOOK] WARN: dlsym(ftruncate) failed\n");
     if (!real_truncate)  fprintf(stderr, "[HOOK] WARN: dlsym(truncate) failed\n");
+    if (!real_ftruncate64) fprintf(stderr, "[HOOK] WARN: dlsym(ftruncate64) failed\n");
+    if (!real_truncate64)  fprintf(stderr, "[HOOK] WARN: dlsym(truncate64) failed\n");
+    if (!real_fallocate) fprintf(stderr, "[HOOK] WARN: dlsym(fallocate) failed\n");
+    if (!real_fallocate64) fprintf(stderr, "[HOOK] WARN: dlsym(fallocate64) failed\n");
+    if (!real_posix_fallocate) fprintf(stderr, "[HOOK] WARN: dlsym(posix_fallocate) failed\n");
+    if (!real_posix_fallocate64) fprintf(stderr, "[HOOK] WARN: dlsym(posix_fallocate64) failed\n");
     if (!real_rename)    fprintf(stderr, "[HOOK] WARN: dlsym(rename) failed\n");
     if (!real_dup)       fprintf(stderr, "[HOOK] WARN: dlsym(dup) failed\n");
     if (!real_dup2)      fprintf(stderr, "[HOOK] WARN: dlsym(dup2) failed\n");
@@ -2176,6 +2199,29 @@ int ftruncate(int fd, off_t length) {
     return ret;
 }
 
+int ftruncate64(int fd, off64_t length) {
+    if (g_hooks_disabled) {
+        if (!real_ftruncate64) { errno = ENOSYS; return -1; }
+        return real_ftruncate64(fd, length);
+    }
+    fd_info_t *info = get_fd_info(fd);
+    if (!info || !info->has_header) {
+        return real_ftruncate64(fd, length);
+    }
+    if (info->is_compressed) {
+        errno = EROFS;
+        return -1;
+    }
+    if (info->header_pending && flush_raw_header(fd, info) != 0) {
+        errno = EIO;
+        return -1;
+    }
+    off64_t phys_len = length + (off64_t)info->hdr.header_size;
+    int ret = real_ftruncate64(fd, phys_len);
+    if (ret == 0) info->phys_size = phys_len;
+    return ret;
+}
+
 int truncate(const char *path, off_t length) {
     if (g_hooks_disabled) {
         if (!real_truncate) { errno = ENOSYS; return -1; }
@@ -2197,6 +2243,124 @@ int truncate(const char *path, off_t length) {
         real_close(fd);
     }
     return real_truncate(path, length);
+}
+
+int truncate64(const char *path, off64_t length) {
+    if (g_hooks_disabled) {
+        if (!real_truncate64) { errno = ENOSYS; return -1; }
+        return real_truncate64(path, length);
+    }
+    /* 与 truncate() 一致，路径操作需要直接检查磁盘 header。 */
+    int fd = real_open(path, O_RDONLY);
+    if (fd >= 0) {
+        struct gpuc_header hdr;
+        ssize_t n = real_pread64(fd, &hdr, sizeof(hdr), 0);
+        if (n == (ssize_t)sizeof(hdr) && gpuc_is_header(&hdr)) {
+            real_close(fd);
+            if (hdr.state == GPUC_STATE_COMPRESSED || hdr.state == GPUC_STATE_INLINE) {
+                errno = EROFS;
+                return -1;
+            }
+            return real_truncate64(path, length + (off64_t)hdr.header_size);
+        }
+        real_close(fd);
+    }
+    return real_truncate64(path, length);
+}
+
+/* ============================================================
+ *  fallocate / posix_fallocate 拦截
+ * ============================================================ */
+
+int fallocate(int fd, int mode, off_t offset, off_t length) {
+    if (g_hooks_disabled) {
+        if (!real_fallocate) { errno = ENOSYS; return -1; }
+        return real_fallocate(fd, mode, offset, length);
+    }
+    fd_info_t *info = get_fd_info(fd);
+    if (!info || !info->has_header) {
+        return real_fallocate(fd, mode, offset, length);
+    }
+    if (info->is_compressed) {
+        errno = EROFS;
+        return -1;
+    }
+    if (info->header_pending && flush_raw_header(fd, info) != 0) {
+        errno = EIO;
+        return -1;
+    }
+    int ret = real_fallocate(fd, mode,
+                            offset + (off_t)info->hdr.header_size, length);
+    if (ret == 0) {
+        struct stat st;
+        if (real_fxstat(_STAT_VER, fd, &st) == 0) info->phys_size = st.st_size;
+    }
+    return ret;
+}
+
+int fallocate64(int fd, int mode, off64_t offset, off64_t length) {
+    if (g_hooks_disabled) {
+        if (!real_fallocate64) { errno = ENOSYS; return -1; }
+        return real_fallocate64(fd, mode, offset, length);
+    }
+    fd_info_t *info = get_fd_info(fd);
+    if (!info || !info->has_header) {
+        return real_fallocate64(fd, mode, offset, length);
+    }
+    if (info->is_compressed) {
+        errno = EROFS;
+        return -1;
+    }
+    if (info->header_pending && flush_raw_header(fd, info) != 0) {
+        errno = EIO;
+        return -1;
+    }
+    int ret = real_fallocate64(fd, mode,
+                              offset + (off64_t)info->hdr.header_size, length);
+    if (ret == 0) {
+        struct stat st;
+        if (real_fxstat(_STAT_VER, fd, &st) == 0) info->phys_size = st.st_size;
+    }
+    return ret;
+}
+
+int posix_fallocate(int fd, off_t offset, off_t length) {
+    if (g_hooks_disabled) {
+        return real_posix_fallocate ? real_posix_fallocate(fd, offset, length) : ENOSYS;
+    }
+    fd_info_t *info = get_fd_info(fd);
+    if (!info || !info->has_header) {
+        return real_posix_fallocate(fd, offset, length);
+    }
+    if (info->is_compressed) return EROFS;
+    if (info->header_pending && flush_raw_header(fd, info) != 0) return EIO;
+    int ret = real_posix_fallocate(fd,
+                                  offset + (off_t)info->hdr.header_size, length);
+    if (ret == 0) {
+        struct stat st;
+        if (real_fxstat(_STAT_VER, fd, &st) == 0) info->phys_size = st.st_size;
+    }
+    return ret;
+}
+
+int posix_fallocate64(int fd, off64_t offset, off64_t length) {
+    if (g_hooks_disabled) {
+        return real_posix_fallocate64 ?
+               real_posix_fallocate64(fd, offset, length) : ENOSYS;
+    }
+    fd_info_t *info = get_fd_info(fd);
+    if (!info || !info->has_header) {
+        return real_posix_fallocate64(fd, offset, length);
+    }
+    if (info->is_compressed) return EROFS;
+    if (info->header_pending && flush_raw_header(fd, info) != 0) return EIO;
+    int ret = real_posix_fallocate64(
+        fd, offset + (off64_t)info->hdr.header_size, length);
+    if (ret == 0) {
+        struct stat st;
+        if (real_fxstat(_STAT_VER, fd, &st) == 0) info->phys_size = st.st_size;
+    }
+    return ret;
 }
 
 /* ============================================================

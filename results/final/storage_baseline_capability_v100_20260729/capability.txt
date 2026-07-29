@@ -1,0 +1,30 @@
+run_id=20260729T162341Z
+uid=1000
+filesystem=ext4
+source=/dev/sda2[/home/ubuntu/project3136859-386240]
+mount=/usr/bin/mount
+losetup=/usr/sbin/losetup
+mkfs_btrfs=/usr/sbin/mkfs.btrfs
+btrfs=/usr/bin/btrfs
+compsize=unavailable
+zfs=unavailable
+zpool=unavailable
+dmsetup=/usr/sbin/dmsetup
+loop_nodes=
+visible_nvme_nodes=
+block_inventory_begin
+NAME    TYPE   SIZE FSTYPE   MOUNTPOINT
+loop0   loop    55M squashfs /snap/core18/1705
+loop1   loop  55.5M squashfs /snap/core18/2999
+loop2   loop  66.8M squashfs /snap/core24/1643
+loop3   loop  60.1M squashfs /snap/core26/409
+loop4   loop 122.1M squashfs /snap/lxd/39858
+loop5   loop 115.2M squashfs /snap/lxd/39313
+loop6   loop  49.3M squashfs
+loop7   loop  50.1M squashfs /snap/snapd/27406
+loop8   loop  50.1M squashfs /snap/snapd/27591
+sda     disk 102.5G
+├─sda1  part   512M vfat     /boot/efi
+└─sda2  part   102G ext4     /
+nvme0n1 disk 953.9G ext4
+block_inventory_end

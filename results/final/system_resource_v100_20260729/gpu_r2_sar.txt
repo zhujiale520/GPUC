@@ -1,0 +1,61 @@
+Linux 5.15.0 (ubuntu-super) 	07/29/26 	_x86_64_	(24 CPU)
+
+16:18:25        CPU     %user     %nice   %system   %iowait    %steal     %idle
+16:18:26        all     14.43      0.00      1.16      0.00      0.00     84.41
+
+16:18:25     pswpin/s pswpout/s
+16:18:26         0.00      0.00
+
+16:18:25     pgpgin/s pgpgout/s   fault/s  majflt/s  pgfree/s pgscank/s pgscand/s pgsteal/s    %vmeff
+16:18:26         0.00      0.00  22202.00      0.00   1278.00      0.00      0.00      0.00      0.00
+
+16:18:25    kbmemfree   kbavail kbmemused  %memused kbbuffers  kbcached  kbcommit   %commit  kbactive   kbinact   kbdirty
+16:18:26     20098144  29410872   1852240      5.70    403536   9145604   5732632     14.02   2989024   7908992       120
+
+16:18:26        CPU     %user     %nice   %system   %iowait    %steal     %idle
+16:18:27        all     16.77      0.00      0.13      0.00      0.00     83.10
+
+16:18:26     pswpin/s pswpout/s
+16:18:27         0.00      0.00
+
+16:18:26     pgpgin/s pgpgout/s   fault/s  majflt/s  pgfree/s pgscank/s pgscand/s pgsteal/s    %vmeff
+16:18:27         0.00      0.00      2.00      0.00    786.00      0.00      0.00      0.00      0.00
+
+16:18:26    kbmemfree   kbavail kbmemused  %memused kbbuffers  kbcached  kbcommit   %commit  kbactive   kbinact   kbdirty
+16:18:27     20098144  29410872   1852240      5.70    403536   9145604   5732632     14.02   2989024   7909052       120
+
+16:18:27        CPU     %user     %nice   %system   %iowait    %steal     %idle
+16:18:28        all     16.74      0.00      0.21      0.00      0.00     83.05
+
+16:18:27     pswpin/s pswpout/s
+16:18:28         0.00      0.00
+
+16:18:27     pgpgin/s pgpgout/s   fault/s  majflt/s  pgfree/s pgscank/s pgscand/s pgsteal/s    %vmeff
+16:18:28         0.00      0.00      2.00      0.00    789.00      0.00      0.00      0.00      0.00
+
+16:18:27    kbmemfree   kbavail kbmemused  %memused kbbuffers  kbcached  kbcommit   %commit  kbactive   kbinact   kbdirty
+16:18:28     20098144  29410872   1852240      5.70    403536   9145604   5732632     14.02   2989024   7909052       120
+
+16:18:28        CPU     %user     %nice   %system   %iowait    %steal     %idle
+16:18:29        all     16.78      0.00      0.13      0.00      0.00     83.10
+
+16:18:28     pswpin/s pswpout/s
+16:18:29         0.00      0.00
+
+16:18:28     pgpgin/s pgpgout/s   fault/s  majflt/s  pgfree/s pgscank/s pgscand/s pgsteal/s    %vmeff
+16:18:29         0.00     84.00      0.00      0.00    786.00      0.00      0.00      0.00      0.00
+
+16:18:28    kbmemfree   kbavail kbmemused  %memused kbbuffers  kbcached  kbcommit   %commit  kbactive   kbinact   kbdirty
+16:18:29     20098144  29410872   1852240      5.70    403536   9145604   5732632     14.02   2989024   7909100         4
+
+16:18:29        CPU     %user     %nice   %system   %iowait    %steal     %idle
+16:18:30        all     16.77      0.00      0.13      0.04      0.00     83.06
+
+16:18:29     pswpin/s pswpout/s
+16:18:30         0.00      0.00
+
+16:18:29     pgpgin/s pgpgout/s   fault/s  majflt/s  pgfree/s pgscank/s pgscand/s pgsteal/s    %vmeff
+16:18:30         0.00     80.00      0.00      0.00    795.00      0.00      0.00      0.00      0.00
+
+16:18:29    kbmemfree   kbavail kbmemused  %memused kbbuffers  kbcached  kbcommit   %commit  kbactive   kbinact   kbdirty
+16:18:30     20098144  29410872   1852232      5.70    403544   9145604   5716232     13.98   2989024   7909080        84

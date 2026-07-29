@@ -1,0 +1,4 @@
+* Baseline/Hook RAW only; COMPRESSED files are immutable.
+sd=sd1,lun=@LUN@,openflags=o_direct,size=@SIZE@
+wd=mixed,sd=sd1,xfersize=4k,rdpct=70,seekpct=100
+rd=mixed,wd=mixed,iorate=max,elapsed=@ELAPSED@,interval=1

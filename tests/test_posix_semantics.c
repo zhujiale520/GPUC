@@ -40,6 +40,45 @@ static int test_raw(const char *path) {
 
     if (ftruncate(fd, 4) != 0) fail("ftruncate");
     expect_bytes(fd, "abXY", 4);
+    if (ftruncate64(fd, 8192) != 0) fail("ftruncate64");
+    int alloc_rc = posix_fallocate64(fd, 0, 16384);
+    if (alloc_rc != 0) {
+        errno = alloc_rc;
+        fail("posix_fallocate64");
+    }
+    if (fallocate64(fd, 0, 0, 16384) != 0) fail("fallocate64");
+    for (int i = 0; i < 512; i++) {
+        off64_t offset = (off64_t)((i * 7919) % (16384 - 4));
+        if (pwrite(fd, "RAND", 4, offset) != 4)
+            fail("repeated random pwrite");
+    }
+    if (pwrite(fd, "TAIL", 4, 8188) != 4) fail("pwrite tail after ftruncate64");
+    char tail[4] = {0};
+    if (pread(fd, tail, sizeof(tail), 8188) != 4 ||
+        memcmp(tail, "TAIL", sizeof(tail)) != 0) {
+        fprintf(stderr, "FAIL: ftruncate64 logical tail is not readable\n");
+        return 1;
+    }
+    if (pwrite(fd, "END!", 4, 16380) != 4) fail("pwrite logical end");
+    struct stat logical_st;
+    if (fstat(fd, &logical_st) != 0) fail("fstat logical size");
+    if (logical_st.st_size != 16384) {
+        fprintf(stderr, "FAIL: tracked logical size=%lld, expected 16384\n",
+                (long long)logical_st.st_size);
+        return 1;
+    }
+    if (lseek(fd, 16380, SEEK_SET) != 16380) fail("lseek logical end");
+    ssize_t tail_n = read(fd, tail, sizeof(tail));
+    if (tail_n != 4 || memcmp(tail, "END!", sizeof(tail)) != 0) {
+        fprintf(stderr,
+                "FAIL: repeated pwrite corrupted tracked logical size "
+                "(read=%zd bytes=%02x%02x%02x%02x)\n",
+                tail_n, (unsigned char)tail[0], (unsigned char)tail[1],
+                (unsigned char)tail[2], (unsigned char)tail[3]);
+        return 1;
+    }
+    if (pwrite(fd, "abXY", 4, 0) != 4) fail("restore prefix");
+    if (ftruncate64(fd, 4) != 0) fail("ftruncate64 shrink");
     close(fd);
 
     fd = open(path, O_WRONLY | O_APPEND);
@@ -78,7 +117,7 @@ static int test_raw(const char *path) {
     }
     close(fd);
     free(direct_buf);
-    puts("PASS: RAW writev/pwrite/O_APPEND/ftruncate/dup semantics");
+    puts("PASS: RAW writev/pwrite/O_APPEND/truncate/fallocate/dup semantics");
     return 0;
 }
 
@@ -104,6 +143,16 @@ static int test_compressed(const char *path) {
     failed |= expect_erofs("writev", (int)writev(fd, &iov, 1));
     errno = 0;
     failed |= expect_erofs("ftruncate", ftruncate(fd, 1));
+    errno = 0;
+    failed |= expect_erofs("ftruncate64", ftruncate64(fd, 1));
+    errno = 0;
+    failed |= expect_erofs("fallocate64", fallocate64(fd, 0, 0, 4096));
+    int alloc_rc = posix_fallocate64(fd, 0, 4096);
+    if (alloc_rc != EROFS) {
+        fprintf(stderr, "FAIL: posix_fallocate64 returned %d; expected EROFS\n",
+                alloc_rc);
+        failed = 1;
+    }
     close(fd);
     if (failed) return 1;
     puts("PASS: COMPRESSED mutation is rejected with EROFS");

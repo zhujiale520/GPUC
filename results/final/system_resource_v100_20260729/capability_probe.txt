@@ -1,0 +1,15 @@
+perf_binary=/usr/bin/perf
+perf_event_paranoid=2
+intel_pcm=unavailable
+powercap_entries=0
+
+[perf probe]
+WARNING: perf not found for kernel 5.15.0
+
+  You may need to install the following packages for this specific kernel:
+    linux-tools-5.15.0-5.15.0
+    linux-cloud-tools-5.15.0-5.15.0
+
+  You may also want to install one of the following packages to keep up to date:
+    linux-tools-5.15.0
+    linux-cloud-tools-5.15.0

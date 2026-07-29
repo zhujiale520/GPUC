@@ -27,7 +27,7 @@ gpu_worker_cpu=$GPUC_WORKER_CPU
 affinity=business workers pinned to cores 0..N-1; submit/decompressor pinned to core $DECOMP_CPU
 data=16 MiB deterministic page pattern; identical CPU-generated LZ4 blocks
 EOF
-echo "scenario,repeat,elapsed_sec,business_ops_s,decomp_mib_s,user_cpu_sec,sys_cpu_sec,submit_user_sec,submit_sys_sec,maxrss_kib,minflt,majflt,nvcsw,nivcsw,decomp_calls,queue_ms,pack_ms,h2d_ms,kernel_ms,d2h_ms,unpack_ms,total_ms,worker_user_sec,worker_sys_sec,pinned_host,gpu_util_avg_pct,power_avg_w" > "$RESULT_DIR/runs.csv"
+echo "scenario,repeat,elapsed_sec,business_ops_s,decomp_mib_s,user_cpu_sec,sys_cpu_sec,submit_user_sec,submit_sys_sec,maxrss_kib,minflt,majflt,nvcsw,nivcsw,decomp_calls,queue_ms,pack_ms,h2d_ms,kernel_ms,d2h_ms,unpack_ms,total_ms,worker_user_sec,worker_sys_sec,pinned_host,gpu_util_avg_pct,power_avg_w,gpu_board_joules,decomp_gib,gpu_board_j_per_gib" > "$RESULT_DIR/runs.csv"
 
 scenarios=(baseline cpu gpu)
 for repeat in $(seq 1 "$REPEATS"); do
@@ -59,10 +59,15 @@ for row in csv.reader(open(gpu_log)):
     except (ValueError,IndexError): pass
 util=sum(x for x,_ in samples)/len(samples) if samples else 0
 power=sum(x for _,x in samples)/len(samples) if samples else 0
+elapsed=float(r["elapsed"])
+decomp_gib=float(r["decomp"])*elapsed/1024.0
+board_j=power*elapsed
+j_per_gib=board_j/decomp_gib if decomp_gib > 0 else 0
 with open(out,"a",newline="") as f:
-    csv.writer(f).writerow(
+    csv.writer(f,lineterminator="\n").writerow(
         [s,repeat] + [r[k] for k in names[1:] if k != "workers"] +
-        [f"{util:.3f}",f"{power:.3f}"])
+        [f"{util:.3f}",f"{power:.3f}",f"{board_j:.6f}",
+         f"{decomp_gib:.6f}",f"{j_per_gib:.6f}"])
 print(f"{s:8s} repeat={repeat} business={float(r['business']):.0f} ops/s "
       f"decomp={float(r['decomp']):.1f} MiB/s cpu={float(r['user'])+float(r['system']):.2f}s "
       f"worker={float(r['worker_user'])+float(r['worker_system']):.2f}s "
@@ -82,9 +87,13 @@ with open(sys.argv[2],"w",newline="") as f:
             "maxrss_mean_kib","minflt_mean","majflt_mean","nvcsw_mean","nivcsw_mean",
             "queue_mean_ms","pack_mean_ms","h2d_mean_ms","kernel_mean_ms",
             "d2h_mean_ms","unpack_mean_ms","request_total_mean_ms",
-            "gpu_util_mean_pct","power_mean_w"]
-    w=csv.DictWriter(f,fieldnames=fields); w.writeheader()
+            "gpu_util_mean_pct","power_mean_w","gpu_board_energy_mean_j",
+            "decomp_mean_gib","gpu_board_j_per_gib",
+            "incremental_gpu_power_vs_idle_w",
+            "incremental_gpu_j_per_gib"]
+    w=csv.DictWriter(f,fieldnames=fields,lineterminator="\n"); w.writeheader()
     base=statistics.mean(float(r["business_ops_s"]) for r in groups["baseline"])
+    idle_power=statistics.mean(float(r["power_avg_w"]) for r in groups["baseline"])
     for s,rs in groups.items():
         b=[float(r["business_ops_s"]) for r in rs]; mean=statistics.mean(b)
         std=statistics.stdev(b) if len(b)>1 else 0; ci=1.96*std/math.sqrt(len(b)) if len(b)>1 else 0
@@ -107,7 +116,14 @@ with open(sys.argv[2],"w",newline="") as f:
                  d2h_mean_ms=f"{avg('d2h_ms'):.6f}",unpack_mean_ms=f"{avg('unpack_ms'):.6f}",
                  request_total_mean_ms=f"{avg('total_ms'):.6f}",
                  gpu_util_mean_pct=f"{avg('gpu_util_avg_pct'):.3f}",
-                 power_mean_w=f"{avg('power_avg_w'):.3f}")
+                 power_mean_w=f"{avg('power_avg_w'):.3f}",
+                 gpu_board_energy_mean_j=f"{avg('gpu_board_joules'):.6f}",
+                 decomp_mean_gib=f"{avg('decomp_gib'):.6f}",
+                 gpu_board_j_per_gib=f"{avg('gpu_board_j_per_gib'):.6f}",
+                 incremental_gpu_power_vs_idle_w=f"{max(avg('power_avg_w')-idle_power,0):.6f}",
+                 incremental_gpu_j_per_gib=(
+                     f"{max(avg('power_avg_w')-idle_power,0)*1024/avg('decomp_mib_s'):.6f}"
+                     if avg("decomp_mib_s") > 0 else "0.000000"))
         w.writerow(row)
         print(f"{s:8s} business={mean:.0f} ops/s ({mean/base*100:.1f}% baseline) decomp={float(row['decomp_mean_mib_s']):.1f} MiB/s")
 PY

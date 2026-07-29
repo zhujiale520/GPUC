@@ -209,6 +209,50 @@ DRAM bandwidth 或 LLC miss 数据。报告明确保留这一缺口，不用 PCI
 当前 break-even 只存在于“空间容量是否值得”的业务决策，不存在于已测场景的
 总读取时间。文件大小 × 可压缩率 × 并发数的正向时间交叉图应等读路径优化后再画。
 
+### 4.12 随机 I/O、写入与尾延迟矩阵
+
+新增五轮 fio 矩阵覆盖 4/16/128 KiB、顺序读、随机读、顺序写、随机写和
+70:30 随机混合读写，并保存平均值、95% CI、p95/p99/p99.9。Baseline 另测
+libaio QD 1/8/32；GPUC 走同步 libc Hook，因此不把应用 AIO 冒充为已拦截能力。
+COMPRESSED 文件按设计只读，写入矩阵仅比较 Baseline 与 Hook RAW。
+
+该矩阵还发现并修复了 fio 预分配兼容性：缺失的 `ftruncate64`、
+`fallocate(64)`、`posix_fallocate(64)` 拦截，以及内部物理长度查询再次经过
+Hook，会导致 RAW 文件逻辑长度在随机写后反复少 56 字节并最终 EIO。新增回归
+测试执行 512 次随机 `pwrite` 后读取逻辑文件尾。完整数据见
+`results/final/io_workload_matrix_v100_20260729/`。
+
+### 4.13 公开真实数据集
+
+使用 Project Gutenberg ebook #2600《War and Peace》的官方 UTF-8 文本：
+3,359,610 字节，SHA-256
+`2d5bb2ad5f422765e714617e21fa31bbaf8958aa79682c86fca6660fcc5d1b2b`。
+结果目录同时保存下载 URL、目录页、许可证页与目录更新时间。
+
+五轮中 SGLZ 均未达到 85% 压缩门限并正确保留 RAW，占用比 100.10%；
+nvCOMP LZ4 进入 COMPRESSED，占用比 **68.76%**。LZ4 压缩耗时
+0.975 ± 0.017 s，cold/warm 逻辑读取分别为 17.52 ± 0.25 和
+112.07 ± 3.08 MiB/s，仍显著慢于普通文件。这说明真实文本上 LZ4 有空间收益，
+但当前读路径没有性能收益。
+
+### 4.14 pidstat、sar 与能效边界
+
+CPU/GPU/无解压三场景均五轮保存 `pidstat -u -r -w`、`sar -u -r -B -W`
+和 200 ms `nvidia-smi` 原始日志。固定约 4 GiB/s 时，GPU worker 平均约
+0.509 s/5 s 主机 CPU，GPU 利用率约 45.7%。匹配内核的 perf 和 Intel PCM
+仍不可用，故 cycles、LLC miss 和 IMC DRAM bandwidth 继续标为环境阻塞。
+
+V100 板卡边界下，GPU 场景平均功耗约 59.97 W，空闲场景约 58.05 W；
+按二者差值计算的增量能耗约 **0.482 J/GiB**。这不是 CPU package 或整机
+J/GiB：本机没有 RAPL、IPMI 或外部功率计，不能把板卡边界扩大解释。
+
+### 4.15 文件系统与 vdbench 前置条件
+
+仓库已增加 Btrfs/ZFS/DM 只读能力审计，以及 vdbench 顺序读、4 KiB 随机读、
+70:30 混合读写参数和 runner。本机无 root/CAP_SYS_ADMIN、无可见 loop 节点，
+且没有 ZFS/zpool；Oracle Vdbench 需要接受许可证，同时本机缺 Java/Vdbench。
+因此这两项保存了可复核的阻塞证据，但没有生成或伪造性能数字。
+
 ## 5. 决赛可陈述的结论
 
 可以陈述：
@@ -221,6 +265,9 @@ DRAM bandwidth 或 LLC miss 数据。报告明确保留这一缺口，不用 PCI
 - SGLZ 在 1→16 线程有约 2 倍扩展，但 32 线程饱和；
 - batch/read-ahead 各带来约 11% 单线程提升，最优批大小约 4；
 - LZ4 将文本样例空间占用降至约 38%，新版读路径约为旧正式值的 2.21 倍；
+- 公开 Gutenberg 文本上 LZ4 allocated ratio 为 68.76%，SGLZ 正确回退 RAW；
+- 随机/写入矩阵已覆盖 4/16/128 KiB、尾延迟和 Baseline QD 1/8/32；
+- V100 板卡增量边界约 0.482 J/GiB，但不是整机能效；
 - 不可压缩数据能回退 RAW，避免无收益压缩。
 
 不能陈述：
@@ -238,5 +285,5 @@ DRAM bandwidth 或 LLC miss 数据。报告明确保留这一缺口，不用 PCI
 2. 安装匹配内核的 perf/Intel PCM，补 DRAM bandwidth、LLC miss；
 3. 减少 GPU D2H 返回拷贝和上下文切换，继续优化文件读路径；
 4. 实现 userfaultfd mmap 按需页解压；
-5. 在公开、可下载的数据集上扩展真实 workload；
-6. 在独立 btrfs 压缩卷验证 zstd 生效后，才恢复文件系统压缩对比。
+5. 在公开数据库备份等二进制数据上继续扩展已完成的 Gutenberg workload；
+6. 在独立 btrfs 压缩卷验证 zstd 生效，并安装许可版 vdbench 后再恢复横向对比。
