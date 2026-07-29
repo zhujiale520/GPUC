@@ -1,0 +1,35 @@
+#!/usr/bin/env python3
+"""Fail when a relative Markdown link/image points to a missing local file."""
+from pathlib import Path
+import re
+import sys
+
+ROOT = Path(__file__).resolve().parents[1]
+LINK = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
+errors = []
+
+for doc in ROOT.rglob("*.md"):
+    if any(part in {".git", "node_modules"} for part in doc.parts):
+        continue
+    text = doc.read_text(encoding="utf-8", errors="replace")
+    for line_no, line in enumerate(text.splitlines(), 1):
+        for raw in LINK.findall(line):
+            target = raw.strip().split(maxsplit=1)[0].strip("<>")
+            if not target or target.startswith(("#", "http://", "https://", "mailto:")):
+                continue
+            path_part = target.split("#", 1)[0]
+            if not path_part:
+                continue
+            candidate = (doc.parent / path_part).resolve()
+            try:
+                candidate.relative_to(ROOT)
+            except ValueError:
+                errors.append(f"{doc.relative_to(ROOT)}:{line_no}: link escapes repository: {target}")
+                continue
+            if not candidate.exists():
+                errors.append(f"{doc.relative_to(ROOT)}:{line_no}: missing: {target}")
+
+if errors:
+    print("\n".join(errors), file=sys.stderr)
+    sys.exit(1)
+print("PASS: local Markdown links resolve")

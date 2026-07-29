@@ -137,20 +137,22 @@ TLS 缓冲区使用 `cudaHostAlloc` 分配 pinned memory，CUDA 拷贝时无需 
 
 - 设置 `RTLD_NEXT` 函数指针；
 - 初始化 fd 表、白名单、全局锁；
-- 启动后台预初始化线程，延迟 100ms 后尝试 `gpu_compress_init()`；
-- **不立即初始化 CUDA**，避免 constructor 阶段 CUDA 未就绪导致崩溃。
+- **不在 constructor 内启动 CUDA 初始化线程**，避免与应用启动阶段并发初始化。
 
 #### `ensure_backend_init()`（lazy init）
 
 第一次 I/O 时触发：
-1. 若后台预初始化已成功，直接返回；
-2. 否则尝试 `gpu_compress_init()`；
-3. 若失败，打印日志并 fallback 到 `cpu_compress_init()`；
-4. 设置全局函数指针 `g_compress_*` / `g_decompress_*` 指向 GPU 或 CPU 实现。
+1. 第一次需要后端的 I/O 通过 `pthread_once` 进入初始化；
+2. GPU 构建尝试 `gpu_compress_init()`，CPU-only 构建初始化 CPU 后端；
+3. 设置全局函数指针 `g_compress_*` / `g_decompress_*`。
+
+GPU 初始化失败后的跨后端自动切换尚不能视为完整保证；无 GPU 环境应显式使用
+CPU-only 构建产物。
 
 #### `should_cpu_fallback()`
 
-每秒通过 `nvidia-smi` 采样 GPU-Util，若 >80% 则返回 true，当前 read 路径使用 CPU 后端。
+默认直接返回 false。只有设置 `GPUC_ENABLE_NVIDIA_SMI_FALLBACK=1` 时，才至多每秒
+调用一次 `nvidia-smi` 进行实验性负载判断。该方案会创建子进程，不适合默认热路径。
 
 ### 3.3 写路径
 
@@ -196,14 +198,13 @@ TLS 缓冲区使用 `cudaHostAlloc` 分配 pinned memory，CUDA 拷贝时无需 
 
 `mmap()` 拦截实现：
 
-1. 对 COMPRESSED/INLINE 文件的 `MAP_PRIVATE` 读映射，分配匿名内存；
-2. 同步解压前 `MMAP_PRELOAD_SIZE`（默认 16 MB）；
-3. 文件 > 16 MB 时启动后台 `pthread` 异步解压剩余部分；
-4. 立即返回映射地址；
-5. `munmap()` 时 `pthread_join` 等待后台解压完成；
-6. `msync()` 对 `MAP_PRIVATE` 匿名映射直接返回成功。
+1. 对 RAW/COMPRESSED/INLINE 文件的 `MAP_PRIVATE` 读映射分配匿名内存；
+2. RAW 同步读取全部逻辑内容，COMPRESSED/INLINE 同步解压并填充全部内容；
+3. 内容全部就绪后才返回映射地址；
+4. `munmap()` 释放匿名映射；
+5. `msync()` 对 `MAP_PRIVATE` 匿名映射直接返回成功。
 
-限制：暂不支持 `MAP_SHARED` 写映射。
+限制：暂不支持 `MAP_SHARED` 写映射，也尚未实现 `userfaultfd` 页级按需解压。
 
 ### 3.6 数据库文件白名单
 
@@ -252,7 +253,7 @@ main()
 3. 否则按 128 KB 切分 block；
 4. 调用 `sglz_compress_batch()` / `gpu_lz4_compress_batch()` 批量压缩；
 5. 累积 `total_orig` 与 `total_comp`；
-6. 写临时文件 `.gpuctmp`；
+6. 写同目录临时文件 `.gpuc_tmp`；
 7. 计算整体压缩率：若高于 `GPUC_MIN_FILE_COMP_RATIO_PCT`（默认 85%），删除临时文件，保持 RAW；
 8. 否则 `rename()` 原子替换原文件。
 
@@ -323,10 +324,11 @@ int sglz_decompress_batch_compact_wait(int stream_id, int n, ...);
 ### 5.4 Device Memory Pool
 
 `sglz_init()` 预分配：
-- `g_d_batch_in`：输入缓冲区（16/32 × 32 × 4352 B）；
-- `g_d_batch_out`：输出缓冲区（16/32 × 128 KB）；
+- `g_d_batch_in`：每个 stream 的最大 32-block 输入缓冲区；
+- `g_d_batch_out`：每个 stream 的最大 32-block 输出缓冲区；
 - `g_d_batch_out_lens`：输出长度数组；
-- 16 个 CUDA stream 各自的独立内存池。
+- 64 个 CUDA stream 各自的独立内存池；Hook 的 SGLZ 默认 batch 为 4，
+  后端仍保留 32-block 容量。
 
 运行时直接复用预分配内存，完全消除 `cudaMalloc/cudaFree`。
 

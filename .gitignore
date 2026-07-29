@@ -17,6 +17,7 @@ __pycache__/
 # Editor
 .vscode/
 .idea/
+node_modules/
 *.swp
 *.swo
 *~
@@ -24,6 +25,9 @@ __pycache__/
 # Test outputs
 *.json
 *.log
+results/local/
+!results/final/**/*.json
+!results/final/**/*.log
 
 # Temporary files
 tmp/

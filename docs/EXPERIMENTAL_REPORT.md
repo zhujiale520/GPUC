@@ -1,1664 +1,186 @@
-# GPUC Experimental Results Report
+# GPUC 决赛实验报告
+
+> 更新日期：2026-07-29
+> 本报告只采用 `results/final/` 中可复核的结果。此前报告中的 jobs=32
+> “99.8%”、混合缓存口径、伪 O_DIRECT 和未重复实验均已撤下。
 
-> 基于 GPU 的服务资源卸载技术探索
-> 2026 全国大学生计算机系统大赛 — OS 功能挑战赛道
-> 版本：2026-06-12
+## 1. 项目与实验问题
 
----
+GPUC 使用 `LD_PRELOAD` 拦截一组 libc 文件接口，在 RAW 文件关闭后由 daemon
+离线压缩，并在读取 COMPRESSED 文件时用 GPU 解压。它适用于动态链接、通过已拦截
+接口访问普通文件的程序，不覆盖静态链接、直接 syscall、应用自行提交的 io_uring
+或任意内核文件路径。
 
-## Executive Summary
+本轮实验回答四个问题：
 
-本项目在不修改操作系统内核、不改动现有文件系统的前提下，通过 `LD_PRELOAD` 用户态透明拦截层实现存储压缩的 GPU 卸载。核心方案为：**写路径由后台 Daemon 异步 GPU 压缩，读路径对已完成压缩的文件自动调用 GPU 并行解压**，并在 GPU 不可用时自动 fallback 至 CPU 后端。
+1. 文件语义和并发替换是否正确；
+2. warm/cold cache 下真实吞吐如何；
+3. read-ahead、batch、pinned memory 等优化是否有贡献；
+4. GPU 解压是否真正释放 CPU 并提高并行业务吞吐。
 
-**关键结果（Tesla V100-SXM2-32GB，ext4，512 MB 文件）**：
+## 2. 环境与方法
 
-| 指标 | 结果 |
-|------|------|
-| 高并发顺序读（jobs=32, 128k） | GPU Compressed 恢复至 Baseline 的 **99.8%** |
-| 顺序读（128k, zero） | **458.3 MB/s**，与 Baseline（450.9 MB/s）持平 |
-| 随机读 IOPS（4k–128k） | 稳定在 **~800 IOPS** |
-| mmap 返回延迟（512 MB） | 优化后从 2414 ms 降至 **231 ms**，提升 **10.4x** |
-| 压缩率（全零 4 GB） | **3.2%** |
-| 压缩率（Linux headers，LZ4） | **38.6%**（SGLZ 为 82.5%） |
-| 容错边界 | GPU 显存耗尽时自动 fallback CPU，数据验证通过 |
-| 生产级尾延迟 | p99 = **457 µs**，p999 = **578 µs**（randread 128k，IOPS≈3355） |
+- GPU：Tesla V100-SXM2-32GB，compute capability 7.0；
+- 驱动：570.181；内核：Linux 5.15.0；fio：3.16；
+- 核心 fio 实验使用 128 KiB 顺序读、`direct=0`；
+- 每个正式场景通常重复 5 次，报告 mean、sample stddev 和 95% CI；
+- Baseline、Hook RAW、SGLZ/LZ4 使用独立文件且逻辑内容相同；
+- 每轮保存 header state、算法、SHA-256、格式长度和 allocated bytes；
+- warm-cache 在计时前完整逻辑预读；cold-cache 在底层 inode 上执行
+  `POSIX_FADV_DONTNEED` 后只读一遍。
 
-**主要结论**：
-1. 通过多 CUDA Stream、io_uring 异步批量 I/O 与激进 read-ahead，已解决早期 jobs=32 高并发下 GPUC 带宽骤降问题。
-2. GPU 解压本身不再是瓶颈；在 page cache 命中场景下，GPU Compressed 与 Baseline 基本持平。
-3. 小 block 随机读、首次 I/O CUDA 初始化延迟、数据库文件 header 兼容性是当前主要限制。
-4. 系统具备生产级部署的基础：GPU 显存不足时自动 fallback，fsync/崩溃一致性语义保持正确，尾延迟可控。
-
----
-
-## 约定与术语
-
-为避免歧义，本报告采用以下统一写法（历史章节中可能存在少量未完全规范化的情况，后续逐步统一）：
-
-- **单位**：数字与单位之间保留空格，如 `512 MB`、`128 KB`、`20 s`；时间单位使用 `µs`（微秒）、`ms`（毫秒）、`s`（秒）。
-- **I/O 块大小**：正文中使用 `128 KB` 表示块大小；引用 fio 参数时写作 `bs=128k`。
-- **状态简称**：
-  - **Baseline**：不设置 `LD_PRELOAD` 的原始系统行为。
-  - **Hook RAW**：经 Hook 写入、带有 56 B GPUC header 但尚未被 Daemon 压缩的文件状态。
-  - **GPU Compressed / GPUC**：已被 Daemon 压缩为 GPUC 格式的文件状态。
-  - **CPU Compressed / CPU Fallback**：GPU 不可用时由 CPU 后端完成压缩/解压的状态。
-- **测试条件**：`direct=1` 表示绕过 page cache 的 `O_DIRECT` I/O；`direct=0` 表示使用 page cache。
-
----
-
-## 一、项目概述
-
-本项目旨在不修改操作系统内核、不改动现有文件系统（ext4/xfs）的前提下，通过用户态透明拦截层实现存储压缩的 GPU 卸载。核心设计包括：
-
-- **写路径**：应用程序通过标准文件 I/O 透明写入，由后台 Daemon 异步完成 GPU 压缩，避免阻塞业务
-- **读路径**：对已完成压缩的文件，自动调用 GPU 并行解压，对上层应用完全透明
-- **高可用机制**：GPU 初始化失败时自动 fallback 至 CPU 后端，确保系统在无 GPU 环境下仍可正常运行
-- **可插拔压缩后端**：原生 SGLZ 后端外，新增 NVIDIA nvCOMP LZ4 后端（`GPUC_ALGO=lz4`），文本类数据压缩率从 ~82% 降至 ~39%
-- **非侵入式部署**：基于 `LD_PRELOAD` 机制，现有应用无需重新编译或修改
-
-系统整体架构如下图所示（详细模块说明见 `docs/architecture.md`）：
-
-![系统架构](docs/architecture.png)
-
----
-
-## 二、GPUC 文件格式
-
-项目自定义了 GPU-Compress（GPUC）文件格式，在每个被管理的文件头部附加固定大小的元数据：
-
-| 字段 | 偏移 | 大小 | 说明 |
-|------|------|------|------|
-| magic | 0 | 4 B | `0x47505543` ("GPUC") |
-| version | 4 | 4 B | 版本号 |
-| orig_size | 8 | 8 B | 原始逻辑大小（COMPRESSED/INLINE 状态有效） |
-| block_size | 16 | 4 B | 固定 128 KB |
-| num_blocks | 20 | 4 B | 总块数 |
-| state | 24 | 1 B | 0=RAW, 1=COMPRESSED, 2=BUSY, 3=INLINE |
-| comp_algo | 25 | 1 B | 0=NONE, 1=SGLZ, 2=LZ4, 3=Snappy |
-| reserved | 26 | 2 B | 预留对齐 |
-| header_size | 32 | 8 B | 头+索引表总大小（8字节对齐） |
-| mtime | 40 | 8 B | 修改时间 |
-| ctime | 48 | 8 B | 创建时间 |
-
-**Header 实际大小**：`sizeof(struct gpuc_header) = 56` 字节。`reserved`（offset 26–27）至 `header_size`（offset 32）之间存在 4 字节编译器自动填充，用于保证 `uint64_t` 的 8 字节对齐。
-
-文件采用 128 KB 固定分块，每块通过块索引表（`struct gpuc_block_entry`，24 字节/entry）记录其原始长度、压缩后长度、物理偏移及 CRC32 校验值。压缩后的块以紧凑格式存储，不足 128 KB 的部分通过 `lseek` 制造稀疏文件空洞以保持逻辑对齐。
-
-**新增：INLINE 小文件内联存储**
-
-对于 `data_size ≤ 1024 B` 的小文件，不分配 block entry，直接将原始数据内联到 header 之后：
-- `state = GPUC_STATE_INLINE (3)`
-- `num_blocks = 0`
-- `header_size = sizeof(hdr) + data_size`
-- 数据紧跟在 56 字节 header 之后
-
-**RAW 状态设计**：RAW 状态下 `orig_size` 固定为 0，逻辑大小由 `phys_size - header_size` 动态计算。Daemon 完成压缩后回填真实的 `orig_size`。
-
-### 2.1 关键路径时序图
-
-以下给出 `write()`、`read()`、`mmap()` 三条核心路径的数据流与关键时序。
-
-#### write() 路径
-
-```
-App: write(buf, len)
- │
- ▼
-Hook: open() / write() / close()
- ├─ 若 header_pending：首次 write 时 flush 56 B RAW header
- ├─ 写入原始数据到物理文件（phys_offset = header_size + logical_offset）
- └─ close() 前确保 header 已落盘
- │
- ▼
-Kernel VFS / ext4
- │
- ▼
-Daemon (async): gpu_compress_daemon 扫描 RAW 文件
- ├─ 读取 128 KB block
- ├─ GPU 压缩 → 紧凑格式存储
- ├─ 更新 header：state=COMPRESSED, orig_size, num_blocks
- └─ 写回同一文件（原子替换 via rename）
-```
-
-#### read() 路径（GPU Compressed）
-
-```
-App: read(fd, buf, len)
- │
- ▼
-Hook: ensure_backend_init() → GPU lazy init (~200 ms for first I/O)
- │
- ▼
-Hook: read_compressed()
- ├─ 逻辑 offset → block_id
- ├─ 查 per-fd single-block cache（命中则 memcpy 返回）
- ├─ miss：io_uring 批量异步预读后续 block
- ├─ GPU batch decompress（16 streams，MAX_BATCH_BLOCKS=16）
- ├─ cudaStreamSynchronize() → D2H 拷贝
- ├─ CRC32 校验（可选，编译时关闭）
- └─ 拷贝请求范围到用户 buf
- │
- ▼
-App: 获得解压后原始数据
-```
-
-#### mmap() 路径
-
-```
-App: mmap(fd, len, PROT_READ)
- │
- ▼
-Hook: mmap() 拦截
- ├─ 匿名 mmap 分配整个逻辑大小内存
- ├─ 同步解压前 MMAP_PRELOAD_SIZE（默认 16 MB）
- ├─ 文件 > 16 MB：启动后台 pthread 异步解压剩余部分
- └─ 立即返回映射地址（无需等待全部解压完成）
- │
- ▼
-App: 访问地址
- ├─ 前 16 MB：已就绪，直接命中
- └─ 后续区域：后台线程持续填充，必要时 mprotect 解除只读/只写限制
- │
- ▼
-App: munmap()
-Hook: pthread_join 等待后台解压完成 → munmap 释放内存
-```
-
----
-
-## 三、测试环境
-
-| 参数 | 配置 |
-|------|------|
-| GPU | Tesla V100-SXM2-32GB |
-| CUDA | 12.8 |
-| 文件系统 | ext4 |
-| 测试文件 | 512 MB（除非特别说明） |
-| 运行时间 | 5 s / 项（fio） |
-| 引擎 | sync |
-| 备注 | **GPU 完全空闲**（10 MiB 显存占用，GPU-Util 0%） |
-
-### 3.1 实验方法
-
-为保证实验可复现，所有性能测试遵循以下统一方法：
-
-1. **创建 RAW 文件**：必须在前端通过 Hook 写入，确保文件头部已附加 56 字节 GPUC header。
-   ```bash
-   LD_PRELOAD=./bin/libgpuhook.so GPUCOMPRESS_QUIET=1 \
-       dd if=/dev/zero of=/tmp/test/file.bin bs=1M count=512 status=none
-   ```
-2. **触发压缩**：使用后台 Daemon 将 RAW 文件转换为 COMPRESSED 状态。
-   ```bash
-   ./bin/gpu_compress_daemon /tmp/test
-   ```
-3. **避免 page cache 干扰**：fio 测试统一使用 `--direct=1`，dd 测试使用 `iflag=direct` 或 `oflag=direct`。
-4. **重复与采样**：每个 fio 测试项运行 5–20 s；耗时类测试取 10 次平均；涉及 GPU 的测试在 GPU 完全空闲状态下进行。
-5. **Baseline 定义**：同一命令在 **不设置 `LD_PRELOAD`** 的情况下运行，其余参数保持一致。
-6. **指标采集**：带宽（MB/s）、IOPS、延迟（µs）、CPU 占用（mpstat）、上下文切换（vmstat）、syscall 分布（strace）。
-
----
-
-## 四、核心优化与实验结果
-
-### 4.0 统一性能对比表
-
-下表汇总了所有关键场景下的 Baseline、Hook RAW 与 GPU Compressed 性能对比。数据基于 512 MB 文件、ext4 文件系统、GPU 空闲状态；除特别说明外，fio 使用 `--direct=1` 以避免 page cache 干扰。
-
-| 维度 | Baseline | Hook RAW | GPU Compressed | 说明 |
-|------|---------|---------|---------------|------|
-| 顺序读 128k（zero） | 450.9 MB/s | 451.7 MB/s | **458.3 MB/s** | page cache 命中，GPU 解压无 overhead |
-| 顺序读 128k（rand） | 448.0 MB/s | 443.0 MB/s | **433.0 MB/s** | 随机数据不可压缩，逐 block bypass GPU |
-| 随机读 128k（zero） | 157.5 MB/s | 143.8 MB/s | **153.4 MB/s** | 按 128k block 解压后裁剪 |
-| 随机读 1M（zero） | 274.4 MB/s | 269.7 MB/s | **266.3 MB/s** | 大 bs 摊销随机寻址开销 |
-| 小 bs 随机读 IOPS（zero） | — | — | **~810 IOPS** | bs 4k–128k 范围内 IOPS 基本锁定 |
-| 顺序写 128k（zero, time_based） | 116.6 MB/s | 100.8 MB/s | N/A | 写 RAW，Daemon 异步压缩 |
-| 多线程 jobs=16（128k, zero） | 3768.1 MB/s | 3792.1 MB/s | **3797.7 MB/s** | page cache 多核并行 |
-| 多线程 jobs=32（128k, zero） | 4900.2 MB/s | N/A | **4889.1 MB/s** | 多 stream + io_uring + read-ahead 优化后 |
-| mmap 512 MB（zero） | 264.2 ms | 199.1 ms | **231.4 ms** | 优化后：前 16 MB 同步 + 后台异步解压 |
-| 压缩率（4 GB zero） | N/A | N/A | **3.2%** | 物理大小 129 MB |
-| 生产级尾延迟（randread 128k） | — | — | p99=457 µs, p999=578 µs | GPU 解压抖动可控 |
-
-**总览**：
-- **顺序读/高并发读**：GPU Compressed 与 Baseline 基本持平（97–100%），GPU 解压不再是瓶颈。
-- **随机读**：受限于 128k block 解压粒度，IOPS 锁定在 ~800，小 bs 场景仍有优化空间。
-- **写路径**：Hook RAW 比 Baseline 慢约 13.5%（time_based），主要由 56 B header 写入与 syscall 拦截开销导致；压缩由 Daemon 异步完成，不阻塞应用写入。
-- **mmap**：按需解压优化后返回时间从 2414 ms 降至 231 ms，提升 10.4x。
-
----
-
-### 4.1 CUDA Kernel 重构
-
-#### 4.1.1 优化内容
-
-1. **线程级并行**：将压缩 kernel 的线程组织方式从"每 warp 1 线程工作"改为"每 block 64 线程各处理一个 chunk"，显著提升了 SM 利用率
-2. **Shared Memory 加速**：将 3-byte hash 表从 local memory 迁移至 shared memory，采用 stride layout 避免 bank conflict
-3. **CUDA Stream 异步**：引入 `cudaStreamCreate` 实现 H2D 拷贝、kernel 执行、D2H 拷贝的流水线重叠
-
-#### 4.1.2 实验数据
-
-测试配置：压缩 64 MB 数据（512 个 128 KB 块）
-
-| 数据类型 | CPU 压缩 (MB/s) | GPU 单块 (MB/s) | GPU Batch (MB/s) | 解压 CPU (MB/s) | 解压 GPU (MB/s) |
-|---------|----------------|----------------|-----------------|----------------|----------------|
-| 可压缩重复数据 | **1212** | 166.7 | **>4700** | 1249 | **>4690** |
-| 全零数据 | **2617** | 214.1 | **>4690** | 1738 | **>4690** |
-| 随机数据 | **609** | 23.4 | **>4700** | 3245 | **>4700** |
-
-**分析**：
-- GPU batch decompress 速度远超 CPU（>4690 vs ~1738 MB/s），但受限于 timer 精度（`gettimeofday` 在微秒级），batch 模式下 64MB 数据处理时间低于测量精度，显示为 0.000s
-- GPU 单块压缩速度（166-214 MB/s）低于 CPU（609-2617 MB/s），但 batch 模式通过摊销 kernel 启动和 H2D/D2H 拷贝开销，实际吞吐量远超单块
-- 全零数据场景 CPU 压缩极快（2617 MB/s），因为 `memcmp` 等优化可快速判定高重复性；GPU 仍需执行完整 kernel 逻辑
-
----
-
-### 4.2 Hook 读路径批量 GPU 解压优化
-
-#### 4.2.1 问题分析
-
-初始实现采用逐块解压策略：每处理一个 128 KB 块需执行 3 次 `cudaMalloc`/`cudaFree` 及 1 次 kernel 启动。对于 512 MB 文件（4096 个块），累计产生 12288 次设备内存分配/释放操作，成为主要性能瓶颈。
-
-#### 4.2.2 Batch Decompress 优化
-
-将解压粒度从单块提升至批量，一次处理最多 16 个块（512 个 chunks）：
-1. 预读 16 个压缩块至 CPU 缓冲区
-2. 一次性 H2D 拷贝至 GPU
-3. 启动单个 kernel 同时解压 512 个 chunks
-4. 一次性 D2H 拷贝回 CPU
-
-#### 4.2.3 Device Memory Pool 优化
-
-Batch 优化后，每次 `read()` 仍触发 `cudaMalloc(3次) + cudaFree(3次)`。实测单次 `cudaMalloc` 耗时约 0.7 ms，间隔调用时 CUDA driver 的内存池优化失效。
-
-在 `sglz_init()` 中预分配最大 batch（16 blocks）所需的设备内存（约 6 MB）：
-- `g_d_batch_in`：输入缓冲区（`16 × 32 × 4352` 字节）
-- `g_d_batch_out`：输出缓冲区（`16 × 128 KB`）
-- `g_d_batch_out_lens`：输出长度数组（`16 × sizeof(size_t)`）
-
-`sglz_decompress_batch()` 直接复用预分配内存，完全消除运行时 `cudaMalloc`/`cudaFree`。
-
-#### 4.2.4 紧凑格式解压（零 Slot 转换）
-
-磁盘存储采用紧凑格式（只写实际压缩长度），但 GPU kernel 需要固定 slot 布局以便并行寻址。早期实现需在 CPU 侧逐 chunk 做 `memcpy` 将紧凑格式转为 slot 布局。
-
-优化后引入 `sglz_decompress_batch_compact()`：在 GPU kernel 中通过 `chunk_offsets` 索引表直接定位每个 chunk 的紧凑数据起始位置，完全消除 CPU 侧的 `memcpy` 开销。
-
-#### 4.2.5 双缓冲流水线（Dual-Buffer Pipeline）
-
-进一步引入双 CUDA stream 异步流水线，将 I/O 与 GPU 计算重叠：
-- Stream A：提交 batch N 的 GPU 解压
-- CPU 同时准备 batch N+1 的磁盘读取
-- Stream B：提交 batch N+1 的 GPU 解压
-- 交替使用两套独立的 TLS 缓冲区和 device 内存池
-
-#### 4.2.6 io_uring 异步 I/O
-
-引入 io_uring 批量异步 pread，减少 syscall 开销：
-- 使用 Linux raw syscall 实现（`__NR_io_uring_setup` / `__NR_io_uring_enter`）
-- 每次批量提交最多 16 个 block 的读取请求
-- 失败时自动 fallback 到 `pread64`
-
-#### 4.2.7 自适应 Read-Ahead
-
-引入顺序访问检测机制：
-- 追踪上次读取的 block 编号，检测顺序/随机访问模式
-- 连续顺序读取时，预读窗口从 0 逐步扩展至 4/8/16 个 block
-- `lseek` 或随机访问时立即重置预读窗口为 0
-
-#### 4.2.8 实验数据
+GPUC 紧凑格式的 56 字节头和压缩块 offset 不满足真正 O_DIRECT 的对齐要求。
+Hook 对已识别的 GPUC 文件显式清除 `O_DIRECT`，因此不报告 O_DIRECT 性能。
 
-**各状态顺序读性能对比**（512 MB，page cache 命中）：
-
-| 状态 | zero 128k | rand 128k | rep 128k |
-|------|----------|----------|----------|
-| Baseline | 450.9 | 448.0 | 451.5 |
-| Hook RAW | 451.7 | 443.0 | 447.2 |
-| GPU Compressed | **458.3** | **433.0** | **442.4** |
+原始数据、fio JSON、环境与脚本索引见
+[`../results/final/README.md`](../results/final/README.md)。
 
-**不同 I/O 粒度下的 GPU 解压性能**（zero 数据）：
-
-| I/O 块大小 | 顺序读 (MB/s) | 随机读 128k (MB/s) | 随机读 1M (MB/s) |
-|-----------|--------------|-------------------|-----------------|
-| 128 KB | **458.3** | 153.4 | — |
-| 1 MB | **410.9** | — | 266.3 |
-| 4 MB | **451.3** | — | — |
-
-**分析**：
-1. **GPU 完全不是瓶颈**：idle GPU 下，128 KB 顺序读 GPU Compressed（458.3 MB/s）甚至略高于 Baseline（450.9 MB/s），差异在测量误差范围内
-2. 1 MB 粒度（410.9 MB/s）略低于 128 KB，原因是 fio 的 sync 引擎在 1M bs 下 IOPS 降低，page cache 预读优势减弱
-3. 4 MB 粒度（451.3 MB/s）回到与 128 KB 持平，说明大粒度 batch 进一步摊销了开销
-4. 随机读 128 KB（153.4 MB/s）较顺序读下降 67%，原因在于随机访问破坏了 read-ahead 和 batch 合并；增大到 1M bs 可提升至 266.3 MB/s
-5. **GPU 负载对比**：idle 状态（458.3 MB/s）vs 14 GB 占用（80.6 MB/s）性能下降至约 **1/5.7**；idle 状态 vs 3 GB 占用（438.4 MB/s）基本持平
-
----
+## 3. 正确性与工程修复
 
-### 4.3 Pinned Memory 优化
-
-**问题**：Hook TLS 缓冲区使用 `malloc` 分配的普通内存，`cudaMemcpy` 时 CUDA driver 需额外分配临时 pinned buffer 做中转，引入一次冗余 memcpy。
-
-**优化**：TLS 缓冲区改用 `cudaHostAlloc` 分配页锁定内存（pinned memory）：
-- H2D/D2H 拷贝可直接在 pinned memory 与 device memory 间进行，无需 driver 中转
-- 当 CUDA 不可用时自动 fallback 至 `malloc`
-
-**实现**：`gpu_compress.cu` 中新增 `gpu_tls_alloc_pinned()` / `gpu_tls_free_pinned()`；`hook.c` 中通过 `tls_alloc` / `tls_free` 宏自动选择分配策略。
-
----
-
-### 4.4 CPU Fallback 机制
-
-**问题**：早期实现中 `hook_init` 直接调用 `cudaSetDevice`，若 CUDA 未就绪或设备不可用，程序直接退出。
+最终回归通过：
 
-**优化**：
-1. **Lazy Init**：`hook_init` 中仅设置函数指针，不立即初始化 CUDA；第一次 I/O 时通过 `pthread_once` 触发 `ensure_backend_init()`
-2. **自动 Fallback**：若 `gpu_compress_init()` 返回失败，自动将后端切换为 CPU（`cpu_compress_init` / `cpu_decompress_batch`），对用户完全透明
+- GPU unit/integration、混合块、INLINE、cp/dd；
+- nvCOMP LZ4 与 SGLZ 压缩后 SHA-256 回读；
+- RAW 的 `writev/pwrite/O_APPEND/ftruncate/dup` 语义；
+- COMPRESSED 写入、截断和破坏性修改统一返回 `EROFS`；
+- 白名单 rename 使用同目录临时文件、fsync、原子 rename，并保留
+  mode/owner/mtime/xattr；
+- daemon 原子替换期间，同一路径的已打开读者和重复 reopen 读者保持一致；
+- 损坏 header、block table、非法 offset 和超大字段在 open 时拒绝；
+- io_uring 全局 ring 的提交/完成队列加事务锁，并按 `user_data` 归属 CQE；
+- CUDA stream 池扩为 64，覆盖 32 个双流水线线程，避免 stream 重用覆盖；
+- ASan/UBSan CPU Hook、shell 语法和 Markdown 本地链接检查通过。
 
-**验证**：
-```bash
-CUDA_VISIBLE_DEVICES="" LD_PRELOAD=./bin/libgpuhook.so ./bin/test_hook read /tmp/test.bin 262144
-```
-输出：
-```
-[HOOK] GPU lazy init failed (ret=-1), fallback to CPU backend
-[test_hook] Read 262144 bytes, data verified OK
-```
-
----
-
-### 4.5 mmap 拦截支持
-
-**背景**：数据库、编译器等大量应用使用 `mmap` 而非 `read/write` 访问文件。未拦截 mmap 时，这些应用直接读取压缩后的物理数据，导致数据损坏。
-
-**实现**：拦截 `mmap` / `munmap` / `msync` 三个系统调用：
-- `mmap`：对 COMPRESSED/INLINE 文件的 `MAP_PRIVATE` 读映射，分配匿名内存并调用 `read_compressed_at()` 预解压数据，返回匿名地址
-- `munmap`：释放匿名内存
-- `msync`：对匿名 `MAP_PRIVATE` 映射直接返回成功
-
-**限制**：暂不支持 `MAP_SHARED` 写映射。
+mmap 当前方案是在 `mmap()` 返回前同步准备完整逻辑映射，保证立即访问任意页正确；
+它不是 userfaultfd 按需页解压。
 
-**验证**：压缩后的测试文件通过 mmap 读取，数据一致性 100% 通过。
+## 4. 主要结果
 
----
+### 4.1 warm-cache 并发扩展
 
-### 4.6 小文件内联（Inline）优化
-
-**背景**：≤1 KB 的小文件使用传统的 block entry + 128 KB 对齐方式会产生严重的空间放大（128 KB vs 实际 1 KB）。
+| 线程 | Baseline MiB/s | Hook RAW MiB/s | SGLZ MiB/s |
+|---:|---:|---:|---:|
+| 1 | 7539.8 ± 57.2 | 8476.2 ± 135.9 | 187.9 ± 0.5 |
+| 4 | 22083.2 ± 133.0 | 23996.7 ± 143.2 | 344.8 ± 6.2 |
+| 8 | 38712.8 ± 182.4 | 42356.9 ± 178.3 | 349.1 ± 6.6 |
+| 16 | 66162.5 ± 1676.0 | 70080.2 ± 700.2 | 381.6 ± 6.2 |
+| 32 | 59153.2 ± 2468.5 | 83950.2 ± 11475.4 | 348.8 ± 5.4 |
 
-**实现**：
-- 新增 `GPUC_STATE_INLINE = 3`，阈值 `GPUC_INLINE_THRESHOLD = 1024`
-- Daemon 识别小文件后直接内联存储：`header_size = 56 + data_size`，无 block entry
-- Hook 读取 INLINE 文件时直接从 header 后 `pread64` 读取原始数据，无需 GPU 解压
-
-**实验数据**（10000 次读取平均值）：
-
-| 文件大小 | 读取延迟 | 说明 |
-|---------|---------|------|
-| 128 B | **9.23 us** | 10000 次读取平均值 |
-| 256 B | **7.64 us** | 10000 次读取平均值 |
-| 512 B | **9.25 us** | 10000 次读取平均值 |
-| 768 B | **6.60 us** | 10000 次读取平均值 |
-| 1024 B | **9.52 us** | 10000 次读取平均值 |
-
-**分析**：INLINE 文件读取只需一次 `pread64` 系统调用，无需 GPU 解压和 block 索引查找，延迟极低（平均 **8.4 us**）。延迟与文件大小无明显关联，主要受系统调用开销和 page cache 命中影响。
+SGLZ 从 1 到 16 线程提升约 2.03 倍，32 线程回落，说明高并发已受 GPU
+提交、同步和共享资源争用限制。Baseline/RAW 是内存缓存吞吐，不代表磁盘带宽。
 
----
+### 4.2 cold-cache 单遍
 
-### 4.7 Daemon Compress GPU 内存池
+| 路径 | mean MiB/s | 95% CI |
+|---|---:|---:|
+| Baseline | 389.3 | ±21.8 |
+| Hook RAW | 390.7 | ±1.3 |
+| SGLZ | 178.7 | ±5.6 |
 
-**背景**：`sglz_compress_batch()` 每次调用都执行 `cudaMalloc/cudaFree`，对于 512 MB 文件（4096 blocks）累计产生数千次设备内存分配。
-
-**优化**：
-- 将 `SGLZ_MAX_BATCH_BLOCKS` 从 16 提升至 32（匹配 daemon 的 BATCH_SIZE=32）
-- 在 `sglz_init()` 中预分配 compress 专用 device 内存池（约 8.4 MB）
-- `sglz_compress_batch()` 直接复用内存池，消除 `cudaMalloc/cudaFree`
+在这台机器上，减少物理读取量仍不足以抵消 GPU 解压和传输成本；本项目不能声称
+顺序冷读普遍快于原文件。
 
-**实验数据**：
+### 4.3 消融
 
-| 数据类型 | 压缩耗时 | 吞吐量 |
-|---------|---------|--------|
-| zero (512 MB) | **2.137 s** | **234.0 MB/s** |
-| rand (512 MB) | **6.580 s** | **76.0 MB/s** |
-| rep (512 MB) | **2.279 s** | **219.4 MB/s** |
-| mixed (512 MB) | **4.362 s** | **114.6 MB/s** |
+| 变体 | mean MiB/s | 相对 full |
+|---|---:|---:|
+| full | 182.0 | 基准 |
+| no read-ahead | 161.8 | -11.10% |
+| no batch | 162.0 | -10.99% |
+| no pinned | 177.3 | -2.61% |
+| no io_uring | 182.4 | +0.23% |
+| no pipeline | 182.8 | +0.43% |
+| minimal | 158.0 | -13.20% |
 
-**分析**：
-- 可压缩数据（zero/rep）的压缩吞吐量超过 219 MB/s，单文件压缩耗时仅约 2 秒
-- 随机数据压缩耗时较长（6.58 秒），因为压缩算法需完整处理每个 chunk 后才能判定不可压缩并 fallback
-- 混合数据（53.1% 压缩率）耗时 4.36 秒，符合预期（前半可压缩 2s，后半随机 3.3s，取平均）
-- 内存池优化消除了约 4096 次 `cudaMalloc/cudaFree` 调用，显著降低了压缩延迟
+本场景只证实 read-ahead、batch 和 pinned memory 的贡献。io_uring 和双流水线
+没有超出噪声的收益，不能作为确定加速结论。
 
----
+### 4.4 批大小
 
-### 4.8 压缩率测试
+| blocks/batch | 1 | 2 | 4 | 8 | 16 | 32 |
+|---:|---:|---:|---:|---:|---:|---:|
+| MiB/s | 161.9 | 177.8 | **183.2** | 182.9 | 183.1 | 182.3 |
 
-| 数据类型 | 原始大小 | 物理大小 | 压缩率 |
-|---------|---------|---------|--------|
-| 全零数据 | 512 MB | **16 MB** | **3.2%** |
-| 重复模式 (0xAB) | 512 MB | **16 MB** | **3.2%** |
-| 混合数据（半可压半随机） | 512 MB | **272 MB** | **53.1%** |
-| 随机数据 | 512 MB | 512 MB | **100% (fallback)** |
+SGLZ 默认批大小由 16 调整为 4；4 之后没有显著收益，并可降低每线程缓冲占用。
 
-**分析**：
-- 全零和重复模式压缩率一致（3.2%），说明 SGLZ 算法对高重复性数据的压缩效果稳定
-- 混合数据压缩率 53.1%，符合预期（前半可压缩，后半随机 fallback）
-- 随机数据场景下压缩算法检测到输出不小于输入，自动 fallback 存储原始数据，避免负压缩
-- 物理大小使用 `du -B1` 测量，正确反映稀疏文件的实际磁盘占用
+### 4.5 同一文本数据的四路径
 
----
+输入为固定顺序、固定 mtime/owner 的 `/usr/include` tar，逻辑大小 37,703,680 B。
 
-#### 4.8b 可压缩率梯度测试（2026-06-11 补充）
+| 路径 | allocated bytes | 占原始比例 | warm mean MiB/s |
+|---|---:|---:|---:|
+| Baseline | 37,703,680 | 100.0% | 9666.0 ± 22.2 |
+| Hook RAW | 37,707,776 | 100.0% | 10519.2 ± 207.7 |
+| SGLZ | 30,851,072 | 81.8% | 107.8 ± 0.3 |
+| nvCOMP LZ4 | 14,356,480 | 38.1% | 81.0 ± 0.1 |
 
-**测试脚本**：`tests/compressibility_gradient.sh`
+LZ4 读路径由逐块同步改为 4 块 batch 后，从修复前诊断值 29.4 提升到
+81.0 MiB/s，但仍慢于 SGLZ。LZ4 的优势目前是空间，不是读取速度。
 
-为量化可压缩率与压缩耗时、解压读带宽的关系，生成 0% / 25% / 50% / 75% / 100% 五种可压缩率数据（每 4KB 块内按比例混合随机与全零字节）。测试条件：512 MB 文件、bs=128k、sync 引擎、`direct=1`、runtime 20s。
+### 4.6 可压缩率梯度
 
-| 可压缩率 | 物理大小 | 压缩率 | 压缩耗时 | 解压读带宽（128k bs） |
-|---------|---------|--------|---------|----------------------|
-| 0%（全随机） | 512 MB | **100.0%** | 5.98 s | **296.3 MB/s** |
-| 25% | 400 MB | **78.1%** | 5.26 s | **224.1 MB/s** |
-| 50% | 272 MB | **53.1%** | 4.28 s | **268.3 MB/s** |
-| 75% | 144 MB | **28.2%** | 3.10 s | **336.9 MB/s** |
-| 100%（全零） | 16 MB | **3.2%** | 2.02 s | **545.7 MB/s** |
+128 MiB 输入中，可压缩 4 KiB 页比例从 0% 增加到 100%：
 
-**关键发现**：
-1. **压缩耗时随可压缩率提升而单调下降**：0% 需 5.98s，100% 仅 2.02s，因为 GPU 对高可压缩数据解压更快。
-2. **解压读带宽与可压缩率总体正相关**，但 25% 出现局部低谷（224 MB/s），甚至低于 0% 的 296 MB/s。
-3. **25% 低谷解释**：该比例下数据既不是完全不可压（未触发 RAW fallback），也不是高度可压，GPU kernel 需要执行解压但每个 block 的压缩比较小，导致“解压计算 overhead”与“节省的 I/O”不匹配。而 0% 全随机数据直接 fallback RAW 读，绕过了 GPU 解压，反而更快。
-4. **实际应用启示**：
-   - 对低可压缩数据（<25%），直接 RAW fallback 可能优于勉强 GPU 解压。
-   - 对高可压缩数据（>50%），GPU 解压显著减少磁盘 I/O，带宽提升明显。
-   - 存在最佳可压缩率阈值，未来可引入自适应策略：当预估压缩率低于阈值时直接 RAW 存储。
+| 可压缩页 | 状态 | allocated bytes | GPUC warm MiB/s |
+|---:|---|---:|---:|
+| 0% | RAW | 134,221,824 | 7893.8 ± 129.8 |
+| 25% | COMPRESSED | 103,522,304 | 234.1 ± 0.8 |
+| 50% | COMPRESSED | 71,114,752 | 202.9 ± 1.2 |
+| 75% | COMPRESSED | 37,724,160 | 175.3 ± 0.8 |
+| 100% | COMPRESSED | 4,239,360 | 182.7 ± 1.4 |
 
----
+0% 数据被 85% 阈值正确保留为 RAW。格式 `stat` 长度包含稀疏区，空间结论必须
+使用 allocated bytes。
 
-#### 4.8c nvCOMP LZ4 后端压缩率对比（2026-06-17 补充）
+### 4.7 CPU 业务与 GPU 卸载
 
-**测试脚本**：`tests/nvcomp_lz4.sh`
+| 业务线程 | CPU LZ4 保留业务吞吐 | GPU LZ4 保留业务吞吐 | CPU/GPU 解压 MiB/s |
+|---:|---:|---:|---:|
+| 4 | 87.5% | 87.1% | 8950 / 2074 |
+| 1 | 50.1% | 48.6% | 10374 / 2093 |
 
-为提升文本类等真实数据的压缩率，引入 **NVIDIA nvCOMP LZ4** GPU 压缩后端（`GPUC_ALGO=lz4`）。下表在同一 Linux headers 数据集（`/usr/include` tar 包，约 35.7 MB）上与原生 SGLZ 对比：
+当前同步 GPU API 没有提高业务吞吐，GPU 提交线程仍占用共享核心。因而“GPU
+卸载释放 CPU”不是已证明贡献。后续需要独立服务进程、持久化 nvCOMP device
+内存池和真正异步完成通知，再重新验证。
 
-| 方案 | 原始大小 | 物理大小 | 压缩率 | 压缩耗时 | 128k 顺序读带宽（page cache 命中） |
-|------|---------|---------|--------|---------|----------------------------------|
-| GPUC (SGLZ) | 35.7 MB | 30.9 MB | **82.5%** | ~180 ms | **279 MB/s** |
-| GPUC (LZ4, nvCOMP) | 35.7 MB | 14.5 MB | **38.6%** | ~200 ms | **581 MB/s** |
-| 用户态 lz4 -1 | 35.7 MB | ~10 MB | ~28% | — | ~446 MB/s（单线程解压到 /dev/null） |
+4 workers 场景中，GPU 板卡平均功耗约 45.2 W，解压约 2074 MiB/s，对应约
+22.3 J/GiB 的板卡总能耗；相对 idle 44.1 W 的增量约 0.55 J/GiB。该值不包含
+CPU/整机功耗，不能与 CPU LZ4 做完整能效结论。
 
-**关键发现**：
-1. **压缩率显著改善**：在 Linux headers 文本类数据上，LZ4 后端将物理大小从 SGLZ 的 30.9 MB 降至 14.5 MB，压缩率从 82.5% 提升到 38.6%，相对 SGLZ 压缩率提升 **53.2%**。
-2. **解压带宽反而提升**：由于 LZ4 压缩后每块物理大小更小，磁盘 I/O 量减少，128k 顺序读带宽从 SGLZ 的 279 MB/s 提升至 581 MB/s。
-3. **压缩耗时基本持平**：LZ4 GPU 压缩耗时约 200 ms，与 SGLZ 的 180 ms 处于同一量级，说明 nvCOMP LZ4 在 V100 上充分利用了 GPU 并行性。
-4. **全零数据**：LZ4 后端对 8 MB 全零数据压缩率同样达到 **3.2%**，与 SGLZ 一致。
+### 4.8 压缩成本与 break-even
 
-**实现要点**：
-- `src/gpu_lz4.cu`：封装 nvCOMP batched LZ4 压缩/解压接口，输出格式 `[1B flag][payload]`（flag=0 表示该块未压缩存储，flag=1 表示 LZ4 payload）。
-- `src/cpu_lz4.c`：基于系统 liblz4 提供 CPU fallback 解压路径，确保 GPU 不可用时仍可读取 LZ4 格式文件。
-- `src/daemon.c` / `src/hook.c`：通过 `GPUC_ALGO` 环境变量切换压缩后端；Hook 读取时根据 `comp_algo` 自动选择 SGLZ 或 LZ4 解压路径。
-- 默认仍使用 SGLZ（`GPUC_ALGO` 未设置或不是 `lz4`），保证向后兼容。
+`results/final/break_even.csv` 对 cold-cache、Linux headers 和 25–100%
+可压缩率梯度逐项比较实测读取吞吐。所有 COMPRESSED 路径都慢于对应 Baseline；
+因此即便把离线压缩耗时假设为 0，也没有正的读取次数性能 break-even。加入实测
+0.66–1.65 s/128 MiB 的压缩耗时只会扩大差距。
 
----
+当前 break-even 只存在于“空间容量是否值得”的业务决策，不存在于已测场景的
+总读取时间。文件大小 × 可压缩率 × 并发数的正向时间交叉图应等读路径优化后再画。
 
-### 4.9 fio 基准测试
+## 5. 决赛可陈述的结论
 
-#### 4.9.1 顺序写性能
+可以陈述：
 
-| 数据类型 | 128k Baseline | 128k Hook RAW | 1M Baseline | 1M Hook RAW | 4M Baseline | 4M Hook RAW |
-|---------|--------------|--------------|------------|------------|------------|------------|
-| zero | 119.2 | 160.7 | 120.4 | 117.0 | 119.5 | 118.9 |
-| rand | 117.3 | 152.2 | 120.2 | 115.3 | 119.7 | 118.2 |
-| rep | 120.3 | 148.9 | 120.2 | 117.7 | 120.3 | 120.0 |
+- 已完成文件语义、损坏格式和 daemon 原子替换的系统性修复；
+- SGLZ 在 1→16 线程有约 2 倍扩展，但 32 线程饱和；
+- batch/read-ahead 各带来约 11% 单线程提升，最优批大小约 4；
+- LZ4 将文本样例空间占用降至约 38%，但当前读吞吐低于 SGLZ；
+- 不可压缩数据能回退 RAW，避免无收益压缩。
 
-**分析**：
-- 128k bs 下 Hook RAW 写入比 Baseline 快 25-35%，原因是 fio 的 `--buffer_pattern` 在写入前预生成数据，page cache 写合并减少了实际落盘次数
-- 1M/4M bs 下 Baseline 与 Hook RAW 基本持平（~118-120 MB/s），此时写入带宽主要受磁盘 flush 速度限制
+不能陈述：
 
-**补充：time_based 顺序写 overhead（128k bs，20s）**：
+- 顺序读普遍快于 Baseline；
+- 当前版本已经释放 CPU 并提高业务吞吐；
+- 支持真正 O_DIRECT；
+- mmap 是按访问页解压；
+- 对任意应用完全透明，或已达到生产级。
 
-| 场景 | 写带宽 (MB/s) | IOPS | 说明 |
-|------|--------------|------|------|
-| Baseline | 116.6 | 933.2 | 无 hook |
-| Hook RAW | 100.8 | 806.5 | 含 header 写入开销 |
+## 6. 下一步
 
-**测试脚本**：`tests/write_path_overhead.sh`
-
-**分析**：在持续写入场景下，Hook RAW 比 Baseline 慢约 **13.5%**，主要来自 56 字节 header 的写入和 LD_PRELOAD 拦截 syscall 的额外开销。该 overhead 在可接受范围内，且压缩由后台 Daemon 异步完成，不会阻塞应用写入。
-
-##### 4.9.1b 写路径 & 混合负载（2026-06-11 补充）
-
-**测试脚本**：`tests/write_mixed_load.sh`
-
-测试在 `direct=1` 下进行，避免 page cache 干扰，覆盖：多线程并发写、随机读写混合、写后立刻读。
-
-**1）多线程并发写**
-
-| bs | jobs | Baseline (MB/s) | Hook RAW (MB/s) | Hook/Baseline |
-|-----|------|----------------|----------------|---------------|
-| 128k | 1 | 128.7 | 128.6 | **99.9%** |
-| 128k | 32 | 80.3 | 83.4 | **103.9%** |
-| 1M | 1 | 128.5 | 128.5 | **100.0%** |
-| 1M | 32 | 125.0 | 128.7 | **103.0%** |
-
-- 单线程写：Hook RAW 与 Baseline 基本持平，header 写入 overhead 可忽略。
-- 高并发写（jobs=32）：Hook RAW 反而略超 Baseline（103%），可能因为 hook 对 header 的延迟写入减少了同步落盘次数。
-
-**2）随机读写混合（randrw，rwmixread=50）**
-
-| bs | jobs | Baseline (MB/s) | Hook RAW (MB/s) | Hook/Baseline |
-|-----|------|----------------|----------------|---------------|
-| 128k | 1 | 82.2 | 86.9 | **105.7%** |
-| 128k | 32 | 170.7 | 169.6 | **99.4%** |
-| 1M | 1 | 143.0 | 165.8 | **115.9%** |
-| 1M | 32 | 198.2 | 170.6 | **86.1%** |
-
-- 单线程混合负载：Hook RAW 在 1M bs 下提升明显（115.9%），可能与 page cache / 写合并行为有关。
-- jobs=32 + 1M bs：Hook RAW 为 Baseline 86.1%，可能是 header 维护与多线程锁竞争导致，但仍可接受。
-
-**3）写后立刻读（fresh data path）**
-
-| bs | Baseline (MB/s) | Hook RAW (MB/s) | Hook/Baseline |
-|-----|----------------|----------------|---------------|
-| 128k | 307.5 | 356.5 | **115.9%** |
-| 1M | 369.9 | 388.0 | **104.9%** |
-
--  freshly written 的 RAW 文件读取，Hook RAW 略快于 Baseline，说明 header 偏移转换 overhead 很小。
-
-**结论**：写路径与混合负载下，Hook RAW 与 Baseline 总体处于同一水平（90–115%），未引入显著性能退化。
-
-#### 4.9.2 顺序读性能对比（128k bs，512 MB）
-
-| 场景 | zero (MB/s) | rand (MB/s) | rep (MB/s) |
-|------|------------|------------|------------|
-| Baseline | 450.9 | 448.0 | 451.5 |
-| Hook RAW | 451.7 | 443.0 | 447.2 |
-| GPU Compressed | **458.3** | **433.0** | **442.4** |
-
-**说明**：
-- 所有读取数据均在 page cache 命中（无磁盘 I/O 瓶颈），Baseline/Hook RAW/GPU Compressed 性能基本持平
-- GPU Compressed 与 Hook RAW 差距 < 4%，说明 batch decompress + 内存池 + 流水线优化已完全消除 GPU 解压开销
-- rand GPU Compressed = 433.0 MB/s（略低于 443.0），因为随机数据不可压缩但仍需逐 block 判定（`comp_len == orig_len` 时 bypass GPU kernel）
-
-#### 4.9.3 不同 I/O 粒度顺序读（zero 数据）
-
-| I/O 块大小 | Baseline (MB/s) | Hook RAW (MB/s) | GPU Compressed (MB/s) |
-|-----------|----------------|----------------|----------------------|
-| 128 KB | 450.9 | 451.7 | **458.3** |
-| 1 MB | 408.4 | 407.8 | **410.9** |
-| 4 MB | 447.6 | 448.7 | **451.3** |
-
-#### 4.9.4 随机读性能
-
-**128k bs**：
-
-| 场景 | zero (MB/s) | rand (MB/s) |
-|------|------------|------------|
-| Baseline | 157.5 | 158.0 |
-| Hook RAW | 143.8 | 147.8 |
-| GPU Compressed | **153.4** | **149.1** |
-
-**1M bs**：
-
-| 场景 | zero (MB/s) | rand (MB/s) |
-|------|------------|------------|
-| Baseline | 274.4 | 267.5 |
-| Hook RAW | 269.7 | 265.9 |
-| GPU Compressed | **266.3** | **265.7** |
-
-**分析**：随机读 1M bs（266 MB/s）较 128k bs（153 MB/s）提升 74%，说明更大粒度的 I/O 能有效摊销随机访问的寻址开销。
-
-**更小 bs 的随机读（GPU Compressed，zero 数据）**：
-
-| BS | IOPS | 带宽 (kB/s) | 平均延迟 (us) |
-|----|------|------------|--------------|
-| 4k | 810.5 | 3242.0 | 1232.5 |
-| 16k | 830.8 | 13293.0 | 1202.5 |
-| 64k | 778.7 | 49839.0 | 1281.7 |
-| 128k | 741.0 | 94851.0 | 1345.0 |
-
-**测试脚本**：`tests/random_read_small_bs.sh`
-
-**分析**：
-- IOPS 在 4k–128k 范围内基本稳定在 **~800**，说明随机读瓶颈不在 I/O 大小，而在于每次请求的解压/元数据解析开销
-- 4k 场景下单次延迟约 **1.2 ms**，对于小块随机访问可接受，但明显高于纯 SSD 随机读（通常 <100 us）
-- 该结果验证了系统在小块随机读下的边界行为：即使 bs 小于 128k，Hook 仍需按 128k 块解压并裁剪，导致 IOPS 无法随 bs 减小而提升
-
-![小 bs 随机读](docs/figures/random_read_small_bs.png)
-
-#### 4.9.5 多线程并发扩展性（128k bs）
-
-**zero 数据**：
-
-| 并发数 | Baseline | Hook RAW | GPU Compressed | 扩展比 |
-|-------|---------|---------|---------------|--------|
-| 1 | 456.3 | 466.3 | 466.3 | 1.00x |
-| 2 | 604.4 | 603.5 | 587.3 | 1.26x |
-| 4 | 1098.0 | 1101.8 | 1090.9 | 2.34x |
-| 8 | 1985.0 | 1997.2 | 1991.8 | 4.27x |
-| 16 | 3768.1 | 3792.1 | **3797.7** | **8.14x** |
-
-**rand 数据**：
-
-| 并发数 | Baseline | Hook RAW | GPU Compressed | 扩展比 |
-|-------|---------|---------|---------------|--------|
-| 1 | 445.8 | 451.7 | 454.2 | 1.00x |
-| 2 | 600.8 | 593.8 | 600.8 | 1.32x |
-| 4 | 1071.3 | 1054.2 | 1112.2 | 2.45x |
-| 8 | 1932.1 | 1977.2 | 2037.4 | 4.49x |
-| 16 | 3862.2 | 3757.7 | **3922.1** | **8.63x** |
-
-**分析**：
-- 多线程读取随并发数近线性扩展，jobs=16 时达 ~3800-3900 MB/s，主要受 page cache 带宽限制
-- GPU Compressed 与 Hook RAW 在所有并发度下基本持平，GPU batch 解压完全不是瓶颈
-- zero 与 rand 数据的扩展性一致，说明 GPU 解压性能不受数据可压缩性影响（不可压缩数据直接 bypass）
-
-**扩展至 jobs=32（优化前，page cache 命中）**：
-
-| 数据类型 | Baseline (MB/s) | GPU Compressed (MB/s) | 说明 |
-|---------|----------------|----------------------|------|
-| zero | **18003.3** | **269.4** | Baseline 继续扩展，GPUC 骤降 |
-| rand | **19390.1** | **267.0** | 同上 |
-
-**测试脚本**：`tests/multithread_jobs32.sh`
-
-**测试条件**：未使用 `direct=1`，数据主要来源于 page cache，因此 Baseline 随并发数继续扩展至 ~18-19 GB/s；该组数据主要用来说明早期 GPUC 在多线程下的并发瓶颈，与下方优化后的 `direct=1` 数据**不宜直接做绝对数值对比**。
-
-**关键发现（历史版本）**：
-- **jobs=32 时 Baseline 继续飙升至 ~18-19 GB/s**（page cache 多核并行极限）
-- **但 GPU Compressed 骤降至 ~267 MB/s**，仅为 jobs=16 时的 **7%**
-- 原因分析：32 线程同时竞争单 GPU Stream 的 batch 队列，导致大量线程阻塞等待 `cudaStreamSynchronize()`；每线程的 128k 请求无法有效合并为大批量 kernel 调用
-
----
-
-**扩展至 jobs=32（优化后，2026-06-11）**：
-
-经过多 CUDA Stream（16 streams）、io_uring 异步批量 I/O（depth=128）、更激进的自适应 read-ahead，以及 bs≥1M 的 batch 覆盖，jobs=32 骤降问题已解决。
-
-**测试方法修正**：使用 `LD_PRELOAD=libgpuhook.so` 创建 RAW 文件以确保 header 正确，再用 `gpu_compress_daemon` 压缩，保证读取时真正走 GPU 解压路径。
-
-**测试脚本**：`tests/benchmark_high_concurrency.sh`
-
-**测试条件**：使用 `direct=1` 绕过 page cache，以 focus 对比 GPU 解压路径与 Baseline 的磁盘 I/O 能力；下表数值与上方 page cache 命中组不宜直接比较。
-
-| 数据类型 | bs | direct | Baseline (MB/s) | GPU Compressed (MB/s) | GPUC/Baseline |
-|---------|-----|--------|----------------|----------------------|---------------|
-| zero | 128k | 1 | 4900.2 | **4889.1** | **99.8%** |
-| zero | 1M | 1 | 414.3 | **412.9** | **99.7%** |
-| rand | 128k | 1 | 396.6 | **395.8** | **99.8%** |
-| rand | 1M | 1 | 435.2 | **425.2** | **97.7%** |
-
-**关键结论**：
-- **jobs=32 时 GPU Compressed 已恢复至 Baseline 的 97-100%**，骤降问题消除
-- bs=128k 与 bs=1M 均表现接近 Baseline，说明 read-ahead + 多 stream 有效摊销了 kernel 启动开销
-- bs=1M 并未显著优于 bs=128k，因为 read-ahead 已让小 bs 达到同样效果
-
-![多线程扩展性](docs/figures/multithread_scalability.png)
-
-#### 4.9.6 dd 直接 I/O 吞吐测试（512 MB，1M bs）
-
-| 数据类型 | Baseline (MB/s) | Hook RAW (MB/s) |
-|---------|----------------|----------------|
-| zero | 56.6 | 397.8 |
-| rand | 57.2 | 361.1 |
-| rep | 56.8 | 318.9 |
-
-**说明**：Baseline 使用 `iflag=direct` 绕过 page cache，仅 ~57 MB/s（纯磁盘读取）；Hook RAW 因 page cache 命中达到 318-398 MB/s。本组对比**不控制 page cache 条件**，主要说明 Hook RAW 在缓存命中时的行为；若 Hook 也使用 `iflag=direct`，读带宽应与 Baseline 处于同一量级。
-
-#### 4.9.7 mmap 读取性能（512 MB，10 次平均）
-
-| 数据类型 | 平均耗时 |
-|---------|---------|
-| zero | **449.5 ms** |
-| rep | **441.5 ms** |
-
-**说明**：mmap 读取压缩文件时，hook 拦截 `mmap` 调用，预解压数据到匿名内存后返回。10 次 512MB 文件读取平均约 445 ms，等效带宽约 **1146 MB/s**。
-
-**不同文件大小的 mmap 读取耗时**：
-
-| 文件大小 | Baseline (ms) | Hook RAW (ms) | GPU Compressed (ms) | 压缩后减速比 |
-|---------|--------------|---------------|---------------------|-------------|
-| 64 MB | 58.1 | 60.2 | 420.9 | **7.0x** |
-| 256 MB | 161.1 | 165.7 | 1263.3 | **7.6x** |
-| 512 MB | 264.2 | 199.1 | 2414.5 | **12.1x** |
-| 1 GB | 445.5 | 450.6 | 4688.6 | **10.4x** |
-
-**测试脚本**：`tests/mmap_size_sweep.sh`
-
-**分析**：
-- **Baseline 与 Hook RAW 基本持平**：mmap 拦截后若文件未压缩，额外开销很小（仅 header 解析）
-- **GPU Compressed 显著慢于 Baseline**：64MB 减速 7.0x，512MB 减速 12.1x，原因在于当前实现需要在 `mmap()` 调用时**一次性预解压整个文件**到匿名内存
-- 对于数据库等按页映射的场景（每次只映射几 MB），这种全量预解压策略会成为严重瓶颈，是后续优化的重点方向
-
-![mmap 大小扫描](docs/figures/mmap_size_sweep.png)
-
----
-
-##### 4.9.7b mmap 按需解压优化后（2026-06-11）
-
-**实现**：改为同步预解压前 16 MB + 后台 `pthread` 异步解压剩余部分。`mmap()` 返回时间不再与文件大小成正比。
-
-| 文件大小 | 优化前 mmap (ms) | 优化后 mmap (ms) | 提升倍数 |
-|---------|-----------------|-----------------|---------|
-| 64 MB | 420.9 | **226.3** | **1.9x** |
-| 256 MB | 1263.3 | **229.8** | **5.5x** |
-| 512 MB | 2414.5 | **231.4** | **10.4x** |
-| 1 GB | 4688.6 | ~235 (预估) | **~20x** |
-
-**关键结论**：
-- 512MB 文件 `mmap()` 返回时间从 **2414 ms → 231 ms**，**提升 10.4x**
-- 后台线程在 `mmap()` 返回后继续解压剩余部分，不影响主线程执行
-- `munmap()` 时会等待后台线程完成后再释放内存
-- 若应用请求的保护位不是 `PROT_READ|PROT_WRITE`（如 `PROT_READ`），主线程仅 `mprotect` 预加载部分，后台线程完成后再 `mprotect` 剩余部分
-
----
-
-##### 4.9.7c 大文件顺序读测试（2026-06-11 补充）
-
-**测试脚本**：`tests/large_file_benchmark.sh`
-
-当前环境 `/tmp` 可用空间约 11 GB，因此实际完成 **4 GB** 文件测试；16 GB / 64 GB 需更大磁盘空间，脚本已支持通过 `LARGE_FILES=1` 启用。
-
-**文件创建与压缩**：
-
-| 文件大小 | RAW 创建时间 | GPU 压缩时间 | 逻辑大小 | 物理大小 | 压缩率 |
-|---------|------------|------------|---------|---------|--------|
-| 4 GB | 33.22 s | 14.54 s | 4096 MB | 129 MB | **3.2%** |
-
-**顺序读带宽（direct=1）**：
-
-| bs | jobs | Baseline (MB/s) | GPU Compressed (MB/s) | GPUC/Baseline |
-|-----|------|----------------|----------------------|---------------|
-| 128k | 1 | 690.2 | **708.2** | **102.6%** |
-| 128k | 32 | 4953.2 | **4949.6** | **99.9%** |
-| 1M | 1 | 1459.4 | **1316.8** | **90.2%** |
-| 1M | 32 | 4708.3 | **4724.2** | **100.3%** |
-
-**mmap 返回时间**：
-
-| 文件大小 | mmap 返回时间 |
-|---------|--------------|
-| 4 GB | **342.7 ms** |
-
-**分析**：
-- 4 GB 文件压缩率约 **3.2%**，压缩后仅 129 MB，验证 zero 数据高压缩场景有效。
-- jobs=32 时 GPU Compressed 与 Baseline 基本持平（99.9–100.3%），说明多 Stream + read-ahead 在大文件高并发下依然有效。
-- bs=1M jobs=1 时 GPUC 为 Baseline 90.2%，单线程大文件顺序读仍有少量优化空间（可能与 D2H 串行有关）。
-- 4 GB `mmap()` 返回 342 ms，与 512 MB 的 231 ms 接近，符合“同步预解压前 16 MB + 后台异步”设计预期。
-
----
-
-### 4.10 新优化汇总（2026-06-04，GPU 完全空闲状态）
-
-| 优化项 | 涉及文件 | 核心改进 | 量化效果 |
-|--------|---------|---------|---------|
-| **Daemon Compress 内存池** | `gpu_compress.cu` | 预分配 8.4 MB device 内存，消除 `cudaMalloc/cudaFree` | 压缩耗时 2.14s（512MB zero，234 MB/s） |
-| **小文件内联** | `file_header.h` + `daemon.c` + `hook.c` | ≤1KB 文件直接内联到 header 后 | 读取延迟 6.6-9.5 us（平均 8.4 us） |
-| **Batch GPU Decompress** | `hook.c` + `gpu_compress.cu` | 一次解压 16 blocks（512 chunks），摊销 kernel 启动开销 | 顺序读 458 MB/s（128k bs） |
-| **Device Memory Pool** | `gpu_compress.cu` | 预分配 decompress 内存池（双缓冲），消除 `cudaMalloc/cudaFree` | 零分配延迟 |
-| **双缓冲流水线** | `hook.c` + `gpu_compress.cu` | 两套 CUDA stream 重叠 I/O 与 GPU 计算 | 隐藏 H2D/D2H 延迟 |
-| **io_uring 异步 I/O** | `hook.c` | Raw syscall 批量提交 pread | 减少 syscall 次数 |
-| **自适应 Read-Ahead** | `hook.c` | 顺序检测 + 动态窗口 0→4→8→16 blocks | 提升顺序读吞吐 |
-| **Pinned Memory** | `gpu_compress.cu` | TLS 缓冲区改用 `cudaHostAlloc` | 消除 driver 中转 memcpy |
-| **CRC32 校验** | `file_header.h` + `daemon.c` + `hook.c` | 每 block 存储 CRC32，hook 解压后验证 | 数据完整性保障 |
-| **压缩比阈值** | `daemon.c` | 仅当压缩率 < 85% 时存储压缩数据 | 避免负压缩 |
-| **紧凑格式解压** | `gpu_compress.cu` | GPU kernel 内通过索引表直接定位紧凑数据 | 消除 CPU 侧 `memcpy` |
-| **16-Stream 扩展** | `gpu_compress.cu` + `hook.c` | 16 个 CUDA stream + 线程 TLS 分配 + 独立内存池 | 独立优化时 jobs=32 无改善 (267→270 MB/s)；配合 read-ahead/io_uring 后恢复至 99.8%（见 4.9.5） |
-| **CRC32 跳过编译选项** | `hook.c` + `Makefile` | `GPUC_NO_VERIFY_CRC` 宏跳过 CRC32 校验 | 单线程 +3.8% (790→820 MB/s)，多线程无提升，被 cudaStreamSynchronize 淹没 |
-| **mmap 按需解压** | `hook.c` | 同步预解压前 16 MB + 后台 pthread 异步解压剩余 | 512MB `mmap()` 返回 2414→231 ms，**提升 10.4x** |
-| **高优先级 CUDA Stream** | `gpu_compress.cu` | `cudaStreamCreateWithPriority(..., greatestPriority)` | GPU 共享场景减少被其他 CUDA 任务抢占 |
-| **GPU 负载自动 fallback** | `hook.c` | `nvidia-smi` 检测 GPU-Util >80% 时自动切换 CPU 后端 | 极端负载下稳定保持 CPU 后端 177 MB/s |
-| **后台预初始化线程** | `hook.c` | constructor 启动后台线程，延迟 100ms 后 CUDA init | 长生命周期应用首次 I/O 降至 <10ms |
-| **Block Cache** | `hook.c` | per-fd 单 block cache，命中时跳过 GPU 解压 | 小块随机读有局部性时 IOPS 2-4x 提升 |
-| **延迟 Header 写入** | `hook.c` | open 时标记 pending，首次 write/close 时写入 header | 减少 open 时磁盘 I/O，写入带宽 +10-15% |
-
----
-
-### 4.11 Ablation Study（消融实验）
-
-为量化各项优化的独立贡献，引入编译时宏开关逐项关闭优化，固定测试条件：512MB zero 数据，128k bs，sync 引擎，page cache 命中，GPU 空闲。
-
-| 实验组 | 关闭的优化 | 编译参数 | 顺序读带宽 (MB/s) | 相对降幅 |
-|--------|-----------|---------|------------------|---------|
-| **A（全优化基线）** | 无 | — | **147.9** | 0.0% |
-| **B** | 关闭 io_uring | `-DGPUC_NO_IOURING` | **135.1** | **-8.7%** |
-| **C** | 关闭 Read-Ahead | `-DGPUC_NO_READAHEAD` | **122.1** | **-17.5%** |
-| **D** | 关闭双缓冲流水线 | `-DGPUC_NO_PIPELINE` | **147.9** | **0.0%** |
-| **E** | 关闭 Pinned Memory | `-DGPUC_NO_PINNED` | **150.6** | **+1.8%**¹ |
-| **H** | 关闭 Batch Decompress（逐块） | `-DGPUC_NO_BATCH` | **123.1** | **-16.8%** |
-| **MIN** | 全部关闭（最简路径） | 上述全部 | **123.6** | **-16.4%** |
-
-¹ Pinned Memory 在 page cache 完全命中的场景下收益不显著，差异在测量噪声范围内。
-
-**关键结论**：
-1. **Batch Decompress + Read-Ahead 是读路径的两大核心优化**：两者合计贡献了约 25% 的带宽提升
-2. **io_uring 贡献约 9%**：在 sync 引擎、bs=128k 场景下，syscall 批量化仍带来可感知的收益
-3. **双缓冲流水线在本场景下贡献为 0**：因为 fio sync 引擎每次只读 128k（1 block），不存在 I/O 与 GPU 计算的重叠窗口；该优化在 bs≥1M（多 block/次 read）时才能发挥作用
-4. **Batch=1 时带宽降至 123 MB/s**：说明 batch 化确实有效，但降幅（16.8%）小于早期预期（90%+），因为 page cache 命中后 I/O 本身不是瓶颈，kernel 启动开销的占比被稀释
-
-![Ablation Study 结果](docs/figures/ablation_study.png)
-
-#### 4.11.1 数据库文件白名单（兼容性修复）
-
-**背景**：真实 workload 中，SQLite / LevelDB 等数据库文件在 offset 0 处具有严格的 magic / header 格式（如 SQLite 的 16 B magic、LevelDB 的 `CURRENT` / `MANIFEST-*` / `.log` 文件）。Hook 在该位置写入 56 B RAW header 会破坏格式，导致数据库无法打开（见 4.13.1 原结论）。
-
-**实现**（`src/hook.c`）：
-1. 维护数据库文件后缀白名单：`.db`、`.db-journal`、`.db-wal`、`.wal`、`.log`、`.ldb`、`.sst`、`CURRENT`、`MANIFEST-*`。
-2. 对命中白名单的文件：`open()` / `openat()` / `creat()` 直接返回原始 fd，不附加 GPUC header；读/写按原始 offset 透传。
-3. 拦截 `rename()`：LevelDB 等常通过临时文件 rename 生成最终文件（如 `000001.dbtmp` → `CURRENT`）。若目标路径命中白名单且源文件为 RAW 状态，Hook 会**跳过 56 B header** 复制真实内容，避免 header 污染数据库文件。
-4. 默认白名单可通过环境变量扩展：`GPUC_WHITELIST` 追加自定义后缀；`GPUC_NO_DB_WHITELIST=1` 关闭默认规则。
-
-**验证**：`tests/db_whitelist.sh`
-
-| Workload | 操作 | 结果 |
-|---------|------|------|
-| SQLite | 创建表、插入 1000 行、SELECT | **PASS** |
-| LevelDB | `fillseq` / `readseq` / `readrandom` | **PASS** |
-
-**关键结论**：
-- 白名单机制将 Hook 的适用范围扩展到常见数据库文件，不再因为 56 B header 导致数据库损坏。
-- 被白名单跳过的文件不再享受 GPU 压缩收益，但这是兼容性优先的合理权衡。
-- 后续可通过更细粒度的“按进程/目录白名单”进一步提升灵活性。
-
----
-
-#### 4.11.2 自适应低可压缩率文件级 fallback
-
-**背景**：4.8b 可压缩率梯度测试显示，当数据可压缩率约为 25% 时，解压读带宽（224 MB/s）甚至低于全随机数据的 RAW fallback（296 MB/s）。原因：低可压缩数据仍需执行 GPU 解压，但节省的 I/O 不足以覆盖解压计算 overhead。
-
-**实现**（`src/daemon.c`）：
-1. Daemon 在整文件压缩过程中累计 `total_orig` 与 `total_comp`。
-2. 压缩完成后，计算整体压缩率 `total_comp / total_orig`。
-3. 若整体压缩率高于阈值 `GPUC_MIN_FILE_COMP_RATIO_PCT`（默认 85%），则认为 GPU 解压收益无法覆盖 overhead，直接删除临时压缩文件，保持原文件为 RAW 状态。
-4. 阈值可通过环境变量调整；设置 `GPUC_MIN_FILE_COMP_RATIO_PCT=100` 可关闭该策略。
-
-**验证**：`tests/low_compressibility_fallback.sh`
-
-| 可压缩率 | 压缩后状态 | 说明 |
-|---------|-----------|------|
-| 0%（全随机） | **RAW** | 触发 fallback |
-| 25% | **RAW** | 触发 fallback |
-| 50% | **RAW** | 触发 fallback |
-| 100%（全零） | **COMPRESSED** | 压缩收益明显，保留压缩 |
-
-**关键结论**：
-- 文件级 fallback 有效避免了“勉强压缩”导致的性能低谷。
-- 该策略仅作用于 daemon 压缩阶段，对已经 COMPRESSED 的文件无影响，保持向下兼容。
-- 默认 85% 阈值可根据实际 workload 调整；对日志/文本类数据通常不会触发，对数据库/随机二进制数据可有效跳过压缩。
-
----
-
-### 4.12 Batch Size 参数敏感性分析
-
-固定条件：512 MB 文件，bs=128k，sync 引擎，`direct=1`，分别对 zero / rand 数据文件进行 GPU 压缩后扫描 batch 大小（通过编译参数 `-DMAX_BATCH_BLOCKS=N` 覆盖 `src/hook.c` 与 `src/cpu_compress.c` 中的默认值）。
-
-| Batch Size | zero (MB/s) | rand (MB/s) |
-|-----------|------------|------------|
-| 1 | **705.7** | **684.7** |
-| 2 | **511.9** | **402.7** |
-| 4 | **705.9** | **530.2** |
-| 8 | **493.2** | **697.3** |
-| 16 | **447.1** | **627.6** |
-| 32 | **567.8** | **699.7** |
-
-**关键结论**：
-- 在 `direct=1` 场景下，读带宽主要受磁盘 / page cache 行为影响，batch size 对整体趋势的影响被 I/O 层稀释，数值波动较大。
-- 16 与 32 之间未观察到显著性能回归；32 blocks 在 rand 数据上略高，在 zero 数据上与 16 接近。
-- 为统一 GPU 侧与 CPU fallback 侧的 batch 上限，`src/cpu_compress.c` 中的 `SGLZ_MAX_BATCH_BLOCKS` 已从 16 提升至 32，与 `src/gpu_compress.cu` / `src/hook.c` 侧保持一致。
-- 综合考虑显存占用（32 blocks 设备内存池约 12 MB）与收益不确定性，**当前默认仍保持 16 blocks**；在 bs≥2M 或超大文件顺序读场景下，可尝试将默认值提升至 32 进一步摊销 kernel 启动开销。
-
-**波动原因分析**：
-1. **`direct=1` 放大了磁盘 I/O 抖动**：每次 fio 请求直接落盘，10 s runtime 内磁盘调度、NCQ 重排等会引入显著噪声，掩盖 batch size 的边际收益。
-2. **`rand` 数据在 batch=2 出现局部低谷（402.7 MB/s）**：随机数据块不可压缩（`comp_len == orig_len`），GPU kernel 被 bypass；过小的 batch 无法让 read-ahead / io_uring 有效合并请求，导致 I/O 提交碎片化。batch≥8 后合并效果显现，带宽回升。
-3. **`zero` 数据 batch=2/8/16 波动**：全零块压缩后体积极小（约 4 KB/块），读 I/O 本身极快，此时 batch 内部是否“凑满”对 kernel 启动摊销不敏感，反而因 read-ahead 预读范围变化产生非单调波动。
-4. **测量建议**：后续若要精确量化 batch size 本身的影响，应在 page cache 命中（`direct=0`）或 ramdisk 环境下，采用更长 runtime（≥60 s）和多次重复取平均，以隔离 I/O 层噪声。
-
-![Batch Size 性能曲线](docs/figures/batch_size_sweep.png)
-
----
-
-### 4.13 真实 Workload 评估
-
-为验证系统不仅适用于 zero/rand 等合成数据，补充三类真实 workload：
-
-| 数据类型 | 原始大小 | 压缩后大小 | 压缩率 | 压缩耗时 | 解压读带宽 |
-|---------|---------|-----------|--------|---------|-----------|
-| Linux headers（文本类，SGLZ） | 69 MB | 53 MB | **75.9%** | 915 ms | **460.0 MB/s** |
-| Linux headers（文本类，LZ4） | 35.7 MB | 14.5 MB | **38.6%** | ~200 ms | **581 MB/s** |
-| SQLite 数据库（B-tree） | 52 MB | 52 MB | **100.0%** | 1788 ms | **449.5 MB/s** |
-| HTTP access log（日志类） | 513 MB | 356 MB | **69.2%** | 6133 ms | **272.1 MB/s** |
-
-> 注：SQLite 数据库在白名单机制启用后不再附加 GPUC header（见 4.11.1），表中数据反映其原始压缩测试结果（压缩率 100%，实际保持 RAW 存储）。
-
-**关键结论**：
-1. **文本类数据压缩效果较好**（75.9%），与全零数据（3.2%）有差距，但仍能显著降低磁盘占用
-2. **SQLite 数据库几乎不可压缩**（100%），原因是 B-tree 页已经过高度结构化，且插入的是随机字符串；系统自动 fallback 到原始存储，避免负压缩
-3. **日志类数据压缩率达 69.2%**，解压读带宽 272 MB/s，说明系统对半结构化日志有效；带宽低于全零数据，因为日志数据的 chunk 级压缩/解压计算量更大
-4. **真实数据下的压缩耗时明显高于全零数据**（日志 6133 ms vs 全零 2137 ms），验证了压缩率与压缩耗时之间的权衡关系
-5. **nvCOMP LZ4 后端对文本类数据更优**：在 Linux headers 上将压缩率从 SGLZ 的 82.5% 降至 38.6%，同时 128k 顺序读带宽从 279 MB/s 提升到 581 MB/s，实现“压缩率更高、读带宽更高”的双赢
-
----
-
-#### 4.13.1 补充：数据库 / 编译缓存 / ML 数据加载 Workload（2026-06-11）
-
-**测试脚本**：`tests/real_workload_comprehensive.sh`（历史兼容性数据）；`tests/db_whitelist.sh`（白名单修复验证）
-
-为验证 Hook 对更复杂真实场景的兼容性，补充四类 workload：SQLite 事务数据库、LevelDB LSM-Tree、ccache 编译缓存、ML 数据加载。
-
-> 说明：下表中 SQLite / LevelDB 的 **FAILED** 为**未启用数据库白名单**时的历史结果；4.11.1 已实现白名单机制，修复后状态为 **PASS**（见本节末尾综合结论）。
-
-**1）SQLite 事务数据库**
-
-| 指标 | Baseline | 未启用白名单 | 启用白名单后 |
-|-----|---------|-------------|-------------|
-| 导入 10 万行 | 1.28 s | **FAILED** | **PASS** |
-| 1 万随机查询 | 0.13 s | **FAILED** | **PASS** |
-
-- **未启用白名单时，Hook 下 SQLite 报错 "database disk image is malformed"**。
-- 根因：SQLite 在 offset 0 读取/写入固定 magic 和 B-tree 元数据，而 Hook 在该位置存放 56 字节 RAW header，导致 SQLite 解析出错。
-- **该问题已通过 4.11.1 数据库文件白名单修复**。
-
-**2）LevelDB LSM-Tree**
-
-| 指标 | Baseline | 未启用白名单 | 启用白名单后 |
-|-----|---------|-------------|-------------|
-| fillseq | 2.84 us/op | **FAILED** | **PASS** |
-| readseq | 0.67 us/op | **FAILED** | **PASS** |
-| readrandom | 0.87 us/op | **FAILED** | **PASS** |
-| verify errors | 0 | **FAILED** | **PASS** |
-
-- **未启用白名单时，Hook 下 LevelDB 报错 "bad magic number"**，原因与 SQLite 相同：LevelDB 的 CURRENT/MANIFEST/log 文件有严格 magic/header 格式，Hook 插入的 RAW header 破坏格式。
-- Baseline 验证 1000 条记录无错误。
-- **该问题已通过 4.11.1 数据库文件白名单修复**。
-
-**3）ccache 编译缓存**
-
-| 指标 | Baseline | Hook RAW | Hook/Baseline |
-|-----|---------|---------|---------------|
-| cold compile 500 文件 | 33.28 s | 38.51 s | **86.4%** |
-| hot compile 500 文件 | 10.31 s | 12.94 s | **79.7%** |
-
-- ccache 缓存文件为普通二进制/文本，无严格 magic，Hook 可正常工作。
-- Hook 引入约 **14–26%** 开销，主要来自每次小文件编译时的 header 创建与 LD_PRELOAD syscall 拦截。
-
-**4）ML 数据加载（ImageNet 风格，1000 张 1MB 图片）**
-
-| 指标 | Baseline | Hook RAW / Compressed | Hook/Baseline |
-|-----|---------|----------------------|---------------|
-| 顺序读取 1000 张 | 0.43 s / 5500 MB/s | 2.90 s / 362 MB/s | **14.8%** |
-| 随机读取 200 张 | 0.13 s / 3599 MB/s | 0.77 s / 300 MB/s | **16.9%** |
-
-- 图片文件使用 `/dev/urandom` 生成（近似不可压缩），Hook 将其标记为 RAW/COMPRESSED 后读取。
-- 大量 1 MB 小文件场景下，Hook 的 open/header/block-table 解析 overhead 被放大，导致读取带宽下降至 Baseline 的 **15–17%**。
-- 优化方向：per-fd 多 block cache、批量预取、减少单次 open 开销。
-
-**综合结论**：
-- **SQLite / LevelDB 兼容性问题已通过 4.11.1 数据库文件白名单机制修复**：对白名单内文件跳过 GPUC header，`rename()` 临时文件时也会剥离 header，数据库 workload 功能验证通过。
-- 对于普通文件（ccache、ML 数据），Hook 可工作，但在**大量小文件随机读**场景下 overhead 仍然明显。
-- 白名单文件不享受 GPU 压缩收益，属于兼容性优先的权衡；若需对数据库内容压缩，需要应用层配合或在数据库引擎内实现压缩。
-
----
-
-### 4.14 Hook 初始化延迟（First-I/O Penalty）
-
-Lazy Init 机制虽然避免了 constructor 阶段 CUDA 未就绪导致的崩溃，但首次 I/O 时需要完成 `cudaSetDevice` + `cudaStreamCreate` + `cudaMalloc` 等初始化。测试方法：每次启动新进程执行一次 read，触发完整 lazy init 链路。
-
-| 读取大小 | GPU 路径首次耗时 | CPU fallback 首次耗时 | 倍数 |
-|---------|-----------------|---------------------|------|
-| 4 KB | **201 ms** | **29 ms** | 6.9x |
-| 128 KB | **203 ms** | **38 ms** | 5.3x |
-| 1 MB | **211 ms** | **56 ms** | 3.8x |
-
-**关键结论**：
-- **GPU 路径首次 I/O 惩罚约 200 ms**，主要花在 `cudaSetDevice` 和 device memory pool 预分配（~6 MB）
-- **CPU fallback 首次惩罚约 30~55 ms**，显著低于 GPU 路径
-- 该惩罚只在每个进程的**首次 I/O** 时出现，后续读取进入微秒级（page cache 命中场景）
-- 对于长生命周期的后台服务或大数据批处理，该惩罚可被摊销；但对 `ls`/`cat` 等短生命周期交互式命令不友好
-
----
-
-### 4.15 容错与边界测试（Fault Tolerance & Boundary）
-
-为验证 Hook 在极端或非理想环境下的鲁棒性，新增 `tests/fault_tolerance_boundary.sh`，覆盖 daemon 并发读写、GPU 显存耗尽 fallback、磁盘空间不足（ENOSPC）、进程崩溃一致性、fsync 语义五类场景。
-
-| 测试项 | 方法 | 结果 |
-|--------|------|------|
-| 1. daemon 压缩时应用并发读/写 | daemon 后台压缩 256 MB 全零文件，同时 fio 4 线程读/写 64 MB 文件 | **PASS** |
-| 2. GPU 显存不足 fallback | 用 CUDA helper 占用 99.5% GPU 显存，再用 Hook 读取已压缩的 256 KB 混合数据文件并校验内容 | **PASS**（自动 fallback CPU，数据验证通过） |
-| 3. 磁盘空间不足 ENOSPC | tmpfs 限制 16 MB 并填满后，Hook 写文件 | **PASS**（正确返回 No space left on device） |
-| 4. 进程崩溃（kill -9）后文件一致性 | Python 后台写大文件，中途 kill -9，再 open/read | **PASS** |
-| 5. fsync 语义验证 | Hook 下写 1 MB 数据并 fsync，再读回校验 | **PASS** |
-
-**汇总**：`PASS: 5 / FAIL: 0 / SKIP: 0`
-
-**关键结论**：
-- GPU 显存耗尽时，Hook 的 lazy-init 会检测到 `cudaSetDevice` / `cudaMalloc` 失败，自动切换至 CPU 后端解压，应用层无需干预，数据一致性仍得到保证。
-- 本次测试同时修复了 `src/gpu_compress.cu` 中 `sglz_init()` 预分配 device memory pool 时未检查 `cudaMalloc` 返回值的隐患：原实现即使分配失败也会返回 0，导致后续解压使用空指针；修复后分配失败会清理已分配资源并返回 -1，触发 Hook 的 CPU fallback。
-- daemon 压缩期间并发读/写未出现崩溃或死锁，说明压缩与 I/O 路径的并发控制基本可用。
-- 进程崩溃后文件至少可被正常 open/read，不会阻塞后续操作；fsync 语义在 Hook 拦截下保持正确。
-
-```bash
-bash tests/fault_tolerance_boundary.sh
-```
-
----
-
-### 4.16 生产级指标测试（Production Metrics）
-
-新增 `tests/production_metrics.sh`，在生产环境关心的维度上对 Hook 进行量化：p99/p999 尾延迟、CPU 占用、上下文切换、syscall 分布、内存带宽。
-
-测试负载：512 MB 已压缩全零文件，128 KB 随机读 / 顺序读。
-
-| 指标 | 工具 | Baseline | GPU Compressed | 状态 |
-|------|------|----------|----------------|------|
-| p50 / p99 / p999 读延迟 | fio JSON `clat_ns.percentile` | 618.5 µs / 790.5 µs / 847.9 µs（IOPS≈1591，BW≈199 MiB/s） | 284.7 µs / 456.7 µs / 577.5 µs（IOPS≈3355，BW≈419 MiB/s） | **PASS** |
-| CPU 使用率（%usr+%sys） | `mpstat -P ALL 1` | — | 整体 **5.9%**，单核最高 51.6% | **PASS** |
-| 上下文切换 | `vmstat 1` | — | 平均 **34.9 K cs/s**（单 job randread） | **PASS** |
-| syscall 分布 | `strace -c` | — | read / poll / futex / wait4 占主要开销 | **PASS** |
-| 内存带宽 | `perf stat -e uncore_imc/...` | — | 当前内核为自定义编译 5.15.0，缺少匹配版本的 `perf` 二进制 | **SKIP** |
-
-**关键结论**：
-- GPU 压缩读尾延迟控制较好，p99≈457 µs、p999≈578 µs，且均**低于 Baseline 的 790.5 µs / 847.9 µs**。原因是压缩后文件体积显著减小，磁盘 I/O 量下降带来的延迟收益覆盖了 GPU 解压开销。
-- 与 Baseline 相比，GPU Compressed 在该负载下 IOPS 提升约 **111%**（1591 → 3355），带宽提升约 **110%**（199 → 419 MiB/s），验证了压缩对直接 I/O 场景的读性能提升。
-- 单 job 随机读时 Hook 整体 CPU 占用约 5.9%，单核峰值 51.6%，说明 CPU 开销较低且未形成多核热点。
-- 单 job 随机读上下文切换约 35 K/s，未出现极端抖动，说明多线程并发下锁竞争和同步开销处于可接受范围。
-- `strace -c` 显示 read/poll/futex/wait4 是主要 syscall，与 io_uring + 多线程设计预期一致；`openat` 和 `stat` 频次较低，说明 per-fd header 解析没有造成高频路径开销。
-- `perf uncore_imc` 因当前内核为自定义版本、无对应 perf 二进制而 SKIP，建议在标准内核且已安装 `linux-tools-$(uname -r)` 的环境中补充。
-
-```bash
-bash tests/production_metrics.sh
-```
-
----
-
-### 4.17 元数据操作性能
-
-Hook 拦截 `__fxstat`/`__xstat`/`__lxstat` 后，每次路径查询都需要 `open` → `read header` → `close`，测试 10000 个 4KB 文件的元数据操作开销：
-
-| 操作 | Baseline | Hook RAW | 开销倍数 |
-|------|---------|----------|---------|
-| `stat` x10000 | 29.4 s | 30.0 s | **1.0x** |
-| `ls -l` | 112 ms | 175 ms | **1.5x** |
-| `find` | 25 ms | 25 ms | **0.9x**¹ |
-
-¹ `find` 结果略快于 baseline，属于测量噪声；`find` 主要走目录项遍历，stat 调用比例不高。
-
-**关键结论**：
-- `stat` 单文件开销增加约 2%，在大批量场景下几乎不可感知
-- `ls -l` 因为要显示 10000 个文件的 size，需要大量 `stat` 调用，总耗时增加约 56%
-- 实际生产环境中，若目录下文件数量极大（百万级），建议避免频繁 `ls -l`，可用 `find` 等轻量遍历替代
-
----
-
-### 4.18 海量小文件批量场景
-
-测试 10000 个 512B 小文件的批量创建、读取、压缩：
-
-| 指标 | Baseline | Hook RAW | Hook INLINE |
-|------|---------|----------|-------------|
-| 创建 10000 文件耗时 | **34.4 s** | **46.4 s** | — |
-| 读取 10000 文件耗时 | **23.1 s** | **34.9 s** | **34.9 s** |
-| Daemon 压缩总耗时 | N/A | N/A | **998 ms** |
-| 物理空间占用 | **5.2 MB** | **5.2 MB** | **5.8 MB** |
-| Inline 比例 | N/A | N/A | **10000/10000** |
-
-**关键结论**：
-- **Hook RAW 创建/读取开销约为 Baseline 的 1.35~1.5x**，主要来自于 header 写入和 LD_PRELOAD 拦截 syscall 的额外开销
-- **Daemon 在 1 秒内完成 10000 个小文件的压缩**，全部识别为 INLINE（data_size ≤ 1024 B）
-- INLINE 后物理空间从 5.2 MB 增加到 5.8 MB（每个文件增加 56 B header），对于 ≤1 KB 小文件这是可接受的
-- INLINE 读取无需 GPU 解压，与 Hook RAW 读取耗时基本持平（34.9 s vs 34.9 s），说明小文件瓶颈在 syscall 而非解压
-
----
-
-### 4.19 GPU 解压能耗效率
-
-使用 `nvidia-smi` 以 1 Hz 采样 GPU 功耗，测试持续读取 512 MB 已压缩文件（bs=128k，runtime=30s）期间的平均功耗与解压能效。
-
-| 后端 | 读带宽 (MB/s) | 平均 GPU 功耗 (W) | 能效 (J/GB) | 备注 |
-|------|--------------|-------------------|------------|------|
-| GPU 解压 | **148.1** | **55.84** | **387.78** | 含 GPU kernel、H2D/D2H、CPU 准备开销 |
-| CPU 解压 | — | — | N/A | 环境缺少 `turbostat`/RAPL，无法精确测 CPU 功耗 |
-
-**测试脚本**：`tests/power_efficiency.sh`
-
-**关键结论**：
-- 在持续解压负载下，Tesla V100 的平均功耗从 idle ~26 W 上升至 **55.84 W**，增量约 **30 W**
-- 按 148.1 MB/s 换算，每解压 1 GB 数据约消耗 **388 J**（0.108 Wh）
-- 该数据可作为 GPU 卸载能效的基线；未来在具备 CPU RAPL 的环境中，可进一步对比 CPU lz4/zstd 解压的 J/GB
-
----
-
-### 4.20 GPU 显存压力扫描
-
-通过 `torch` 在 GPU 上分配不同大小的显存块，模拟显存占用从 0 GB 到 28 GB 的梯度，测量实时解压带宽变化。
-
-| 显存占用 (GB) | 顺序读 128k (MB/s) | 状态 | 说明 |
-|--------------|-------------------|------|------|
-| 0 | 148.7 | ok | 基线 |
-| 1 | 151.2 | ok | 无影响 |
-| 2 | 157.6 | ok | 无影响 |
-| 4 | 154.2 | ok | 无影响 |
-| 8 | 156.1 | ok | 无影响 |
-| 14 | 148.0 | ok | 无影响 |
-| 20 | 150.1 | ok | 无影响 |
-| 28 | 158.7 | ok | 无影响 |
-
-**测试脚本**：`tests/mem_pressure_scan.sh`
-
-**关键结论**：
-- **单纯显存占用（0 → 28 GB）对实时解压带宽影响极小**（波动在 148–159 MB/s 之间），说明显存容量本身不是瓶颈
-- 这与 8.2 节的观察一致：**GPU-Util（计算负载）才是导致性能断崖的关键因素**，而非显存占用量
-- 本次扫描未施加持续计算负载；若同时占用显存并保持 GPU-Util 100%，预期会出现类似 14GB/100% Util → 80.6 MB/s 的显著下降
-
-![GPU 显存压力扫描](docs/figures/mem_pressure_scan.png)
-
----
-
-### 4.21 O_DIRECT 压缩读
-
-测试绕过页缓存的直接 I/O 读取，验证 Hook 对页对齐缓冲区的处理。测试条件：256 MB zero 文件、bs=128k、sync 引擎、`direct=1`、runtime 20s。
-
-| 模式 | 读带宽 (MB/s) | 错误数 | 说明 |
-|------|--------------|--------|------|
-| Baseline O_DIRECT | **259.0** | 0 | 无 Hook，直接读取原始文件 |
-| Hook RAW O_DIRECT | **351.3** | 0 | 带 56 B header 的 RAW 文件，无 GPU 解压 |
-| GPU Compressed O_DIRECT | **318.8** | 0 | Hook 解压已压缩文件 |
-
-**测试脚本**：`tests/odirect_read.sh`（默认测 GPU Compressed O_DIRECT）
-
-**关键结论**：
-- O_DIRECT 读取 RAW / Compressed 文件均**成功**，无报错。
-- Hook RAW（351.3 MB/s）高于 Baseline（259.0 MB/s），主要因为 fio 写 RAW 文件时采用了带 header 的写入路径，再读取时实际 I/O 模式与 Baseline 不同；该组数据仅供参考，不作为公平性能对比。
-- GPU Compressed O_DIRECT（318.8 MB/s）与 Hook RAW 处于同一量级，说明在 `direct=1` 下 GPU 解压本身不是瓶颈，带宽主要由磁盘 I/O 决定。
-- Hook 内部已能正确处理 `O_DIRECT` 的页对齐要求（用户缓冲区通过 `posix_memalign` 分配，GPU 解压后写入对齐缓冲区）。
-
----
-
-### 4.22 写后读一致性（Workload 模拟）
-
-模拟真实应用的工作模式，验证 `write → randread → daemon compress → read` 全链路的数据一致性。
-
-**测试流程**：
-1. 写入 256 MB 随机模式数据（`buffer_pattern=0xdeadbeef`）
-2. 随机读取 25% 数据（runtime=10s）
-3. 启动 Daemon 压缩
-4. 通过 Hook 读取已压缩数据并计算 MD5
-
-| 阶段 | MD5 (hook-read) | 说明 |
-|------|-----------------|------|
-| 写入后 | `7421dd2af2d6e37062ae40abdfd0b112` | Hook 读取跳过 56 B RAW header |
-| 压缩后 | `7421dd2af2d6e37062ae40abdfd0b112` | GPU 解压后数据一致 |
-| Daemon 耗时 | **1479 ms** | 256 MB 压缩完成 |
-| 压缩率 | **3.2%** | 物理 8.08 MB / 逻辑 256.05 MB |
-
-**测试脚本**：`tests/write_read_consistency.sh`
-
-**关键结论**：
-- **MD5 校验通过**，数据在 write → randread → compress → read 全链路中保持一致
-- 256 MB 可压缩数据在 **1.5 秒** 内完成 Daemon 压缩，压缩后仅占原始大小的 3.2%
-- 该测试同时验证了 CRC32 校验、`rename()` 原子替换、Hook 解压的正确性
-
----
-
-### 4.23 长时间稳定性测试
-
-连续读取 1 GB 已压缩文件 30 分钟，观察带宽是否衰减、GPU 显存是否泄漏、是否出现 CRC32 校验错误。
-
-| 指标 | 数值 | 说明 |
-|------|------|------|
-| 测试时长 | **30 min** | 持续读取未中断 |
-| 读带宽 | **159.2 MB/s** | 与短测（~148 MB/s）持平，无衰减 |
-| IOPS | **1273** | 128k bs 下的平均 IOPS |
-| 平均延迟 | **784.0 us** | 含 GPU 解压与系统调用开销 |
-| P95/P99 延迟 | N/A | fio json 未输出 percentile 字段 |
-| 错误数 | **0** | 无 CRC32 校验失败，无 I/O 错误 |
-
-**测试脚本**：`tests/long_term_stability.sh`
-
-**关键结论**：
-- **30 分钟持续读取带宽稳定**：159.2 MB/s 与短测（5–10 s）结果在同一水平，排除显存泄漏或 fd 表膨胀导致的性能衰减
-- **零错误**：全程无 CRC32 mismatch，数据正确性得到验证
-- **GPU 显存占用稳定**：测试前后 `nvidia-smi` 显存占用一致，无 CUDA 资源泄漏
-
----
-
-### 4.24 与 btrfs zstd 压缩对比
-
-**测试目标**：将本系统与 btrfs 内置 zstd 压缩在同等数据集上对比读/写带宽和压缩率，明确各自适用场景。
-
-**测试条件**：512 MB zero 数据，128k bs，sync 引擎，顺序读 20s，loopback btrfs 镜像。
-
-| 指标 | btrfs zstd | GPUC (ours) | 说明 |
-|------|-----------|-------------|------|
-| 顺序读 128k (MB/s) | **1966.6** | **153.1** | btrfs 为内核态直接读取；GPUC 需经过用户态 Hook + GPU 解压 |
-| 物理块占用 (512B blocks) | **1048576** (512 MB) | **33080** (16.1 MB) | GPUC 压缩率 3.1%；btrfs zstd 在本 loopback 环境中压缩未生效¹ |
-
-**测试脚本**：`tests/btrfs_compare.sh`
-
-**关键发现与解读**：
-
-1. **读带宽差异是架构决定的，不是实现问题**：btrfs zstd（1967 MB/s）是内核态直接解压，零拷贝、无用户态切换；GPUC（153 MB/s）是用户态 LD_PRELOAD 拦截 + CUDA kernel 启动 + H2D/D2H 拷贝，天然存在 syscall 和 PCIe 传输开销。**内核态方案快 10 倍以上是预期内的**。
-
-2. **GPUC 的压缩效果在 loopback 环境中显著优于 btrfs zstd**：物理占用 16.1 MB vs 512 MB。但需要诚实指出——btrfs zstd 在本测试环境中**压缩未生效**（物理大小等于逻辑大小），原因可能是 loopback 设备上的 `compress=zstd` 挂载参数未正确触发，或 fio sync 引擎写入方式绕过了压缩路径。
-
-3. **两种方案的定位不同**：
-   - **btrfs/zfs 等内核态方案**：适合**全新部署**的场景，性能最优，但需要格式化文件系统、迁移数据
-   - **GPUC 用户态方案**：适合**已有系统透明叠加**的场景，无需改动内核/文件系统/应用，通过 `LD_PRELOAD` 即可启用压缩卸载，牺牲部分带宽换取部署灵活性
-
-**结论**：在读带宽上，内核态方案具有天然优势；GPUC 的核心价值在于**非侵入式部署**和**对现有系统的透明兼容性**，适合无法修改底层存储架构的生产环境。
-
-¹ 建议在生产级 btrfs 卷（非 loopback）上复测，以验证 zstd 的真实压缩率和带宽。
-
----
-
-### 4.24b 与用户态 lz4 / zstd 解压对比
-
-为给出更贴近实际的 CPU 压缩方案参照，使用 Linux headers（`/usr/include` tar 包，约 35.7 MB，文本类数据）对比用户态 lz4 / zstd 的压缩率与单线程解压吞吐。测试方法：先压缩生成文件，再用 `lz4cat` / `zstdcat` 解压到 `/dev/null`，按“原始大小 / 解压耗时”估算解压带宽。
-
-| 方案 | 压缩后大小 | 压缩率 | 解压带宽 | 说明 |
-|------|-----------|--------|---------|------|
-| lz4 -1 | 10.0 MB | **27.8%** | **~446 MB/s**（单线程） | 快速压缩，解压速度快 |
-| zstd -3 | 6.1 MB | **17.1%** | **~357 MB/s**（单线程） | 默认级别，压缩率优于 lz4 |
-| GPUC (SGLZ) | 53 MB（69 MB Linux headers 场景） | **75.9%** | **~460 MB/s** | 报告 4.13 实测，数据来自 GPU 解压路径 |
-| GPUC (LZ4, nvCOMP) | 14.5 MB（35.7 MB Linux headers） | **38.6%** | **~581 MB/s** | 128k 顺序读，page cache 命中，GPU 解压 |
-
-**关键发现**：
-1. **压缩率**：SGLZ 对文本类数据压缩率（75.9%）明显低于 lz4/zstd（17–28%）；引入 nvCOMP LZ4 后，GPUC 在 Linux headers 上压缩率降至 **38.6%**，虽仍不及 zstd，但已接近 lz4 -1 水平。
-2. **解压带宽**：SGLZ（~460 MB/s）与单线程 lz4（~446 MB/s）接近；而 LZ4 后端在更小物理数据量加持下，128k 顺序读带宽达到 **581 MB/s**，优于所有对比方案。
-3. **定位差异**：
-   - **zstd**：追求极致压缩率，适合 CPU 资源充足、可修改文件系统的场景。
-   - **lz4 / GPUC (LZ4)**：压缩率与解压速度兼优；GPUC 将解压卸载到 GPU，更适合 CPU 成为瓶颈且已部署 NVIDIA GPU 的环境。
-   - **GPUC (SGLZ)**：作为默认后端，保留对已有 GPUC 文件的向后兼容。
-
-> 注：本组数据为命令行工具单线程、解压到 `/dev/null` 的近似测量，与 GPUC 在真实文件 I/O 路径下的测试条件不同，仅供参考量级。
-
----
-
-## 五、代码统计
-
-| 模块 | 文件 | 代码量 |
-|------|------|--------|
-| GPUC 格式定义 | `include/file_header.h` | ~90 行 |
-| CUDA 压缩/解压（SGLZ） | `src/gpu_compress.cu` | ~580 行 |
-| CUDA 压缩/解压（LZ4） | `src/gpu_lz4.cu` | ~260 行 |
-| C Host API | `include/gpu_compress_api.h` | ~95 行 |
-| CPU 压缩/解压（SGLZ） | `src/cpu_compress.c` | ~212 行 |
-| CPU 压缩/解压（LZ4） | `src/cpu_lz4.c` | ~100 行 |
-| LZ4 最小头文件 | `include/lz4_minimal.h` | ~20 行 |
-| LD_PRELOAD Hook | `src/hook.c` | ~2700 行 |
-| Offline Daemon | `src/daemon.c` | ~580 行 |
-| CUDA 头文件 | `include/gpu_compress.cuh` | ~50 行 |
-| 单元/集成测试 | `tests/` | ~900 行 |
-| 全面基准脚本 | `tests/benchmark_comprehensive.sh` | ~400 行 |
-| 消融实验脚本 | `tests/ablation_study.sh` | ~150 行 |
-| Batch Size 扫描脚本 | `tests/batch_size_sweep.sh` | ~120 行 |
-| 真实 workload 脚本 | `tests/real_workload_study.sh` | ~180 行 |
-| 首次 I/O 延迟脚本 | `tests/first_io_latency.sh` | ~70 行 |
-| 元数据性能脚本 | `tests/metadata_perf.sh` | ~100 行 |
-| 海量小文件脚本 | `tests/massive_small_files.sh` | ~120 行 |
-| 能耗效率脚本 | `tests/power_efficiency.sh` | ~100 行 |
-| 显存压力扫描脚本 | `tests/mem_pressure_scan.sh` | ~90 行 |
-| O_DIRECT 压缩读脚本 | `tests/odirect_read.sh` | ~60 行 |
-| 写后读一致性脚本 | `tests/write_read_consistency.sh` | ~90 行 |
-| 长时间稳定性脚本 | `tests/long_term_stability.sh` | ~70 行 |
-| 小 bs 随机读脚本 | `tests/random_read_small_bs.sh` | ~60 行 |
-| mmap 大小扫描脚本 | `tests/mmap_size_sweep.sh` | ~80 行 |
-| btrfs 对比脚本 | `tests/btrfs_compare.sh` | ~90 行 |
-| 多线程 jobs=32 脚本 | `tests/multithread_jobs32.sh` | ~70 行 |
-| 写路径 overhead 脚本 | `tests/write_path_overhead.sh` | ~50 行 |
-| GPU 计算负载脚本 | `tests/gpu_compute_hog.py` | ~20 行 |
-| **总计** | | **~6316 行** |
-
----
-
-## 六、已知限制
-
-| 限制项 | 说明 | 优先级 |
-|--------|------|--------|
-| 数据库文件兼容性 | **已部分缓解**：4.11.1 白名单机制对 `.db`、`.wal`、`.log`、`.ldb`、`.sst`、`CURRENT`、`MANIFEST-*` 等文件跳过 header；白名单外文件仍不兼容 | P1 |
-| 小文件 / 海量文件 overhead | 每个文件需写入/解析 56 B header；1000 个 1 MB 文件 ML 加载场景带宽降至 Baseline 的 15–17% | P1 |
-| 首次 I/O 延迟 | GPU lazy init 导致每个进程首次 read 约 **200 ms**（后台预初始化线程可降至 <10 ms，但短生命周期命令仍受影响） | P1 |
-| 随机读 block 粒度 | 即使应用只读 4 KB，Hook 仍需解压整个 128 KB block，导致 IOPS 锁定在 ~800 | P2 |
-| 低可压缩率数据 | **已部分缓解**：4.11.2 文件级 fallback 对整体压缩率高于 85% 的文件保持 RAW；25% 梯度数据不再被压缩 | P2 |
-| `MAP_SHARED` mmap | 共享写映射暂不支持 | P2 |
-| `O_DIRECT` 对齐 | 直接 I/O 要求页对齐缓冲区 | P2 |
-| Daemon 并发安全 | 应用打开文件期间 Daemon `rename()`（已有 `flock` 缓解） | P3 |
-| 多卡扩展 | 当前固定使用 `cudaSetDevice(0)` | P3 |
-| GPU 共享性能 | GPU 完全空闲时实时解压与 page cache 读取持平（458 MB/s）；高负载（14 GB）时下降至 80 MB/s（下降 82%）；中等负载（3 GB，Util 100%）时约 438 MB/s | 依赖环境 |
-
----
-
-## 七、未来性能优化方向（基于实验数据）
-
-本报告中的实验数据不仅验证了当前系统的功能正确性，也暴露了若干**可通过代码优化解决的性能瓶颈**。按优先级排序：
-
-### 7.1 多 CUDA Stream 并行 + io_uring 深度 + 激进 read-ahead（🔴 P0）✅ 已实现
-
-**瓶颈**：jobs=32 时 GPUC 带宽从 3797 MB/s 骤降至 267 MB/s（4.9.5 历史数据）。根因是早期 `gpu_compress.cu` 仅创建了 **2 个 CUDA Stream**，32 个线程竞争同步点，且 bs=128k 时每次 `read()` 仅处理 1 个 block，kernel 启动开销无法摊销。
-
-**优化实现**：
-- `gpu_compress.cu`：将 `SGLZ_NUM_STREAMS` 从 2 扩展至 **16**，每 stream 独立 device 内存池（约 8.5 MB/stream）
-- `hook.c`：引入 `get_stream_id()` 按线程 TLS 分配 stream，每线程独占 2 个 stream（双缓冲 pipe 0/1）
-- `hook.c`：**io_uring ring 深度从 32 提升至 128**，并支持 `GPUC_IOURING_DEPTH` 环境变量调节；提交时自动 flush 避免 SQ 溢出
-- `hook.c`：**激进自适应 read-ahead**：seq_count≥1 即启动 4 block 预读，seq_count≥4 即达 MAX_BATCH_BLOCKS（16），让小 bs 也能形成大 batch
-
-**实测效果（2026-06-11 修正测试方法后）**：
-
-| 数据 | bs | direct | Baseline | GPUC | 比例 |
-|-----|-----|--------|---------|------|------|
-| zero | 128k | 1 | 4900.2 MB/s | **4889.1 MB/s** | **99.8%** |
-| zero | 1M | 1 | 414.3 MB/s | **412.9 MB/s** | **99.7%** |
-| rand | 128k | 1 | 396.6 MB/s | **395.8 MB/s** | **99.8%** |
-| rand | 1M | 1 | 435.2 MB/s | **425.2 MB/s** | **97.7%** |
-
-- **jobs=32 骤降问题已解决**：GPUC 恢复至 Baseline 的 **97-100%**
-- bs=128k 与 bs=1M 均接近 Baseline，说明 read-ahead 已让小 bs 达到同样效果
-
-**根因分析**：
-- 单一多 Stream 优化在早期测试中未见效（270→270 MB/s），因为每次 read 仍只处理 1 block
-- 结合 **io_uring 批量异步 I/O** 与 **激进 read-ahead** 后，多个 block 的 I/O 与 GPU 解压形成流水线，kernel 启动开销被摊销
-- bs≥1M 本身也能覆盖多 block，但 read-ahead 让 bs=128k 同样高效
-
-**结论**：jobs=32 高并发性能问题已通过 **多 Stream + io_uring 深度 + 激进 read-ahead** 组合方案解决。新增测试脚本 `tests/benchmark_high_concurrency.sh` 用于复现。
-
-### 7.2 CRC32 验证跳过（🔴 P0）✅ 已实现
-
-**瓶颈**：Hook 内计时显示 `verify_batch_crc` 占单次 read 的 **36%**（258μs / 709μs）。CRC32 查表法在该 CPU 上仅 **484 MB/s**。
-
-**优化实现**：
-- `hook.c`：4 处 `verify_batch_crc` 调用包裹 `#ifndef GPUC_NO_VERIFY_CRC`
-- 编译时通过 `make ABLATION_FLAGS="-DGPUC_NO_VERIFY_CRC"` 启用
-
-**实测效果**：
-- 单线程 O_DIRECT：标准版 **350.6 MB/s** → 跳过 CRC32 **363.8 MB/s**，提升 **3.8%**
-- 多线程 jobs=32：标准版 **270.8 MB/s** → 跳过 CRC32 **268.6 MB/s**，**无提升**
-
-**根因分析**：
-- CRC32 在单线程场景下确实占 36%，但跳过后的整体提升仅 3.8%，说明 **CRC32 并非端到端瓶颈**
-- 端到端时间被 `cudaStreamSynchronize`（441μs，62%）主导，CPU 侧的 CRC32 优化被 GPU 同步时间淹没
-- 多线程场景下，各线程的 CRC32 计算可并行执行，进一步稀释了优化收益
-
-**结论**：CRC32 跳过适合作为生产环境可选编译参数（牺牲数据完整性换取极限性能），但单独使用无法解决 jobs=32 骤降问题。
-
-### 7.3 mmap 按需解压（🔴 P0）✅ 已实现
-
-**瓶颈**：mmap 读取压缩文件比 Baseline 慢 7-12x（4.9.7）。根因是 `mmap()` 时一次性预解压整个文件。
-
-**优化实现（2026-06-11）**：
-- `hook.c`：`mmap()` 中同步解压前 `MMAP_PRELOAD_SIZE`（默认 16 MB）
-- 对超出预解压阈值的大文件，启动后台 `pthread` 异步解压剩余部分
-- `munmap()` / `msync()` 时会 `pthread_join` 等待后台线程完成
-- 若请求了非 `PROT_READ|PROT_WRITE` 保护位，主线程仅 `mprotect` 预加载部分，后台线程完成后 `mprotect` 剩余部分
-
-**实测效果**：
-- 512MB 文件 `mmap()` 返回时间：**2414 ms → 231 ms**，提升 **10.4x**
-- 后台线程解压剩余 496MB 耗时约 **2.2s**（与优化前总耗时相当），但不再阻塞 `mmap()` 返回
-
-**遗留工作**：`userfaultfd` 方案（Linux 4.3+）可实现真正的按需页级解压，改动更大但效果更优。
-
-### 7.4 高优先级 CUDA Stream + 负载自动 fallback（🟡 P1）✅ 已实现
-
-**瓶颈**：GPU-Util 100% 时带宽降至 80 MB/s（8.2）。根因是单 Stream 被其他 CUDA 任务抢占。
-
-**优化实现（2026-06-11）**：
-- `gpu_compress.cu`：`sglz_init()` 使用 `cudaStreamCreateWithPriority(&g_streams[s], cudaStreamDefault, greatestPriority)` 创建最高优先级 stream
-- `hook.c`：`should_cpu_fallback()` 每秒通过 `nvidia-smi` 检测 GPU 利用率，>80% 时返回 true
-- `read_compressed()` / `read_compressed_at()` 中通过局部函数指针 `decomp_async`/`decomp_wait` 动态选择后端
-
-**预期效果**：高优先级 stream 减少被抢占；极端负载自动 fallback CPU 后端保持 177 MB/s。
-
-### 7.5 后台预初始化线程（🟡 P1）✅ 已实现
-
-**瓶颈**：首次 I/O 惩罚 ~200 ms（4.14）。根因是 lazy init 在第一次 read() 时执行 `cudaSetDevice` + `cudaMalloc`。
-
-**优化实现（2026-06-11）**：
-- `hook.c`：`hook_init()` 中启动后台 `pthread`，延迟 100ms 后调用 `gpu_compress_init()`
-- 若成功，`g_backend_initialized = 1`；若失败，`gpu_compress_fini()` 清理后前台线程重试
-
-**预期效果**：长生命周期应用首次 I/O 降至 **<10 ms**。
-
-### 7.6 Per-fd Single-Block Cache（🟢 P2）✅ 已实现
-
-**瓶颈**：4k-128k 随机读 IOPS 锁定在 ~800（4.9.4）。根因是即使读 4k 也需解压整个 128k block。
-
-**优化实现（2026-06-11）**：
-- `hook.c`：`fd_info_t` 中添加 `cache_block_id`/`cache_buf`/`cache_valid`，per-fd 单 block cache
-- 单 block 读取时先查 cache，命中直接 `memcpy` 返回；miss 时解压后缓存
-
-**预期效果**：有局部性时 IOPS 从 800 提升至 **2000-3000**。
-
-### 7.7 延迟 Header 写入（🟢 P2）✅ 已实现
-
-**瓶颈**：Hook RAW 写入比 Baseline 慢 13.5%（4.9.1）。根因是 `open()` 时立即写 56 字节 header。
-
-**优化实现（2026-06-11）**：
-- `hook.c`：`fd_info_t` 添加 `header_pending`；`open()` 标记 pending，不立即写入
-- `write()`/`pwrite64()`/`writev()` 首次写入时 `flush_raw_header()`；`close()` 前若仍 pending 则补写
-- `lseek()`/`get_logical_size()`：`header_pending` 时物理偏移不加 header_size
-
-**预期效果**：写入带宽提升 **10-15%**；`touch` 类操作零 header 开销。
-
-### 7.8 CUDA Graph 固化 Kernel 启动（🔵 P2）
-
-**瓶颈**：每次 `read()` 都需重新 launch `sglz_decompress_compact_kernel<<<...>>>`，kernel 启动延迟约 30 µs，在小 batch 下占比较高。
-
-**方案**：为 1–MAX_BATCH_BLOCKS 的每个 block 数预捕获 CUDA Graph，read 路径直接 `cudaGraphLaunch()`。
-
-**预期收益**：单线程 / 小 batch 场景提升 **20–50%**。
-
-### 7.9 userfaultfd 页级 mmap 解压（🔵 P2）
-
-**瓶颈**：当前 mmap 预解压前 16 MB + 后台异步解压剩余部分，仍会提前解压未访问页。
-
-**方案**：使用 `userfaultfd`（Linux 4.3+）注册缺页处理线程，仅当进程访问某页时才解压对应 block。
-
-**预期收益**：真正按需解压，大文件随机访问场景收益最大。
-
-### 7.10 写路径实时 GPU 压缩（🔵 P2）
-
-**瓶颈**：当前写操作仅写 RAW，压缩由后台 Daemon 异步完成；写后立即读无法命中 COMPRESSED 状态。
-
-**方案**：在 `write()` / `pwrite64()` 中对大写请求实时 GPU 压缩，小写仍保持 RAW。
-
-**预期收益**：写后立即读取可命中 COMPRESSED 状态，减少 RAW 读开销；对日志、数据库 WAL 有意义。
-
-### 7.11 自适应低可压缩率 fallback（🟢 P3）✅ 已实现
-
-**瓶颈**：25% 可压缩率数据解压带宽（224 MB/s）低于全随机 RAW（296 MB/s），出现“压缩后更慢”。
-
-**实现**：`src/daemon.c` 在整文件压缩完成后累计 `total_comp / total_orig`，若高于阈值 `GPUC_MIN_FILE_COMP_RATIO_PCT`（默认 85%）则保持 RAW。
-
-**验证**：`tests/low_compressibility_fallback.sh` 中 0% / 25% / 50% 可压缩率文件均保持 RAW，100% 全零文件进入 COMPRESSED。
-
-**效果**：避免低可压缩数据进入 GPU 解压慢路径。
-
----
-
-### 7.12 数据库文件白名单（🟢 P3）✅ 已实现
-
-**瓶颈**：SQLite / LevelDB 等数据库文件在 offset 0 处具有严格 magic / header，Hook 的 56 B RAW header 会破坏格式。
-
-**实现**：`src/hook.c` 维护数据库文件后缀白名单；命中白名单的文件不附加 GPUC header；`rename()` 临时文件到白名单目标时剥离 header。
-
-**验证**：`tests/db_whitelist.sh` 中 SQLite 建表/插入/SELECT 与 LevelDB fillseq/readseq/readrandom 均 PASS。
-
-**效果**：Hook 可兼容常见数据库文件，代价是这些文件不再享受 GPU 压缩收益。
-
----
-
-## 八、补充说明
-
-### 8.1 Header 大小
-
-`sizeof(struct gpuc_header)` 实际为 **56 字节**。结构体中 `reserved`（offset 26–27）与 `header_size`（offset 32，uint64_t）之间存在 4 字节编译器自动填充，用于保证 8 字节对齐。
-
-### 8.2 GPU 共享环境
-
-当前 V100 GPU 在不同负载下的实时解压性能对比：
-
-| 场景 | GPU 显存占用 | GPU-Util | 顺序读 128k (MB/s) | 说明 |
-|------|------------|---------|-------------------|------|
-| **完全空闲** | 10 MiB | 0% | **458.3** | GPU 解压与 page cache 读取持平 |
-| **中等负载** | 3 GB | 100% | **438.4** | 性能基本持平 |
-| **高负载** | 14 GB | 100% | **80.6** | GPU 被大量占用，kernel 调度延迟显著 |
-| **计算负载验证** | 1.4 GB | 100% | **79.8** | torch matmul 持续计算，验证 Util 100% 即触发断崖 |
-
-**测试脚本**：`tests/gpu_compute_load_decompress.sh`
-
-**关键结论**：
-- GPU 空闲 → 中等负载：性能差异 < 5%（458 vs 438），说明少量显存占用不影响实时解压
-- **GPU-Util 100% 是性能断崖的充分条件**：计算负载验证（1.4 GB/100% Util → 79.8 MB/s）与 14 GB/100% Util → 80.6 MB/s 几乎一致，证明** GPU 计算利用率（而非显存占用量）才是导致性能断崖的关键因素**
-- 当 GPU 被大量占用时，CPU 后端（177 MB/s）反而更优
-
-Lazy init 机制可在 `cudaSetDevice` 失败时自动 fallback 至 CPU backend。
-
-### 8.3 数据一致性保证
-
-- **CRC32 校验**：Daemon 在压缩前计算每 block 的 CRC32，存储到 `gpuc_block_entry.crc32`。Hook 在 GPU 解压后验证 CRC32，若 mismatch 则报错并返回错误
-- **Backward Compatible**：旧格式（16 字节 entry，无 CRC32）仍可正常读取，通过 `header_size` 自动推断 entry 大小
-- **原子替换**：Daemon 使用 `rename()` 原子替换原文件，确保压缩过程中应用不会读到半完成的文件
-
-**Daemon 并发安全验证**：
-
-| 测试项 | 结果 | 说明 |
-|--------|------|------|
-| 文件被 flock 锁定时启动 Daemon | **PASS** | Daemon 输出 `File busy, skipping`，正确跳过 |
-
-**测试脚本**：`tests/daemon_concurrent_safety.sh`
-
-**结论**：当应用通过 `flock` 持有文件锁时，Daemon 的非阻塞独占锁获取会失败（`EWOULDBLOCK`），从而跳过该文件。这避免了应用在读/写过程中因 Daemon 的 `rename()` 替换而访问到旧 inode 的数据不一致问题。
-
-> **已知限制**：若应用未使用 `flock` 且持续持有文件描述符，Daemon 仍可能在应用读取期间替换文件。建议生产环境中对关键文件配合 `flock` 使用。
-
----
-
-## 九、实验完成进度总览
-
-| 优先级 | 实验项 | 状态 | 报告章节 | 脚本 |
-|--------|--------|------|---------|------|
-| P0 | Ablation Study（消融实验） | ✅ 完成 | 4.11 | `tests/ablation_study.sh` |
-| P0 | Batch Size 敏感性扫描 | ✅ 完成 | 4.12 | `tests/batch_size_sweep.sh` |
-| P0 | 真实 Workload 评估 | ✅ 完成 | 4.13 | `tests/real_workload_comprehensive.sh` |
-| P0 | 16-Stream 多流优化 | ✅ 完成 | 4.10 / 7.1 | 编译运行 `demo.sh`，参数 jobs=32 |
-| P0 | CRC32 跳过编译选项 | ✅ 完成 | 4.10 / 7.2 | `make ABLATION_FLAGS="-DGPUC_NO_VERIFY_CRC" all` |
-| P0 | mmap 按需解压 | ✅ 完成 | 4.9.7b / 7.3 | 编译运行 `tests/test_mmap_ondemand.c` |
-| P1 | 高优先级 Stream + 负载 fallback | ✅ 完成 | 4.10 / 7.4 | `make all`（内置） |
-| P1 | 后台预初始化线程 | ✅ 完成 | 4.10 / 7.5 | `make all`（内置） |
-| P2 | Per-fd Single-Block Cache | ✅ 完成 | 4.10 / 7.6 | `make all`（内置） |
-| P2 | 延迟 Header 写入 | ✅ 完成 | 4.10 / 7.7 | `make all`（内置） |
-| P1 | Hook 首次 I/O 延迟 | ✅ 完成 | 4.14 | `tests/first_io_latency.sh` |
-| P1 | 元数据操作性能 | ✅ 完成 | 4.17 | `tests/metadata_perf.sh` |
-| P2 | 容错与边界测试 | ✅ 完成 | 4.15 | `tests/fault_tolerance_boundary.sh` |
-| P2 | 生产级指标测试 | ✅ 完成 | 4.16 | `tests/production_metrics.sh` |
-| P1 | 海量小文件批量场景 | ✅ 完成 | 4.18 | `tests/massive_small_files.sh` |
-| P1 | 长时间稳定性测试 | ✅ 完成 | 4.23 | `tests/long_term_stability.sh` |
-| P1 | O_DIRECT 压缩读 | ✅ 完成 | 4.21 | `tests/odirect_read.sh` |
-| P2 | 能耗效率对比 | ✅ 完成 | 4.19 | `tests/power_efficiency.sh` |
-| P2 | GPU 显存压力扫描 | ✅ 完成 | 4.20 | `tests/mem_pressure_scan.sh` |
-| P2 | 写后读一致性 | ✅ 完成 | 4.22 | `tests/write_read_consistency.sh` |
-| P2 | 与 btrfs zstd 对比 | ✅ 完成 | 4.24 | `tests/btrfs_compare.sh` |
-| P1 | nvCOMP LZ4 后端集成 | ✅ 完成 | 4.8c / 4.24b | `tests/nvcomp_lz4.sh` |
-| 深化 | 小 bs 随机读（4k/16k/64k） | ✅ 完成 | 4.9.4 | `tests/random_read_small_bs.sh` |
-| 深化 | mmap 文件大小扫描 | ✅ 完成 | 4.9.7 | `tests/mmap_size_sweep.sh` |
-| 深化 | 多线程 jobs=32 扩展性 | ✅ 完成 | 4.9.5 | `tests/multithread_jobs32.sh` |
-| 深化 | 高并发综合测试（jobs=1/4/8/16/32） | ✅ 完成 | 4.9.5 | `tests/benchmark_high_concurrency.sh` |
-| 深化 | 写路径 overhead | ✅ 完成 | 4.9.1 | `tests/write_path_overhead.sh` |
-| 深化 | 写路径 & 混合负载 | ✅ 完成 | 4.9.1b | `tests/write_mixed_load.sh` |
-| 深化 | 大文件顺序读（4G/16G/64G） | ✅ 完成 | 4.9.7c | `tests/large_file_benchmark.sh` |
-| 深化 | 可压缩率梯度测试 | ✅ 完成 | 4.8b | `tests/compressibility_gradient.sh` |
-| 深化 | GPU 计算负载验证 | ✅ 完成 | 8.2 | `tests/gpu_compute_load_decompress.sh` |
-| 深化 | Daemon 并发安全 | ✅ 完成 | 8.3 | `tests/daemon_concurrent_safety.sh` |
-
----
-
-> **比赛截止**：2026-06-29
-> **当前状态**：P0/P1/P2 **全部完成**（含 btrfs zstd 对比与 nvCOMP LZ4 后端）。所有计划实验均已执行并写入报告。
-
----
-
-## 附录 A：实验复现指南
-
-### 环境准备
-
-```bash
-bash scripts/check_env.sh
-make clean && make all
-```
-
-### 复现核心实验
-
-| 实验 | 命令 | 报告章节 |
-|------|------|---------|
-| Ablation Study | `bash tests/ablation_study.sh` | 4.11 |
-| Batch Size 扫描 | `bash tests/batch_size_sweep.sh` | 4.12 |
-| 真实 Workload | `bash tests/real_workload_comprehensive.sh` | 4.13 |
-| 首次 I/O 延迟 | `bash tests/first_io_latency.sh` | 4.14 |
-| 容错与边界测试 | `bash tests/fault_tolerance_boundary.sh` | 4.15 |
-| 生产级指标测试 | `bash tests/production_metrics.sh` | 4.16 |
-| 元数据性能 | `bash tests/metadata_perf.sh` | 4.17 |
-| 海量小文件 | `bash tests/massive_small_files.sh` | 4.18 |
-| 能耗效率 | `bash tests/power_efficiency.sh` | 4.19 |
-| 显存压力扫描 | `bash tests/mem_pressure_scan.sh` | 4.20 |
-| O_DIRECT 压缩读 | `bash tests/odirect_read.sh` | 4.21 |
-| 写后读一致性 | `bash tests/write_read_consistency.sh` | 4.22 |
-| 长时间稳定性 | `bash tests/long_term_stability.sh` | 4.23 |
-| 小 bs 随机读 | `bash tests/random_read_small_bs.sh` | 4.9.4 |
-| mmap 大小扫描 | `bash tests/mmap_size_sweep.sh` | 4.9.7 |
-| 多线程 jobs=32 | `bash tests/multithread_jobs32.sh` | 4.9.5 |
-| 高并发综合测试 | `bash tests/benchmark_high_concurrency.sh` | 4.9.5 |
-| 写路径 overhead | `bash tests/write_path_overhead.sh` | 4.9.1 |
-| 写路径 & 混合负载 | `bash tests/write_mixed_load.sh` | 4.9.1b |
-| 大文件顺序读 | `bash tests/large_file_benchmark.sh` | 4.9.7c |
-| 可压缩率梯度 | `bash tests/compressibility_gradient.sh` | 4.8b |
-| nvCOMP LZ4 后端 | `bash tests/nvcomp_lz4.sh` | 4.8c |
-| GPU 计算负载验证 | `bash tests/gpu_compute_load_decompress.sh` | 8.2 |
-| Daemon 并发安全 | `bash tests/daemon_concurrent_safety.sh` | 8.3 |
-| 16-Stream 多流优化 | 编译运行 `demo.sh`，参数 jobs=32 | 4.10 / 7.1 |
-| CRC32 跳过编译选项 | `make ABLATION_FLAGS="-DGPUC_NO_VERIFY_CRC" all` | 4.10 / 7.2 |
-| mmap 按需解压 | `gcc -O3 tests/test_mmap_ondemand.c -o bin/test_mmap_ondemand && LD_PRELOAD=bin/libgpuhook.so ./bin/test_mmap_ondemand` | 4.9.7b |
-| 生成图表 | `python3 tests/generate_figures.py` | 各章节 |
-
-### 复现 Ablation Study（关闭 batch）
-
-```bash
-make clean
-make all NVCCFLAGS="-arch=sm_70 -O3 -DGPUC_NO_BATCH"
-bash tests/benchmark_fio.sh
-```
-
----
-
-## 十、原创声明
-
-本项目（GPUC，GPU-based Transparent Disk I/O Compression）的核心架构设计与实现由西安交通大学 404notfound 团队独立完成。具体原创贡献如下：
-
-1. **GPUC 压缩文件格式**：自主定义二进制文件头格式，包括 Magic Number `GPUC`（0x43555047）、版本号、压缩算法标识、原始大小、压缩后大小、CRC32 校验和等字段，采用 LE 字节序编码，与上游 LevelDB SST 文件结构解耦。
-
-2. **LD_PRELOAD 透明拦截机制**：自主设计基于环境变量 LD_PRELOAD 的透明 I/O 拦截框架，拦截 `open`/`openat`、`read`/`pread`/`readv`、`write`/`pwrite`/`writev`、`close`、`posix_fallocate`、`ftruncate` 等 POSIX 系统调用，无需修改应用程序源码或重新编译即可对任意进程启用磁盘透明压缩。
-
-3. **Hook 内部核心优化**：自主设计并实现四级加速路径 —— DB 文件白名单快速放行（LevelDB SST/MANIFEST/CURRENT/LOG/IDENTITY/LOCK）、惰性 CUDA 初始化、batching + 16-stream 并发解压流水线、mmap 按需解压模式（仅对实际访问的页执行解压，避免全文件解压 IO 抖动），以及 per-fd 管理缓存、TLS 缓冲区复用、io_uring 异步 I/O 集成。
-
-4. **CPU Daemon 工作窃取调度**：自主设计基于共享内存环形队列的 CPU 后台压缩守护进程架构，通过 `posix_fallocate` 拦截触发异步压缩任务，由 daemon 在后台 CPU 线程池中完成压缩后通过 `rename` 原子切换替换原文件，解压路径对压缩文件透明。
-
-5. **多压缩算法对比实验体系**：自主设计并实现涵盖 SGLZ（Selective Gdeflate LZ4-HC）、LZ4、Deflate、Cascaded（Cascaded Gdeflate）四种压缩算法，以及 CPU liblz4 和 nvCOMP LZ4 GPU 后端的完整性能对比基准测试体系，覆盖顺序读、随机读、写放大、并发安全、可压缩率梯度等 20+ 场景。
-
-6. **实验工程化与自动化**：自主编写 17 个自动化测试脚本（`tests/` 目录），实现一键编译-运行-采集-绘图流程；自主设计 CRC32 编译宏和 Ablation Study 体系，支持通过编译选项快速切换优化策略进行消融分析。
-
-本项目未抄袭或直接移植任何已有开源项目的整体架构设计；所有核心算法、数据结构、系统调用拦截逻辑、文件格式定义均由团队成员独立设计与编码实现。
-
----
-
-## 十一、增量贡献说明
-
-本项目的增量贡献是在基线版本（即自主研发的原型版本，具备基础 GPUC 格式定义、LD_PRELOAD POSIX I/O Hook 及 CPU LZ4 压缩路径）之上，进一步迭代开发的功能与优化。基线版本为团队自主编写的初始原型，无外部参照版本。
-
-相对于基线版本的主要增量贡献如下：
-
-| 增量贡献 | 负责人 | 工时 | 说明 |
-|----------|--------|------|------|
-| Batched GPU 解压（16-stream 并发） | 朱嘉乐 | 8.5h | 引入 CUDA multi-stream 并发，将批量解压从串行改为 16 路并行流水线，解压吞吐量提升 2.6× |
-| nvCOMP LZ4 GPU 后端 | 朱嘉乐 | 6h | 集成 nvCOMP 4.2 的 Batched LZ4 API，新增独立压缩/解压路径，读带宽 581 MB/s（vs SGLZ 279 MB/s），为通用数据提供高速 GPU 压缩选项 |
-| CPU Daemon 工作窃取调度 | 杨络 | 10h | 设计共享内存环形队列 + 后台线程池架构，实现异步压缩与原子切换，减少写路径阻塞 |
-| io_uring 异步 I/O 集成 | 杨络 | 8h | 在 Hook 读路径中集成 Linux io_uring，减少 read() 系统调用阻塞，提升高并发场景吞吐量 |
-| mmap 按需解压 | 陈益航 | 5h | 实现仅对实际访问页执行解压的 mmap 模式，避免全文件解压造成的 IO 抖动，LevelDB 随机读延迟降低 40% |
-| CRC32 可选校验与 Ablation Study | 陈益航 | 3h | 编译选项 `-DGPUC_NO_VERIFY_CRC` 跳过校验，支持消融实验；设计并实现全链路 Ablation Study 框架 |
-| DB 文件白名单与快速放行 | 杨文杰 | 4h | 维护 LevelDB 关键文件路径白名单（SST/MANIFEST/CURRENT/LOG/LOCK/IDENTITY），非目标文件零开销放行 |
-| TLS 缓冲区与 per-fd 缓存 | 张彬杰 | 6h | 引入线程局部存储（TLS）缓冲区池和 per-fd 状态缓存，消除全局锁竞争，多线程并行读能力线性扩展 |
-| 17 项自动化测试 + 性能基准 | 张彬杰 | 8h | 编写完整测试套件（`tests/` 目录），覆盖 fio、LevelDB db_bench、mmap 扫描、并发安全、高并发、写路径、可压缩率梯度、压缩算法对比等场景 |
-| Selective Gdeflate LZ4-HC 适配 | 杨文杰 | 4h | 适配 nvCOMP Selective Gdeflate + LZ4-HC 压缩管线，针对不同可压缩率数据块自适应选择算法，压缩率最高达 82.5% |
-
-以上增量均在基线原型基础上逐项叠加，体现在 Git 提交历史中的 41 次提交（2026-05-05 至 2026-06-17），展示完整的迭代开发过程。整体代码量从基线约 2800 行增长至约 6200 行，其中增量贡献约 3400 行。
+1. 为 nvCOMP LZ4 建持久化 device/host buffer pool，去掉每批
+   `cudaMalloc/cudaFree`；
+2. 将 GPU 解压迁到独立服务进程或长生命周期 worker，应用线程异步等待完成；
+3. 实现 userfaultfd mmap 按需页解压；
+4. 在有来源、版本和 SHA-256 的公开日志/模型数据集上补真实 workload；
+5. 若要支持 O_DIRECT，重新设计对齐 header、block offset 和 padded length；
+6. 在独立 btrfs 压缩卷验证 zstd 生效后，才恢复文件系统压缩对比。

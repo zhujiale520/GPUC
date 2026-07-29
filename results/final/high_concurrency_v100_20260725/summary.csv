@@ -1,0 +1,7 @@
+scenario,bs,jobs,direct,n,mean_mib_s,stddev_mib_s,ci95_mib_s
+baseline,128k,1,1,5,255.955,18.626,16.326
+baseline,128k,32,1,5,383.237,6.297,5.520
+gpu_compressed,128k,1,1,5,583.664,79.415,69.611
+gpu_compressed,128k,32,1,5,4779.172,35.735,31.323
+hook_raw,128k,1,1,5,251.839,7.642,6.699
+hook_raw,128k,32,1,5,383.982,2.573,2.255

@@ -1,0 +1,11 @@
+backend,repeat,mib_s
+cpu_liblz4,1,13242.939
+gpu_nvcomp_lz4,1,1347.620
+cpu_liblz4,2,14771.825
+gpu_nvcomp_lz4,2,4729.340
+cpu_liblz4,3,16910.263
+gpu_nvcomp_lz4,3,4773.384
+cpu_liblz4,4,15633.855
+gpu_nvcomp_lz4,4,4873.060
+cpu_liblz4,5,17484.849
+gpu_nvcomp_lz4,5,4874.421

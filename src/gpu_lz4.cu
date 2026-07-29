@@ -237,11 +237,130 @@ int gpu_lz4_decompress_batch(int n,
                              const uint8_t **in_bufs, const size_t *in_lens,
                              uint8_t **out_bufs, const size_t *out_lens) {
     if (n <= 0) return 0;
+
+    /* Raw-fallback blocks do not need CUDA. Build one real nvCOMP batch from
+     * the compressed subset instead of synchronizing once per block. */
+    int m = 0;
+    size_t packed_in_bytes = 0, packed_out_bytes = 0, max_out = 0;
     for (int i = 0; i < n; i++) {
-        if (gpu_lz4_decompress_one(in_bufs[i], in_lens[i], out_bufs[i], out_lens[i]) != 0)
+        if (!in_bufs[i] || in_lens[i] == 0 || !out_bufs[i] || out_lens[i] == 0)
             return -1;
+        if (in_bufs[i][0] == 0) {
+            if (in_lens[i] - 1 < out_lens[i]) return -1;
+            memcpy(out_bufs[i], in_bufs[i] + 1, out_lens[i]);
+        } else if (in_bufs[i][0] == 1) {
+            m++;
+            packed_in_bytes += in_lens[i] - 1;
+            packed_out_bytes += out_lens[i];
+            if (out_lens[i] > max_out) max_out = out_lens[i];
+        } else {
+            return -1;
+        }
     }
-    return n;
+    if (m == 0) return n;
+    if (gpu_lz4_init() != 0) return -1;
+
+    int rc = -1;
+    uint8_t *h_packed_in = (uint8_t *)malloc(packed_in_bytes);
+    uint8_t *h_packed_out = (uint8_t *)malloc(packed_out_bytes);
+    void **h_in_ptrs = (void **)malloc((size_t)m * sizeof(void *));
+    void **h_out_ptrs = (void **)malloc((size_t)m * sizeof(void *));
+    size_t *h_comp_lens = (size_t *)malloc((size_t)m * sizeof(size_t));
+    size_t *h_out_lens = (size_t *)malloc((size_t)m * sizeof(size_t));
+    size_t *h_actual = (size_t *)malloc((size_t)m * sizeof(size_t));
+    nvcompStatus_t *h_status =
+        (nvcompStatus_t *)malloc((size_t)m * sizeof(nvcompStatus_t));
+    int *indices = (int *)malloc((size_t)m * sizeof(int));
+    void *d_in = NULL, *d_out = NULL, *d_temp = NULL;
+    void **d_in_ptrs = NULL, **d_out_ptrs = NULL;
+    size_t *d_comp_lens = NULL, *d_out_lens = NULL, *d_actual = NULL;
+    nvcompStatus_t *d_status = NULL;
+    size_t in_off = 0, out_off = 0, temp_bytes = 0;
+    if (!h_packed_in || !h_packed_out || !h_in_ptrs || !h_out_ptrs ||
+        !h_comp_lens || !h_out_lens || !h_actual || !h_status || !indices)
+        goto cleanup;
+
+    for (int i = 0, j = 0; i < n; i++) {
+        if (in_bufs[i][0] != 1) continue;
+        size_t comp_len = in_lens[i] - 1;
+        memcpy(h_packed_in + in_off, in_bufs[i] + 1, comp_len);
+        indices[j] = i;
+        h_comp_lens[j] = comp_len;
+        h_out_lens[j] = out_lens[i];
+        /* Device base addresses are filled after cudaMalloc. */
+        h_in_ptrs[j] = (void *)(uintptr_t)in_off;
+        h_out_ptrs[j] = (void *)(uintptr_t)out_off;
+        in_off += comp_len;
+        out_off += out_lens[i];
+        j++;
+    }
+
+    if (nvcompBatchedLZ4DecompressGetTempSize((size_t)m, max_out, &temp_bytes)
+        != nvcompSuccess)
+        goto cleanup;
+    if (cudaMalloc(&d_in, packed_in_bytes) != cudaSuccess ||
+        cudaMalloc(&d_out, packed_out_bytes) != cudaSuccess ||
+        cudaMalloc(&d_temp, temp_bytes ? temp_bytes : 1) != cudaSuccess ||
+        cudaMalloc(&d_in_ptrs, (size_t)m * sizeof(void *)) != cudaSuccess ||
+        cudaMalloc(&d_out_ptrs, (size_t)m * sizeof(void *)) != cudaSuccess ||
+        cudaMalloc(&d_comp_lens, (size_t)m * sizeof(size_t)) != cudaSuccess ||
+        cudaMalloc(&d_out_lens, (size_t)m * sizeof(size_t)) != cudaSuccess ||
+        cudaMalloc(&d_actual, (size_t)m * sizeof(size_t)) != cudaSuccess ||
+        cudaMalloc(&d_status, (size_t)m * sizeof(nvcompStatus_t)) != cudaSuccess)
+        goto cleanup;
+
+    for (int j = 0; j < m; j++) {
+        h_in_ptrs[j] = (uint8_t *)d_in + (uintptr_t)h_in_ptrs[j];
+        h_out_ptrs[j] = (uint8_t *)d_out + (uintptr_t)h_out_ptrs[j];
+    }
+    if (cudaMemcpy(d_in, h_packed_in, packed_in_bytes, cudaMemcpyHostToDevice) != cudaSuccess ||
+        cudaMemcpy(d_in_ptrs, h_in_ptrs, (size_t)m * sizeof(void *), cudaMemcpyHostToDevice) != cudaSuccess ||
+        cudaMemcpy(d_out_ptrs, h_out_ptrs, (size_t)m * sizeof(void *), cudaMemcpyHostToDevice) != cudaSuccess ||
+        cudaMemcpy(d_comp_lens, h_comp_lens, (size_t)m * sizeof(size_t), cudaMemcpyHostToDevice) != cudaSuccess ||
+        cudaMemcpy(d_out_lens, h_out_lens, (size_t)m * sizeof(size_t), cudaMemcpyHostToDevice) != cudaSuccess)
+        goto cleanup;
+
+    if (nvcompBatchedLZ4DecompressAsync(
+            (const void *const *)d_in_ptrs, d_comp_lens, d_out_lens,
+            d_actual, (size_t)m, d_temp, temp_bytes,
+            d_out_ptrs, d_status, 0) != nvcompSuccess ||
+        cudaStreamSynchronize(0) != cudaSuccess ||
+        cudaMemcpy(h_actual, d_actual, (size_t)m * sizeof(size_t), cudaMemcpyDeviceToHost) != cudaSuccess ||
+        cudaMemcpy(h_status, d_status, (size_t)m * sizeof(nvcompStatus_t), cudaMemcpyDeviceToHost) != cudaSuccess ||
+        cudaMemcpy(h_packed_out, d_out, packed_out_bytes, cudaMemcpyDeviceToHost) != cudaSuccess)
+        goto cleanup;
+
+    out_off = 0;
+    for (int j = 0; j < m; j++) {
+        int i = indices[j];
+        if (h_status[j] != nvcompSuccess || h_actual[j] != out_lens[i])
+            goto cleanup;
+        memcpy(out_bufs[i], h_packed_out + out_off, out_lens[i]);
+        out_off += out_lens[i];
+    }
+    rc = n;
+
+cleanup:
+    if (d_in) cudaFree(d_in);
+    if (d_out) cudaFree(d_out);
+    if (d_temp) cudaFree(d_temp);
+    if (d_in_ptrs) cudaFree(d_in_ptrs);
+    if (d_out_ptrs) cudaFree(d_out_ptrs);
+    if (d_comp_lens) cudaFree(d_comp_lens);
+    if (d_out_lens) cudaFree(d_out_lens);
+    if (d_actual) cudaFree(d_actual);
+    if (d_status) cudaFree(d_status);
+    free(h_packed_in);
+    free(h_packed_out);
+    free(h_in_ptrs);
+    free(h_out_ptrs);
+    free(h_comp_lens);
+    free(h_out_lens);
+    free(h_actual);
+    free(h_status);
+    free(indices);
+    if (rc < 0) fprintf(stderr, "[gpu_lz4] batched decompress failed\n");
+    return rc;
 }
 
 /* 单个 block 的兼容接口 */

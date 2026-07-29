@@ -492,7 +492,8 @@ static ssize_t read_compressed(int fd, fd_info_t *info, void *buf, size_t count)
 ```
 
 **关键优化**：
-- `MAX_BATCH_BLOCKS = 16`：一次最多处理 16 个 128KB 块（2MB）
+- Hook 的 SGLZ 默认 `MAX_BATCH_BLOCKS = 4`：一次处理 4 个 128KB 块
+  （512 KiB）；后端 device pool 保留最大 32-block 容量
 - `__thread` TLS 缓冲区：每个线程独立的压缩/解压缓冲区，避免多线程竞争
 - `tls_alloc` / `tls_free` 宏：GPU build 时自动使用 `cudaHostAlloc`（pinned memory），失败时 fallback 到 `malloc`
 
@@ -862,7 +863,9 @@ A：`sizeof(struct gpuc_header)` 实际为 **56 字节**。注释中的 64 字�
 A：设计如此。RAW 文件的逻辑大小由 `get_logical_size()` 动态计算为 `phys_size - header_size`。daemon 压缩时才会把实际的 `data_size` 写入 `orig_size`。
 
 **Q8：GPU 被其他程序占用时怎么办？**
-A：当前 GPU（V100）被 `train_gpt2_geminifscu` 占用时，实时性能约下降 45%。lazy init 会检测到 `cudaSetDevice` 失败，自动 fallback 到 CPU backend，程序不会崩溃。
+A：GPU 竞争会降低性能。当前默认路径不会在每次读取时自动切换 CPU；可使用
+`GPUC_ENABLE_NVIDIA_SMI_FALLBACK=1` 做实验性负载检测，或显式部署 CPU Hook/Daemon。
+比赛报告应给出并发负载实测数据，不能把一次 `cudaSetDevice` 结果当作稳定降级保证。
 
 ---
 
@@ -887,10 +890,10 @@ A：当前 GPU（V100）被 `train_gpt2_geminifscu` 占用时，实时性能约�
 
 | 文件 | 内容 | 路径 |
 |------|------|------|
-| 第三方库声明 | 基础版本出处（nvCOMP、LZ4）、非本队来源说明、本队增量贡献 | [`docs/THIRD_PARTY.md`](docs/THIRD_PARTY.md) |
-| AI 工具使用声明 | 使用的 AI 工具、用途、范围、代码行统计 | [`docs/AI_TOOL_DECLARATION.md`](docs/AI_TOOL_DECLARATION.md) |
-| 开源许可 | 代码采用 Apache-2.0，文档采用 CC BY-SA 4.0 | [`LICENSE`](LICENSE)、[`LICENSE-docs`](LICENSE-docs) |
-| 原创性声明 | README.md 底部原创性声明 | [`README.md`](README.md) |
+| 第三方库声明 | 基础版本出处（nvCOMP、LZ4）、非本队来源说明、本队增量贡献 | [`THIRD_PARTY.md`](THIRD_PARTY.md) |
+| AI 工具使用声明 | 使用的 AI 工具、用途、范围、代码行统计 | [`AI_TOOL_DECLARATION.md`](AI_TOOL_DECLARATION.md) |
+| 开源许可 | 代码采用 Apache-2.0，文档采用 CC BY-SA 4.0 | [`LICENSE`](../LICENSE)、[`LICENSE-docs`](../LICENSE-docs) |
+| 原创性声明 | README.md 底部原创性声明 | [`README.md`](../README.md) |
 
 **核心要点**：
 

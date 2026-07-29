@@ -51,7 +51,7 @@
 | **GPU 卸载** | 读路径对压缩文件自动调用 GPU 批量并行解压 |
 | **GPU 通用算力** | 默认 SGLZ 算法不依赖 NVIDIA nvCOMP 等闭源压缩库，体现 CUDA 通用计算能力 |
 | **可插拔后端** | 可选 `GPUC_ALGO=lz4` 启用 NVIDIA nvCOMP LZ4，文本类数据压缩率更优 |
-| **高可用** | GPU 不可用时自动 fallback 到 CPU 后端，保证无 GPU 环境仍可运行 |
+| **可替换后端** | 提供独立 GPU 与 CPU Hook/Daemon；CPU 路径需显式启用 |
 | **数据一致性** | CRC32 校验、原子替换、fsync 语义保持正确 |
 
 ---
@@ -73,7 +73,7 @@
    - 支持一次扫描模式和周期性守护模式；
    - 根据可压缩率决定是否保留压缩结果，避免负压缩。
 
-整体数据流见 `docs/architecture.md`，本文不再赘述。
+整体数据流见 `architecture.md`，本文不再赘述。
 
 ---
 
@@ -120,11 +120,14 @@
   - 对高重复数据压缩率极好（全零 3.2%），对不可压缩数据可快速 fallback。
 
 - **nvCOMP LZ4**：
-  - 对文本类真实数据压缩率显著优于 SGLZ（Linux headers：82.5% → 38.6%）；
-  - 读带宽也更高（279 MB/s → 581 MB/s），因为物理 I/O 量减少；
+  - 对本机 Linux headers 文本语料的 allocated ratio 显著优于 SGLZ
+    （81.8% → 38.1%）；
+  - 4-block batch 修复后的 warm read 为 81.0 MiB/s，仍低于 SGLZ
+    107.8 MiB/s；当前优势是空间而不是读取速度；
   - 作为可选后端，通过 `GPUC_ALGO=lz4` 启用，保持向后兼容。
 
-双后端共存的设计使系统既具备自主知识产权的核心算法，又能利用成熟的工业库提升真实场景表现。
+双后端共存使系统保留自研核心算法，同时可在空间优先场景选择成熟库；后端选择
+必须根据实测空间/吞吐权衡，不能假设 LZ4 在当前实现中更快。
 
 ### 4.5 为什么用紧凑格式 + slot 布局两级表示？
 
@@ -147,8 +150,9 @@
 ### 5.1 CPU Fallback
 
 - **Lazy Init**：`hook_init` 不立即初始化 CUDA，第一次 I/O 时才触发；
-- **自动切换**：若 `gpu_compress_init()` 失败（无 GPU、驱动异常、显存不足），自动使用 CPU 后端；
-- **动态 fallback**：运行时通过 `nvidia-smi` 检测 GPU-Util，超过 80% 时自动切换 CPU，避免性能断崖。
+- **显式 CPU 路径**：无 GPU 环境使用 `libcpuhook.so` 与 `cpu_compress_daemon`；
+- **负载检测实验开关**：只有设置 `GPUC_ENABLE_NVIDIA_SMI_FALLBACK=1` 才低频调用
+  `nvidia-smi`；默认关闭，避免在读热路径创建子进程。稳定的自动切换仍是后续工作。
 
 ### 5.2 数据库文件白名单
 
@@ -167,10 +171,11 @@ SQLite、LevelDB 等数据库文件在 offset 0 处具有严格 magic/header，5
 
 1. **非侵入式 GPU 存储压缩卸载**：在国内系统类赛事中较少见的、通过 `LD_PRELOAD` 实现透明 GPU 压缩卸载的完整方案。
 2. **自主 SGLZ CUDA 压缩算法**：不依赖 nvCOMP，体现 GPU 通用算力，对高重复数据达到 3.2% 压缩率。
-3. **多级性能优化体系**：batch decompress、device memory pool、双缓冲流水线、io_uring、read-ahead、pinned memory、16 CUDA streams，使 jobs=32 高并发下 GPUC 恢复至 Baseline 的 99.8%。
-4. **mmap 按需解压**：同步预加载前 16 MB + 后台 pthread 异步解压，512 MB 文件 `mmap()` 返回时间从 2414 ms 降至 231 ms。
+3. **多级性能优化体系**：batch decompress、device memory pool、io_uring、
+   read-ahead、pinned memory 和 CUDA streams；各项增益需由修正后的消融实验复核。
+4. **mmap 正确性路径**：返回前同步填充完整逻辑内容；真正页级按需解压尚未实现。
 5. **可插拔压缩后端**：SGLZ 与 nvCOMP LZ4 共存，兼顾自主知识产权与真实数据压缩率。
-6. **自适应 fallback**：GPU 高负载、显存不足、低可压缩率等场景均能自动降级，保证系统鲁棒性。
+6. **文件级压缩率 fallback**：低压缩收益时保留 RAW；GPU/CPU 运行时自动切换仍有限制。
 7. **完整工程化与测试体系**：17+ 自动化测试脚本覆盖性能、稳定性、容错、真实 workload、能耗等多维度。
 
 ---

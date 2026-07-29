@@ -1,0 +1,7 @@
+size,scenario,mmap_ms,scan_ms,pages,checksum,mismatches,state
+64M,baseline,0.004,6.998,16384,6193692,0,PLAIN
+64M,hook_raw,46.782,0.953,16384,6193692,0,RAW
+64M,gpu_compressed,427.839,0.431,16384,6193692,0,COMPRESSED
+256M,baseline,0.003,26.454,65536,24772470,0,PLAIN
+256M,hook_raw,157.952,2.149,65536,24772470,0,RAW
+256M,gpu_compressed,1210.039,1.772,65536,24772470,0,COMPRESSED

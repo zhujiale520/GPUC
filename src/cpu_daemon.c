@@ -28,6 +28,8 @@
 #include <time.h>
 #include <signal.h>
 #include <libgen.h>
+#include <sys/file.h>
+#include <sys/xattr.h>
 
 #include "file_header.h"
 #include "gpu_compress_api.h"
@@ -39,6 +41,44 @@ int cpu_compress_128k(const uint8_t *in, uint8_t *out, size_t out_cap);
 #define SCAN_INTERVAL_SEC  60
 
 static volatile int g_running = 1;
+
+static int copy_fd_xattrs(int srcfd, int dstfd) {
+    ssize_t names_len = flistxattr(srcfd, NULL, 0);
+    if (names_len <= 0) return names_len < 0 && errno != ENOTSUP ? -1 : 0;
+    char *names = (char *)malloc((size_t)names_len);
+    if (!names) return -1;
+    if (flistxattr(srcfd, names, (size_t)names_len) != names_len) {
+        free(names);
+        return -1;
+    }
+    for (char *name = names; name < names + names_len; name += strlen(name) + 1) {
+        ssize_t value_len = fgetxattr(srcfd, name, NULL, 0);
+        if (value_len < 0) { free(names); return -1; }
+        void *value = malloc(value_len ? (size_t)value_len : 1);
+        if (!value) { free(names); return -1; }
+        if (fgetxattr(srcfd, name, value, (size_t)value_len) != value_len ||
+            fsetxattr(dstfd, name, value, (size_t)value_len, 0) != 0) {
+            free(value); free(names); return -1;
+        }
+        free(value);
+    }
+    free(names);
+    return 0;
+}
+
+static void fsync_parent_dir(const char *path) {
+    char *copy = strdup(path);
+    if (!copy) return;
+    char *slash = strrchr(copy, '/');
+    const char *dir = ".";
+    if (slash) {
+        if (slash == copy) slash[1] = '\0'; else *slash = '\0';
+        dir = copy;
+    }
+    int dfd = open(dir, O_RDONLY | O_DIRECTORY);
+    if (dfd >= 0) { (void)fsync(dfd); close(dfd); }
+    free(copy);
+}
 
 static void sigint_handler(int sig) {
     (void)sig;
@@ -82,6 +122,10 @@ static int compress_one_file(const char *path) {
         perror("open src");
         return -1;
     }
+    if (flock(fd_src, LOCK_EX | LOCK_NB) != 0) {
+        close(fd_src);
+        return -1;
+    }
 
     struct gpuc_header old_hdr;
     if (read(fd_src, &old_hdr, sizeof(old_hdr)) != (ssize_t)sizeof(old_hdr)) {
@@ -89,6 +133,11 @@ static int compress_one_file(const char *path) {
         return -1;
     }
     if (!gpuc_is_header(&old_hdr) || old_hdr.state != GPUC_STATE_RAW) {
+        close(fd_src);
+        return -1;
+    }
+    struct stat src_st;
+    if (fstat(fd_src, &src_st) != 0) {
         close(fd_src);
         return -1;
     }
@@ -116,7 +165,7 @@ static int compress_one_file(const char *path) {
     /* 创建临时文件 */
     char tmp_path[PATH_MAX + 16];
     snprintf(tmp_path, sizeof(tmp_path), "%s%s", path, TMP_SUFFIX);
-    int fd_tmp = open(tmp_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    int fd_tmp = open(tmp_path, O_WRONLY | O_CREAT | O_TRUNC, src_st.st_mode & 07777);
     if (fd_tmp < 0) {
         perror("open tmp");
         free(blocks);
@@ -224,6 +273,25 @@ static int compress_one_file(const char *path) {
         goto fail;
     }
 
+    struct stat src_after;
+    if (fstat(fd_src, &src_after) != 0 ||
+        src_after.st_size != src_st.st_size ||
+        src_after.st_mtim.tv_sec != src_st.st_mtim.tv_sec ||
+        src_after.st_mtim.tv_nsec != src_st.st_mtim.tv_nsec ||
+        src_after.st_ctim.tv_sec != src_st.st_ctim.tv_sec ||
+        src_after.st_ctim.tv_nsec != src_st.st_ctim.tv_nsec) {
+        errno = EBUSY;
+        goto fail;
+    }
+
+    (void)fchmod(fd_tmp, src_st.st_mode & 07777);
+    if (fchown(fd_tmp, src_st.st_uid, src_st.st_gid) != 0 && errno != EPERM)
+        perror("[cpu_daemon] fchown");
+    struct timespec src_times[2] = {src_st.st_atim, src_st.st_mtim};
+    (void)futimens(fd_tmp, src_times);
+    if (copy_fd_xattrs(fd_src, fd_tmp) != 0 || fsync(fd_tmp) != 0)
+        goto fail;
+
     close(fd_src);
     close(fd_tmp);
     free(in_buf);
@@ -236,6 +304,7 @@ static int compress_one_file(const char *path) {
         unlink(tmp_path);
         return -1;
     }
+    fsync_parent_dir(path);
 
     printf("[daemon] Done: %s\n", path);
     return 0;

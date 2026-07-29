@@ -7,9 +7,13 @@ GCC        ?= gcc
 
 # ----------------------------------------------------------
 # 自动检测 GPU 计算能力（优先 nvidia-smi）
+# 仅接受形如 7.0 / 8.6 的有效输出，避免驱动异常文本进入 -arch。
+# 可通过 make GPU_ARCH=70 显式覆盖。
 # ----------------------------------------------------------
-GPU_ARCH   := $(shell nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null | head -1 | tr -d '.')
-ifeq ($(GPU_ARCH),)
+GPU_ARCH_DETECTED := $(shell nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null \
+	| awk -F. '/^[0-9]+\.[0-9]+/ { gsub(/[^0-9]/, "", $$2); print $$1 $$2; exit }')
+GPU_ARCH ?= $(GPU_ARCH_DETECTED)
+ifeq ($(strip $(GPU_ARCH)),)
     GPU_ARCH := 70
     $(warning GPU auto-detect failed, defaulting to sm_70. Override with: make GPU_ARCH=75)
 endif
@@ -19,15 +23,20 @@ ABLATION_FLAGS ?=
 # ----------------------------------------------------------
 # nvCOMP LZ4 backend（下载到 third_party/nvcomp，无需系统安装）
 # ----------------------------------------------------------
-NVCOMP_ROOT := $(PWD)/third_party/nvcomp
+PROJECT_ROOT := $(CURDIR)
+NVCOMP_ROOT ?= $(PROJECT_ROOT)/third_party/nvcomp
 NVCOMP_INC  := $(NVCOMP_ROOT)/usr/include/nvcomp_12
 NVCOMP_LIB  := $(NVCOMP_ROOT)/usr/lib/x86_64-linux-gnu/nvcomp/12
 NVCOMP_FLAGS = -I$(NVCOMP_INC)
 NVCOMP_LINK  = -L$(NVCOMP_LIB) -lnvcomp -Xlinker -rpath -Xlinker $(NVCOMP_LIB)
 
 # liblz4 runtime 已存在，本地创建符号链接用于链接期
-LZ4_LIB     := $(PWD)/third_party/lz4
+LZ4_LIB     := $(PROJECT_ROOT)/third_party/lz4
+ifneq ($(wildcard $(LZ4_LIB)/liblz4.so),)
 LZ4_LINK    = -L$(LZ4_LIB) -llz4 -Xlinker -rpath -Xlinker $(LZ4_LIB)
+else
+LZ4_LINK    = -Xlinker -l:liblz4.so.1
+endif
 
 NVCCFLAGS  = -arch=sm_$(GPU_ARCH) -O3 -I./include $(NVCOMP_FLAGS) -Xcompiler -Wno-maybe-uninitialized -Wno-deprecated-gpu-targets $(ABLATION_FLAGS)
 LDFLAGS    = -lpthread $(LZ4_LINK)
@@ -39,14 +48,15 @@ BINDIR     = bin
 # 所有编译产物
 TARGETS    = $(BINDIR)/libgpuhook.so $(BINDIR)/libcpuhook.so \
              $(BINDIR)/gpu_compress_daemon $(BINDIR)/cpu_compress_daemon \
-             $(BINDIR)/test_cpu_vs_gpu $(BINDIR)/test_compress $(BINDIR)/test_hook
+             $(BINDIR)/test_cpu_vs_gpu $(BINDIR)/test_lz4_cpu_gpu $(BINDIR)/test_cpu_offload \
+             $(BINDIR)/test_compress $(BINDIR)/test_hook $(BINDIR)/test_cold_read
 
-.PHONY: all clean test dirs unit-test integration-test check-env
+.PHONY: all clean test dirs unit-test integration-test check-env check-gpu-deps cpu-only smoke-test sanitizer-test docs-check
 
 # ----------------------------------------------------------
 # 默认目标
 # ----------------------------------------------------------
-all: dirs $(TARGETS)
+all: check-gpu-deps dirs $(TARGETS)
 	@echo "========================================"
 	@echo "  Build complete! GPU arch: sm_$(GPU_ARCH)"
 	@echo "  Run 'make test' to verify."
@@ -54,6 +64,32 @@ all: dirs $(TARGETS)
 
 dirs:
 	@mkdir -p $(BINDIR)
+
+check-gpu-deps:
+	@test -f "$(NVCOMP_INC)/nvcomp/lz4.h" || { \
+		echo "[MISSING] nvCOMP headers: $(NVCOMP_INC)/nvcomp/lz4.h"; \
+		echo "Run: bash scripts/setup_dependencies.sh"; \
+		exit 1; \
+	}
+	@test -f "$(NVCOMP_LIB)/libnvcomp.so" || { \
+		echo "[MISSING] nvCOMP library: $(NVCOMP_LIB)/libnvcomp.so"; \
+		echo "Run: bash scripts/setup_dependencies.sh"; \
+		exit 1; \
+	}
+
+cpu-only: dirs $(BINDIR)/libcpuhook.so $(BINDIR)/cpu_compress_daemon $(BINDIR)/test_hook
+	@echo "CPU-only build complete."
+
+smoke-test: cpu-only
+	bash tests/test_posix_semantics.sh
+	bash tests/test_corrupt_headers.sh
+	bash tests/test_header_fuzz.sh
+
+sanitizer-test:
+	bash tests/sanitizer_cpu.sh
+
+docs-check:
+	python3 scripts/check_docs_links.py
 
 # ----------------------------------------------------------
 # 环境检查
@@ -76,14 +112,14 @@ check-env:
 # ----------------------------------------------------------
 # LD_PRELOAD 共享库（GPU 默认，支持 GPUCOMPRESS_BACKEND=cpu 切换）
 # ----------------------------------------------------------
-$(BINDIR)/libgpuhook.so: dirs $(SRCDIR)/hook.c $(SRCDIR)/gpu_compress.cu $(SRCDIR)/cpu_compress.c $(SRCDIR)/cpu_lz4.c $(SRCDIR)/gpu_lz4.cu
-	$(NVCC) -shared -Xcompiler -fPIC $(NVCCFLAGS) $(filter-out dirs,$^) -o $@ -ldl $(NVCOMP_LINK) $(LDFLAGS)
+$(BINDIR)/libgpuhook.so: check-gpu-deps dirs $(SRCDIR)/hook.c $(SRCDIR)/gpu_compress.cu $(SRCDIR)/cpu_compress.c $(SRCDIR)/cpu_lz4.c $(SRCDIR)/gpu_lz4.cu
+	$(NVCC) -shared -Xcompiler -fPIC $(NVCCFLAGS) $(filter-out dirs check-gpu-deps,$^) -o $@ -ldl $(NVCOMP_LINK) $(LDFLAGS)
 
 # ----------------------------------------------------------
 # 离线压缩后台程序 (GPU)
 # ----------------------------------------------------------
-$(BINDIR)/gpu_compress_daemon: dirs $(SRCDIR)/daemon.c $(SRCDIR)/gpu_compress.cu $(SRCDIR)/gpu_lz4.cu
-	$(NVCC) $(NVCCFLAGS) $(filter-out dirs,$^) -o $@ $(NVCOMP_LINK) $(LDFLAGS)
+$(BINDIR)/gpu_compress_daemon: check-gpu-deps dirs $(SRCDIR)/daemon.c $(SRCDIR)/gpu_compress.cu $(SRCDIR)/gpu_lz4.cu
+	$(NVCC) $(NVCCFLAGS) $(filter-out dirs check-gpu-deps,$^) -o $@ $(NVCOMP_LINK) $(LDFLAGS)
 
 # ----------------------------------------------------------
 # LD_PRELOAD 共享库（纯 CPU 版本，无 CUDA 依赖）
@@ -100,20 +136,29 @@ $(BINDIR)/cpu_compress_daemon: dirs $(SRCDIR)/cpu_daemon.c $(SRCDIR)/cpu_compres
 # ----------------------------------------------------------
 # 单元测试：压缩/解压一致性
 # ----------------------------------------------------------
-$(BINDIR)/test_compress: dirs $(SRCDIR)/test_compress.c $(SRCDIR)/gpu_compress.cu $(SRCDIR)/gpu_lz4.cu
-	$(NVCC) $(NVCCFLAGS) $(filter-out dirs,$^) -o $@ $(NVCOMP_LINK) $(LDFLAGS)
+$(BINDIR)/test_compress: check-gpu-deps dirs $(SRCDIR)/test_compress.c $(SRCDIR)/gpu_compress.cu $(SRCDIR)/gpu_lz4.cu
+	$(NVCC) $(NVCCFLAGS) $(filter-out dirs check-gpu-deps,$^) -o $@ $(NVCOMP_LINK) $(LDFLAGS)
 
 # ----------------------------------------------------------
 # CPU vs GPU 性能对比测试
 # ----------------------------------------------------------
-$(BINDIR)/test_cpu_vs_gpu: dirs $(SRCDIR)/test_cpu_vs_gpu.c $(SRCDIR)/gpu_compress.cu $(SRCDIR)/cpu_compress.c $(SRCDIR)/cpu_lz4.c $(SRCDIR)/gpu_lz4.cu
-	$(NVCC) $(NVCCFLAGS) $(filter-out dirs,$^) -o $@ $(NVCOMP_LINK) $(LDFLAGS)
+$(BINDIR)/test_cpu_vs_gpu: check-gpu-deps dirs $(SRCDIR)/test_cpu_vs_gpu.c $(SRCDIR)/gpu_compress.cu $(SRCDIR)/cpu_compress.c $(SRCDIR)/cpu_lz4.c $(SRCDIR)/gpu_lz4.cu
+	$(NVCC) $(NVCCFLAGS) $(filter-out dirs check-gpu-deps,$^) -o $@ $(NVCOMP_LINK) $(LDFLAGS)
+
+$(BINDIR)/test_lz4_cpu_gpu: check-gpu-deps dirs tests/test_lz4_cpu_gpu.c $(SRCDIR)/cpu_lz4.c $(SRCDIR)/gpu_lz4.cu
+	$(NVCC) $(NVCCFLAGS) $(filter-out dirs check-gpu-deps,$^) -o $@ $(NVCOMP_LINK) $(LDFLAGS)
+
+$(BINDIR)/test_cpu_offload: check-gpu-deps dirs tests/test_cpu_offload.cpp $(SRCDIR)/cpu_lz4.c $(SRCDIR)/gpu_lz4.cu
+	$(NVCC) $(NVCCFLAGS) $(filter-out dirs check-gpu-deps,$^) -o $@ $(NVCOMP_LINK) $(LDFLAGS)
 
 # ----------------------------------------------------------
 # Hook 集成测试程序
 # ----------------------------------------------------------
 $(BINDIR)/test_hook: dirs $(SRCDIR)/test_hook.c
 	$(GCC) -I$(INCDIR) $(filter-out dirs,$^) -o $@
+
+$(BINDIR)/test_cold_read: dirs tests/test_cold_read.c
+	$(GCC) -O3 $(filter-out dirs,$^) -o $@
 
 # ----------------------------------------------------------
 # 测试目标

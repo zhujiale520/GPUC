@@ -29,6 +29,7 @@
 #include <signal.h>
 #include <libgen.h>
 #include <sys/file.h>
+#include <sys/xattr.h>
 
 #include "file_header.h"
 #include "gpu_compress_api.h"
@@ -39,6 +40,50 @@
 
 static volatile int g_running = 1;
 static int g_use_lz4 = 0;
+
+static int copy_fd_xattrs(int srcfd, int dstfd) {
+    ssize_t names_len = flistxattr(srcfd, NULL, 0);
+    if (names_len <= 0) return names_len < 0 && errno != ENOTSUP ? -1 : 0;
+    char *names = (char *)malloc((size_t)names_len);
+    if (!names) return -1;
+    if (flistxattr(srcfd, names, (size_t)names_len) != names_len) {
+        free(names);
+        return -1;
+    }
+    for (char *name = names; name < names + names_len; name += strlen(name) + 1) {
+        ssize_t value_len = fgetxattr(srcfd, name, NULL, 0);
+        if (value_len < 0) { free(names); return -1; }
+        void *value = malloc(value_len ? (size_t)value_len : 1);
+        if (!value) { free(names); return -1; }
+        if (fgetxattr(srcfd, name, value, (size_t)value_len) != value_len ||
+            fsetxattr(dstfd, name, value, (size_t)value_len, 0) != 0) {
+            free(value);
+            free(names);
+            return -1;
+        }
+        free(value);
+    }
+    free(names);
+    return 0;
+}
+
+static void fsync_parent_dir(const char *path) {
+    char *copy = strdup(path);
+    if (!copy) return;
+    char *slash = strrchr(copy, '/');
+    const char *dir = ".";
+    if (slash) {
+        if (slash == copy) slash[1] = '\0';
+        else *slash = '\0';
+        dir = copy;
+    }
+    int dfd = open(dir, O_RDONLY | O_DIRECTORY);
+    if (dfd >= 0) {
+        (void)fsync(dfd);
+        close(dfd);
+    }
+    free(copy);
+}
 
 /* ============================================================
  *  增量扫描：记录已处理文件的路径和 mtime，避免重复检查
@@ -150,6 +195,12 @@ static int compress_one_file(const char *path) {
         close(fd_src);
         return -1;
     }
+    struct stat64 src_st;
+    if (fstat64(fd_src, &src_st) != 0) {
+        flock(fd_src, LOCK_UN);
+        close(fd_src);
+        return -1;
+    }
 
     off64_t phys_size = lseek64(fd_src, 0, SEEK_END);
     if (phys_size <= (off64_t)old_hdr.header_size) {
@@ -175,7 +226,8 @@ static int compress_one_file(const char *path) {
 
         char tmp_path[PATH_MAX + 16];
         snprintf(tmp_path, sizeof(tmp_path), "%s%s", path, TMP_SUFFIX);
-        int fd_tmp = open(tmp_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        int fd_tmp = open(tmp_path, O_WRONLY | O_CREAT | O_TRUNC,
+                          src_st.st_mode & 07777);
         if (fd_tmp < 0) {
             perror("open tmp");
             flock(fd_src, LOCK_UN);
@@ -203,6 +255,29 @@ static int compress_one_file(const char *path) {
             return -1;
         }
 
+        struct stat64 src_after;
+        if (fstat64(fd_src, &src_after) != 0 ||
+            src_after.st_size != src_st.st_size ||
+            src_after.st_mtim.tv_sec != src_st.st_mtim.tv_sec ||
+            src_after.st_mtim.tv_nsec != src_st.st_mtim.tv_nsec ||
+            src_after.st_ctim.tv_sec != src_st.st_ctim.tv_sec ||
+            src_after.st_ctim.tv_nsec != src_st.st_ctim.tv_nsec) {
+            close(fd_tmp); unlink(tmp_path);
+            flock(fd_src, LOCK_UN); close(fd_src);
+            errno = EBUSY;
+            return -1;
+        }
+
+        (void)fchmod(fd_tmp, src_st.st_mode & 07777);
+        if (fchown(fd_tmp, src_st.st_uid, src_st.st_gid) != 0 && errno != EPERM)
+            perror("[daemon] fchown");
+        struct timespec src_times[2] = {src_st.st_atim, src_st.st_mtim};
+        (void)futimens(fd_tmp, src_times);
+        if (copy_fd_xattrs(fd_src, fd_tmp) != 0 || fsync(fd_tmp) != 0) {
+            close(fd_tmp); unlink(tmp_path);
+            flock(fd_src, LOCK_UN); close(fd_src);
+            return -1;
+        }
         close(fd_src);
         close(fd_tmp);
 
@@ -211,6 +286,7 @@ static int compress_one_file(const char *path) {
             unlink(tmp_path);
             return -1;
         }
+        fsync_parent_dir(path);
         printf("[daemon] Inline: %s (%ld bytes)\n", path, (long)data_size);
         return 0;
     }
@@ -231,7 +307,8 @@ static int compress_one_file(const char *path) {
     /* 创建临时文件 */
     char tmp_path[PATH_MAX + 16];
     snprintf(tmp_path, sizeof(tmp_path), "%s%s", path, TMP_SUFFIX);
-    int fd_tmp = open(tmp_path, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    int fd_tmp = open(tmp_path, O_WRONLY | O_CREAT | O_TRUNC,
+                      src_st.st_mode & 07777);
     if (fd_tmp < 0) {
         perror("open tmp");
         free(blocks);
@@ -326,14 +403,6 @@ static int compress_one_file(const char *path) {
                                        batch_out, batch_out_caps, batch_out_lens);
         }
         (void)sret;
-
-        /* DEBUG */
-        if (!g_use_lz4 && batch_count > 0) {
-            uint16_t s0 = *(uint16_t *)batch_out[0];
-            uint16_t s1 = *(uint16_t *)(batch_out[0] + GC_SLOT_SIZE);
-            fprintf(stderr, "[DEBUG] batch_count=%u batch_out_lens[0]=%zu slot0=%u slot1=%u\n",
-                    batch_count, batch_out_lens[0], s0, s1);
-        }
 
         /* 逐个处理输出 */
         for (uint32_t bi = 0; bi < batch_count; bi++) {
@@ -455,6 +524,26 @@ static int compress_one_file(const char *path) {
         goto fail;
     }
 
+    struct stat64 src_after;
+    if (fstat64(fd_src, &src_after) != 0 ||
+        src_after.st_size != src_st.st_size ||
+        src_after.st_mtim.tv_sec != src_st.st_mtim.tv_sec ||
+        src_after.st_mtim.tv_nsec != src_st.st_mtim.tv_nsec ||
+        src_after.st_ctim.tv_sec != src_st.st_ctim.tv_sec ||
+        src_after.st_ctim.tv_nsec != src_st.st_ctim.tv_nsec) {
+        errno = EBUSY;
+        goto fail;
+    }
+
+    (void)fchmod(fd_tmp, src_st.st_mode & 07777);
+    if (fchown(fd_tmp, src_st.st_uid, src_st.st_gid) != 0 && errno != EPERM)
+        perror("[daemon] fchown");
+    struct timespec src_times[2] = {src_st.st_atim, src_st.st_mtim};
+    (void)futimens(fd_tmp, src_times);
+    if (copy_fd_xattrs(fd_src, fd_tmp) != 0 || fsync(fd_tmp) != 0) {
+        goto fail;
+    }
+
     close(fd_src);
     close(fd_tmp);
     free(blocks);
@@ -465,6 +554,7 @@ static int compress_one_file(const char *path) {
         unlink(tmp_path);
         return -1;
     }
+    fsync_parent_dir(path);
 
     printf("[daemon] Done: %s\n", path);
     return 0;

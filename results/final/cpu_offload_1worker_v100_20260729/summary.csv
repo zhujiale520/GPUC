@@ -1,0 +1,4 @@
+scenario,n,business_mean_ops_s,business_std,business_ci95,business_vs_baseline_pct,decomp_mean_mib_s,user_cpu_mean_sec,sys_cpu_mean_sec,gpu_util_mean_pct,power_mean_w
+baseline,3,440877335.751,239466.909,270982.317,100.000,0.000,3.999559,0.000688,0.250,43.960
+cpu,3,220861796.284,749238.275,847842.922,50.096,10373.630,4.000046,0.000968,0.100,43.961
+gpu,3,214313151.105,67077.366,75905.185,48.611,2093.495,3.747387,0.257068,23.572,44.901

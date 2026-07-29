@@ -52,6 +52,12 @@ bash scripts/check_env.sh
 
 ## 2. 编译
 
+首次构建先准备仓库内依赖：
+
+```bash
+bash scripts/setup_dependencies.sh
+```
+
 ### 2.1 完整编译（GPU + CPU）
 
 ```bash
@@ -74,7 +80,7 @@ make all
 
 ```bash
 make clean
-make bin/libcpuhook.so bin/cpu_compress_daemon bin/test_compress
+make cpu-only
 ```
 
 ### 2.3 消融实验编译
@@ -136,10 +142,8 @@ bash tests/benchmark_fio.sh
 
 该脚本会测试 Baseline、Hook RAW、CPU Compressed、GPU Compressed 四种状态的顺序读。
 
-预期结果（512 MB zero 数据，128k bs，page cache 命中）：
-- Baseline：~450 MB/s
-- Hook RAW：~451 MB/s
-- GPU Compressed：**~458 MB/s**
+脚本输出仅用于当前机器的复测结果，不应把其他环境的历史数值作为“预期值”。
+报告结果时同时保留原始输出、缓存条件和输入文件校验和。
 
 ### 4.2 随机读性能
 
@@ -147,9 +151,7 @@ bash tests/benchmark_fio.sh
 bash tests/random_read_small_bs.sh
 ```
 
-预期结果（GPU Compressed，zero 数据）：
-- IOPS 在 4k–128k bs 范围内稳定在 **~800**；
-- 平均延迟约 **1.2 ms**。
+报告 IOPS、平均延迟和尾延迟时必须注明数据类型、缓存条件、fio 引擎和并发数。
 
 ### 4.3 jobs=32 高并发
 
@@ -157,19 +159,20 @@ bash tests/random_read_small_bs.sh
 bash tests/benchmark_high_concurrency.sh
 ```
 
-预期结果（direct=1）：
-- zero 128k：GPUC 达到 Baseline 的 **99.8%**；
-- zero 1M：GPUC 达到 Baseline 的 **99.7%**。
+该脚本为 Baseline、Hook RAW 和 GPU Compressed 创建内容相同但互相独立的文件，
+并记录 header 状态、逻辑校验和、表观大小和物理占用。默认重复 5 次并输出
+mean/std/95% CI。GPU Compressed 的“有效逻辑带宽”可能因减少物理 I/O 而高于
+dense Baseline，不能解释为纯解压吞吐。
 
-### 4.4 mmap 按需解压
+### 4.4 mmap 同步完整解压
 
 ```bash
 bash tests/mmap_size_sweep.sh
 ```
 
-预期结果：
-- 512 MB 文件 `mmap()` 返回时间约 **231 ms**；
-- 优化前为 2414 ms，提升 **10.4x**。
+当前实现为保证 POSIX 可见性，在 `mmap()` 返回前同步填充全部逻辑内容，不是
+页级按需解压。测试使用逐页不同的非零 pattern，并在返回后立即扫描所有页。
+真正的按需页级解压需要 `userfaultfd` 等缺页处理机制，属于后续工作。
 
 ### 4.5 压缩率
 
@@ -177,7 +180,7 @@ bash tests/mmap_size_sweep.sh
 bash tests/compressibility_gradient.sh
 ```
 
-预期结果（512 MB 文件）：
+历史参考值（尚未按本轮统一方法复测，不作为决赛结论）：
 
 | 可压缩率 | 压缩率 | 解压读带宽 |
 |---------|--------|-----------|
@@ -201,13 +204,17 @@ GPUC_ALGO=lz4 ./bin/gpu_compress_daemon /tmp/gpuc_test
 
 # 透明读取
 LD_PRELOAD=./bin/libgpuhook.so GPUCOMPRESS_QUIET=1 \
-    sha256sum /tmp/gpuc_test/headers.tar
+    dd if=/tmp/gpuc_test/headers.tar status=none | sha256sum
 ```
 
-预期结果（Linux headers，~35 MB）：
-- SGLZ 压缩率：~82.5%
-- LZ4 压缩率：**~38.6%**
-- LZ4 128k 顺序读带宽：**~581 MB/s**
+说明：部分 coreutils 可能绕过被拦截的 libc `read()`；复测逻辑内容时使用上面的
+`dd | sha256sum`，并将结果与压缩前输入校验和比较。
+
+2026-07-29 正式五轮结果（固定 `/usr/include` tar，37,703,680 B）：
+
+- SGLZ allocated ratio：81.8%，warm read 107.8 ± 0.3 MiB/s；
+- LZ4 allocated ratio：38.1%，warm read 81.0 ± 0.1 MiB/s；
+- 原始 JSON/CSV：`results/final/backends_v100_20260729/`。
 
 ### 4.7 真实 Workload
 
@@ -216,10 +223,9 @@ bash tests/real_workload_comprehensive.sh
 bash tests/db_whitelist.sh
 ```
 
-预期结果：
-- SQLite 建表/插入/SELECT：**PASS**
-- LevelDB fillseq/readseq/readrandom：**PASS**
-- ccache cold/hot compile：Hook 引入 14–26% overhead
+这些脚本是历史 workload 探索，不满足本轮“公开来源/版本/SHA-256 + 五次重复 +
+cold/warm 分离”的核心结果标准。运行成功只能说明该次兼容性，不得直接写入决赛
+性能结论。当前 PPT 和实验报告已移除旧 SQLite/LevelDB/ccache 性能数字。
 
 ### 4.8 消融实验
 
@@ -227,38 +233,37 @@ bash tests/db_whitelist.sh
 bash tests/ablation_study.sh
 ```
 
-预期结果（512 MB zero，128k bs，page cache 命中）：
+2026-07-29 正式结果：
 
 | 实验组 | 关闭的优化 | 顺序读带宽 |
 |---|---|---|
-| 全优化基线 | 无 | ~147.9 MB/s |
-| 关闭 io_uring | `-DGPUC_NO_IOURING` | ~135.1 MB/s |
-| 关闭 Read-Ahead | `-DGPUC_NO_READAHEAD` | ~122.1 MB/s |
-| 关闭 Batch | `-DGPUC_NO_BATCH` | ~123.1 MB/s |
+| 全优化基线 | 无 | 182.0 MiB/s |
+| 关闭 io_uring | `-DGPUC_NO_IOURING` | 182.4 MiB/s |
+| 关闭 Read-Ahead | `-DGPUC_NO_READAHEAD` | 161.8 MiB/s |
+| 关闭 Batch | `-DGPUC_NO_BATCH` | 162.0 MiB/s |
+| 关闭 pinned memory | `-DGPUC_NO_PINNED` | 177.3 MiB/s |
 
 ### 4.9 容错与边界
 
+核心边界使用可重复、无需 root 的脚本：
+
 ```bash
-bash tests/fault_tolerance_boundary.sh
+make smoke-test
+bash tests/test_concurrent_daemon.sh
 ```
 
-预期结果：
-- Daemon 压缩时应用并发读/写：**PASS**
-- GPU 显存不足 fallback：**PASS**
-- 磁盘空间不足：**PASS**
-- 进程崩溃一致性：**PASS**
-- fsync 语义：**PASS**
+它们覆盖 POSIX RAW 语义、COMPRESSED `EROFS`、白名单原子 rename、损坏格式、
+2000 个 fuzz case，以及同路径非 flock reader 在 daemon 原子替换期间的一致性。
+旧 `fault_tolerance_boundary.sh` 中需要 root/故障注入的项目不作为自动 PASS 结论。
 
-### 4.10 生产级指标
+### 4.10 工程指标探索
 
 ```bash
 bash tests/production_metrics.sh
 ```
 
-预期结果（512 MB zero，randread 128k）：
-- p99 读延迟：**~457 µs**
-- p999 读延迟：**~578 µs**
-- IOPS：**~3355**
+该脚本输出单机工程观测值。一次测试不能证明“生产级”，必须保留 fio JSON、
+环境信息、重复次数和置信区间，并在不同硬件与真实工作负载上复测。
 
 ---
 
@@ -274,6 +279,7 @@ bash tests/production_metrics.sh
 | `GPUC_NO_DB_WHITELIST` | 关闭数据库白名单 | `0` |
 | `GPUC_WHITELIST` | 追加自定义后缀白名单 | 空 |
 | `GPUC_NO_HOOK` | 保留 Hook 加载但禁用拦截 | `0` |
+| `GPUC_ENABLE_NVIDIA_SMI_FALLBACK` | 允许低频调用 `nvidia-smi` 做负载 fallback 探索；默认关闭，避免读路径创建进程 | `0` |
 
 ---
 
@@ -292,7 +298,9 @@ nvidia-smi
 nvcc --version
 ```
 
-若 GPU 不可用，系统会自动 fallback 到 CPU 后端，Hook 仍可工作。
+GPU Hook 需要可用的 CUDA 设备。CPU 路径请显式使用 `bin/libcpuhook.so` 和
+`bin/cpu_compress_daemon`。基于 `nvidia-smi` 的负载检测仅在显式设置
+`GPUC_ENABLE_NVIDIA_SMI_FALLBACK=1` 时启用，不属于默认热路径。
 
 ### 6.3 压缩率异常
 
@@ -308,7 +316,7 @@ LD_PRELOAD=./bin/libgpuhook.so GPUC_NO_HOOK=1 fio ...
 
 ### 6.5 空间不足
 
-Daemon 压缩过程中需要临时文件 `.gpuctmp`，确保目标目录有足够空间。
+Daemon 压缩过程中需要同目录临时文件 `.gpuc_tmp`，确保目标目录有足够空间。
 
 ---
 
@@ -319,6 +327,7 @@ Daemon 压缩过程中需要临时文件 `.gpuctmp`，确保目标目录有足�
 bash scripts/check_env.sh
 
 # 编译
+bash scripts/setup_dependencies.sh
 make clean && make all
 
 # 运行所有测试

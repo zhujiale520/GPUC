@@ -238,7 +238,7 @@ __global__ void sglz_decompress_compact_kernel(const uint8_t *compact_in,
  * ============================================================ */
 
 #define SGLZ_MAX_BATCH_BLOCKS 32
-#define SGLZ_NUM_STREAMS 16
+#define SGLZ_NUM_STREAMS 64
 
 static int g_initialized = 0;
 static cudaStream_t g_streams[SGLZ_NUM_STREAMS];

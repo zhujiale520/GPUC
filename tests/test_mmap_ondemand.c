@@ -1,26 +1,24 @@
 /*
- * test_mmap_ondemand.c - 验证 mmap 按需解压优化
+ * mmap correctness/latency test.
  *
- * 测试方法：
- *   1. 创建一个大文件（如 512MB）并通过 daemon 压缩
- *   2. 用 mmap() 映射该文件
- *   3. 测量 mmap() 返回时间（应大幅缩短）
- *   4. 验证前 16MB 数据已正确解压
- *   5. 等待后台线程完成后验证剩余数据
+ * The input must use this deterministic page pattern:
+ * every 4096-byte page is filled with page_value(page_index).
+ * This deliberately avoids all-zero data, which cannot detect reads from
+ * anonymous pages that have not been populated yet.
  */
 
 #define _GNU_SOURCE
+#include <errno.h>
+#include <fcntl.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
-#include <string.h>
 #include <sys/mman.h>
-#include <sys/types.h>
 #include <sys/stat.h>
-#include <fcntl.h>
-#include <unistd.h>
 #include <time.h>
-#include <errno.h>
-#include <stdint.h>
+#include <unistd.h>
+
+#define PAGE_BYTES 4096U
 
 static double now_sec(void) {
     struct timespec ts;
@@ -28,70 +26,94 @@ static double now_sec(void) {
     return ts.tv_sec + ts.tv_nsec * 1e-9;
 }
 
-int main(int argc, char *argv[]) {
-    const char *path = (argc > 1) ? argv[1] : "/tmp/gpuc_mmap_test.bin";
-    size_t file_size = (argc > 2) ? (size_t)atol(argv[2]) : (512 * 1024 * 1024);
+static uint8_t page_value(size_t page_index) {
+    return (uint8_t)(((page_index * 131U + 17U) % 251U) + 1U);
+}
 
-    printf("========================================\n");
-    printf("  mmap On-Demand Decompress Test\n");
-    printf("========================================\n");
-    printf("File: %s\n", path);
-    printf("Size: %zu MB\n", file_size / (1024 * 1024));
+int main(int argc, char **argv) {
+    if (argc != 2) {
+        fprintf(stderr, "Usage: %s <page-pattern-file>\n", argv[0]);
+        return 2;
+    }
 
-    int fd = open(path, O_RDONLY);
+    int fd = open(argv[1], O_RDONLY);
     if (fd < 0) {
         perror("open");
         return 1;
     }
 
-    double t0 = now_sec();
-    void *addr = mmap(NULL, file_size, PROT_READ, MAP_PRIVATE, fd, 0);
-    double t1 = now_sec();
+    struct stat st;
+    if (fstat(fd, &st) != 0 || st.st_size <= 0) {
+        perror("fstat");
+        close(fd);
+        return 1;
+    }
+    size_t file_size = (size_t)st.st_size;
+
+    double mmap_start = now_sec();
+    uint8_t *addr = mmap(NULL, file_size, PROT_READ, MAP_PRIVATE, fd, 0);
+    double mmap_end = now_sec();
     if (addr == MAP_FAILED) {
         perror("mmap");
         close(fd);
         return 1;
     }
-    printf("mmap() returned in %.3f ms\n", (t1 - t0) * 1000.0);
 
-    /* 验证前 1MB 数据（应在同步预解压范围内） */
-    int ok = 1;
-    double t_verify0 = now_sec();
-    for (size_t i = 0; i < 1024 * 1024; i += 4096) {
-        uint8_t *p = (uint8_t *)addr + i;
-        if (*p != 0x00) {
-            fprintf(stderr, "Data mismatch at offset %zu: expected 0x00, got 0x%02x\n", i, *p);
-            ok = 0;
-            break;
-        }
-    }
-    double t_verify1 = now_sec();
-    printf("Verify first 1MB: %s (%.3f ms)\n", ok ? "PASS" : "FAIL", (t_verify1 - t_verify0) * 1000.0);
+    /*
+     * Access every page immediately after mmap returns. In particular this
+     * reaches well beyond the old 16 MB preload boundary without sleeping.
+     */
+    double scan_start = now_sec();
+    size_t pages = (file_size + PAGE_BYTES - 1U) / PAGE_BYTES;
+    size_t mismatches = 0;
+    size_t first_bad_offset = 0;
+    uint8_t first_expected = 0;
+    uint8_t first_actual = 0;
+    volatile uint64_t checksum = 0;
 
-    /* 抽样验证文件尾部（可能需要等待后台线程） */
-    if (file_size > 16 * 1024 * 1024) {
-        size_t tail_off = file_size - 4096;
-        uint8_t *tail = (uint8_t *)addr + tail_off;
-        printf("Checking tail at offset %zu ... ", tail_off);
-        fflush(stdout);
+    for (size_t page = 0; page < pages; page++) {
+        size_t start = page * PAGE_BYTES;
+        size_t end = start + PAGE_BYTES - 1U;
+        if (end >= file_size) end = file_size - 1U;
+        size_t middle = start + (end - start) / 2U;
+        uint8_t expected = page_value(page);
+        size_t offsets[3] = {start, middle, end};
 
-        /* 给后台线程一些时间（实际场景应用会继续执行其他任务） */
-        double t_wait0 = now_sec();
-        int tail_ok = 0;
-        for (int retry = 0; retry < 1000; retry++) {
-            if (*tail == 0x00) {
-                tail_ok = 1;
-                break;
+        for (size_t i = 0; i < 3; i++) {
+            uint8_t actual = addr[offsets[i]];
+            checksum += actual;
+            if (actual != expected) {
+                if (mismatches == 0) {
+                    first_bad_offset = offsets[i];
+                    first_expected = expected;
+                    first_actual = actual;
+                }
+                mismatches++;
             }
-            usleep(10000); /* 10ms */
         }
-        double t_wait1 = now_sec();
-        printf("%s (waited %.1f ms)\n", tail_ok ? "PASS" : "FAIL", (t_wait1 - t_wait0) * 1000.0);
     }
+    double scan_end = now_sec();
 
-    munmap(addr, file_size);
+    if (munmap(addr, file_size) != 0) {
+        perror("munmap");
+        close(fd);
+        return 1;
+    }
     close(fd);
 
-    printf("\nResult: %s\n", ok ? "PASS" : "FAIL");
-    return ok ? 0 : 1;
+    printf("size_bytes=%zu mmap_ms=%.3f scan_ms=%.3f pages=%zu checksum=%llu mismatches=%zu\n",
+           file_size,
+           (mmap_end - mmap_start) * 1000.0,
+           (scan_end - scan_start) * 1000.0,
+           pages,
+           (unsigned long long)checksum,
+           mismatches);
+
+    if (mismatches != 0) {
+        fprintf(stderr,
+                "first mismatch: offset=%zu expected=0x%02x actual=0x%02x\n",
+                first_bad_offset, first_expected, first_actual);
+        return 1;
+    }
+    return 0;
 }

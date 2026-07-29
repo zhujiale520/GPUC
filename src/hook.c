@@ -31,6 +31,7 @@
 #include <sys/sendfile.h>
 #include <sys/stat.h>
 #include <sys/uio.h>
+#include <sys/xattr.h>
 #include <unistd.h>
 #include <sys/syscall.h>
 #include <stdint.h>
@@ -55,6 +56,12 @@ __attribute__((weak)) int  gpu_decompress_128k(const uint8_t *in, size_t in_len,
 __attribute__((weak)) int  gpu_decompress_batch(int n,
                                                 const uint8_t **in_bufs, const size_t *in_lens,
                                                 uint8_t **out_bufs, const size_t *out_lens) {
+    (void)n; (void)in_bufs; (void)in_lens; (void)out_bufs; (void)out_lens;
+    return -1;
+}
+__attribute__((weak)) int  gpu_lz4_decompress_batch(int n,
+                                                    const uint8_t **in_bufs, const size_t *in_lens,
+                                                    uint8_t **out_bufs, const size_t *out_lens) {
     (void)n; (void)in_bufs; (void)in_lens; (void)out_bufs; (void)out_lens;
     return -1;
 }
@@ -110,6 +117,12 @@ __attribute__((weak)) void gpu_tls_free_pinned(void *ptr) {
     } while(0)
 #endif
 #endif
+
+/* nvCOMP LZ4 has substantially higher launch overhead than the custom SGLZ
+ * kernel. Keep its sequential read-ahead batch independent from the SGLZ
+ * tuning result. */
+#define LZ4_BATCH_BLOCKS 4
+#define TLS_BATCH_CAPACITY LZ4_BATCH_BLOCKS
 
 /* ============================================================
  *  原始系统调用符号
@@ -186,34 +199,6 @@ static void ensure_backend_init(void) {
 }
 
 /* ============================================================
- *  后台预初始化线程：constructor 阶段提前启动 CUDA init，
- *  使长生命周期应用的首次 I/O 无需等待 200ms。
- * ============================================================ */
-static volatile int g_preinit_done = 0;
-
-static void *preinit_thread(void *arg) {
-    (void)arg;
-    /* 延迟 100ms，避免 constructor 阶段 CUDA 驱动尚未就绪 */
-    struct timespec ts = {0, 100000000};
-    nanosleep(&ts, NULL);
-    if (gpu_compress_init() == 0) {
-        g_backend_initialized = 1;
-    } else {
-        /* 清理可能部分创建的资源，让前台线程稍后重试 */
-        gpu_compress_fini();
-    }
-    g_preinit_done = 1;
-    return NULL;
-}
-
-static void spawn_preinit_thread(void) {
-    pthread_t t;
-    if (pthread_create(&t, NULL, preinit_thread, NULL) == 0) {
-        pthread_detach(t);
-    }
-}
-
-/* ============================================================
  *  GPU 负载检测：高负载时自动 fallback CPU 后端
  * ============================================================ */
 #ifndef GPUC_NO_FALLBACK
@@ -221,6 +206,14 @@ static __thread int g_tls_use_cpu = 0;
 static __thread time_t g_tls_last_check = 0;
 
 static int should_cpu_fallback(void) {
+    /*
+     * Spawning nvidia-smi from a hot read path is expensive and every child
+     * inherits LD_PRELOAD. Keep this legacy policy opt-in until it is replaced
+     * by an in-process NVML sampler.
+     */
+    const char *enabled = getenv("GPUC_ENABLE_NVIDIA_SMI_FALLBACK");
+    if (!enabled || strcmp(enabled, "1") != 0) return 0;
+
     time_t now = time(NULL);
     if (now != g_tls_last_check) {
         FILE *f = popen("nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits", "r");
@@ -313,9 +306,11 @@ static int is_whitelisted_path(const char *pathname) {
 #define MAX_FD 65536
 
 typedef struct {
+    int refcount;          /* duplicated fds share one open-file description */
     int active;
     int has_header;
     int is_compressed;
+    int open_flags;
     struct gpuc_header hdr;
     struct gpuc_block_entry *blocks;
     off64_t cur_offset;   /* 逻辑偏移（用户视角） */
@@ -340,6 +335,15 @@ typedef struct {
 static fd_info_t *g_fd_table[MAX_FD];
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 
+static void release_fd_info_locked(fd_info_t *info) {
+    if (!info) return;
+    if (--info->refcount > 0) return;
+    free(info->blocks);
+    free(info->ra_buf);
+    free(info->cache_buf);
+    free(info);
+}
+
 static fd_info_t* get_fd_info(int fd) {
     if (fd < 0 || fd >= MAX_FD) return NULL;
     pthread_mutex_lock(&g_lock);
@@ -351,24 +355,28 @@ static fd_info_t* get_fd_info(int fd) {
 static void set_fd_info(int fd, fd_info_t *info) {
     if (fd < 0 || fd >= MAX_FD) return;
     pthread_mutex_lock(&g_lock);
-    if (g_fd_table[fd]) {
-        free(g_fd_table[fd]->blocks);
-        free(g_fd_table[fd]);
-    }
+    release_fd_info_locked(g_fd_table[fd]);
+    if (info && info->refcount <= 0) info->refcount = 1;
     g_fd_table[fd] = info;
+    pthread_mutex_unlock(&g_lock);
+}
+
+static void share_fd_info(int oldfd, int newfd) {
+    if (oldfd < 0 || oldfd >= MAX_FD || newfd < 0 || newfd >= MAX_FD) return;
+    pthread_mutex_lock(&g_lock);
+    fd_info_t *info = g_fd_table[oldfd];
+    if (info) {
+        info->refcount++;
+        g_fd_table[newfd] = info;
+    }
     pthread_mutex_unlock(&g_lock);
 }
 
 static void clear_fd_info(int fd) {
     if (fd < 0 || fd >= MAX_FD) return;
     pthread_mutex_lock(&g_lock);
-    if (g_fd_table[fd]) {
-        free(g_fd_table[fd]->blocks);
-        free(g_fd_table[fd]->ra_buf);
-        free(g_fd_table[fd]->cache_buf);
-        free(g_fd_table[fd]);
-        g_fd_table[fd] = NULL;
-    }
+    release_fd_info_locked(g_fd_table[fd]);
+    g_fd_table[fd] = NULL;
     pthread_mutex_unlock(&g_lock);
 }
 
@@ -387,11 +395,41 @@ static int read_header(int fd, fd_info_t *info) {
     struct gpuc_header hdr;
     ssize_t n = real_pread64(fd, &hdr, sizeof(hdr), 0);
     if (n != (ssize_t)sizeof(hdr)) {
-        errno = saved_errno;
+        if (n >= 0) errno = EIO;
         return -1;
     }
     if (!gpuc_is_header(&hdr)) {
         errno = saved_errno;
+        return 1; /* ordinary non-GPUC file */
+    }
+    off64_t phys_size = get_phys_size(fd);
+    if (hdr.block_size != GPUC_BLOCK_SIZE ||
+        hdr.num_blocks > GPUC_MAX_BLOCKS ||
+        hdr.header_size < sizeof(hdr) ||
+        hdr.header_size > (uint64_t)phys_size) {
+        errno = EINVAL;
+        return -1;
+    }
+    if (hdr.state == GPUC_STATE_COMPRESSED) {
+        uint32_t expected_blocks = gpuc_num_blocks(hdr.orig_size);
+        if (hdr.orig_size == 0 || hdr.num_blocks == 0 ||
+            hdr.num_blocks != expected_blocks) {
+            errno = EINVAL;
+            return -1;
+        }
+    } else if (hdr.state == GPUC_STATE_INLINE) {
+        if (hdr.orig_size > GPUC_INLINE_THRESHOLD || hdr.num_blocks != 0 ||
+            hdr.header_size != sizeof(hdr) + hdr.orig_size) {
+            errno = EINVAL;
+            return -1;
+        }
+    } else if (hdr.state == GPUC_STATE_RAW) {
+        if (hdr.header_size != sizeof(hdr)) {
+            errno = EINVAL;
+            return -1;
+        }
+    } else {
+        errno = EINVAL;
         return -1;
     }
 
@@ -439,11 +477,63 @@ static int read_header(int fd, fd_info_t *info) {
             if (entry_size >= 24) {
                 dst->crc32 = *(uint32_t *)(src + 16);
             }
+            if (dst->orig_len == 0 || dst->orig_len > GPUC_BLOCK_SIZE ||
+                dst->comp_len == 0 ||
+                dst->comp_len > GC_NCHUNKS * GC_SLOT_SIZE ||
+                dst->offset < hdr.header_size ||
+                dst->offset > (uint64_t)phys_size ||
+                dst->comp_len > (uint64_t)phys_size - dst->offset) {
+                free(block_buf);
+                free(info->blocks);
+                info->blocks = NULL;
+                errno = EINVAL;
+                return -1;
+            }
         }
         free(block_buf);
     }
     errno = saved_errno;
     return 0;
+}
+
+static int probe_header(int fd, fd_info_t *info) {
+    int ret = read_header(fd, info);
+    int fd_flags = fcntl(fd, F_GETFL);
+    if (ret < 0 && (errno == EBADF || (fd_flags >= 0 && (fd_flags & O_DIRECT)))) {
+        char proc_path[64];
+        snprintf(proc_path, sizeof(proc_path), "/proc/self/fd/%d", fd);
+        int probe = real_open(proc_path, O_RDONLY);
+        if (probe < 0) return -1;
+        ret = read_header(probe, info);
+        int saved = errno;
+        real_close(probe);
+        errno = saved;
+    }
+    return ret;
+}
+
+static int normalize_managed_fd_flags(int fd, fd_info_t *info) {
+    int flags = fcntl(fd, F_GETFL);
+    if (flags < 0) return -1;
+    /*
+     * GPUC's 56-byte RAW header and compact compressed block offsets are not
+     * O_DIRECT aligned. Clear it for managed descriptors and expose this
+     * limitation explicitly in experiments instead of silently reading the
+     * physical format as if it were logical data.
+     */
+    if (flags & O_DIRECT) {
+        if (fcntl(fd, F_SETFL, flags & ~O_DIRECT) != 0) return -1;
+        info->open_flags &= ~O_DIRECT;
+    }
+    return 0;
+}
+
+static void discard_unregistered_fd_info(fd_info_t *info) {
+    if (!info) return;
+    free(info->blocks);
+    free(info->ra_buf);
+    free(info->cache_buf);
+    free(info);
 }
 
 static int write_raw_header(int fd, fd_info_t *info) {
@@ -518,7 +608,7 @@ static int ensure_tls_buffers(void) {
 #ifdef GPUC_NO_BATCH
 #define MAX_BATCH_BLOCKS 1
 #else
-#define MAX_BATCH_BLOCKS 16
+#define MAX_BATCH_BLOCKS 4
 #endif
 #endif
 
@@ -531,27 +621,27 @@ static __thread size_t *g_tls_batch_out_lens = NULL;
 
 static int ensure_batch_tls_buffers(void) {
     if (!g_tls_batch_comp_bufs) {
-        tls_alloc(g_tls_batch_comp_bufs, MAX_BATCH_BLOCKS * GC_NCHUNKS * GC_SLOT_SIZE);
+        tls_alloc(g_tls_batch_comp_bufs, TLS_BATCH_CAPACITY * GC_NCHUNKS * GC_SLOT_SIZE);
         if (!g_tls_batch_comp_bufs) return -1;
     }
     if (!g_tls_batch_decomp_bufs) {
-        tls_alloc(g_tls_batch_decomp_bufs, MAX_BATCH_BLOCKS * GPUC_BLOCK_SIZE);
+        tls_alloc(g_tls_batch_decomp_bufs, TLS_BATCH_CAPACITY * GPUC_BLOCK_SIZE);
         if (!g_tls_batch_decomp_bufs) return -1;
     }
     if (!g_tls_batch_in_ptrs) {
-        g_tls_batch_in_ptrs = (uint8_t **)malloc(MAX_BATCH_BLOCKS * sizeof(uint8_t *));
+        g_tls_batch_in_ptrs = (uint8_t **)malloc(TLS_BATCH_CAPACITY * sizeof(uint8_t *));
         if (!g_tls_batch_in_ptrs) return -1;
     }
     if (!g_tls_batch_out_ptrs) {
-        g_tls_batch_out_ptrs = (uint8_t **)malloc(MAX_BATCH_BLOCKS * sizeof(uint8_t *));
+        g_tls_batch_out_ptrs = (uint8_t **)malloc(TLS_BATCH_CAPACITY * sizeof(uint8_t *));
         if (!g_tls_batch_out_ptrs) return -1;
     }
     if (!g_tls_batch_in_lens) {
-        g_tls_batch_in_lens = (size_t *)malloc(MAX_BATCH_BLOCKS * sizeof(size_t));
+        g_tls_batch_in_lens = (size_t *)malloc(TLS_BATCH_CAPACITY * sizeof(size_t));
         if (!g_tls_batch_in_lens) return -1;
     }
     if (!g_tls_batch_out_lens) {
-        g_tls_batch_out_lens = (size_t *)malloc(MAX_BATCH_BLOCKS * sizeof(size_t));
+        g_tls_batch_out_lens = (size_t *)malloc(TLS_BATCH_CAPACITY * sizeof(size_t));
         if (!g_tls_batch_out_lens) return -1;
     }
     return 0;
@@ -568,7 +658,7 @@ static int ensure_batch_tls_buffers(void) {
 #endif
 
 /* 多 CUDA Stream 并发：每个线程分配 2 个独立 stream（双缓冲） */
-#define MAX_TOTAL_STREAMS 16
+#define MAX_TOTAL_STREAMS 64
 static volatile int g_next_stream_base = 0;
 static __thread int g_tls_stream_base = -1;
 
@@ -580,8 +670,8 @@ static int get_stream_id(int pipe_id) {
     return (g_tls_stream_base + pipe_id) % MAX_TOTAL_STREAMS;
 }
 
-static __thread uint8_t *g_tls_pipe_comp_bufs[NUM_PIPELINES] = {NULL, NULL};
-static __thread uint8_t *g_tls_pipe_decomp_bufs[NUM_PIPELINES] = {NULL, NULL};
+static __thread uint8_t *g_tls_pipe_comp_bufs[NUM_PIPELINES] = {NULL};
+static __thread uint8_t *g_tls_pipe_decomp_bufs[NUM_PIPELINES] = {NULL};
 static __thread uint8_t *g_tls_pipe_out_ptrs[NUM_PIPELINES][MAX_BATCH_BLOCKS];
 static __thread size_t g_tls_pipe_out_lens[NUM_PIPELINES][MAX_BATCH_BLOCKS];
 static __thread int g_tls_pipe_chunk_offsets[NUM_PIPELINES][MAX_BATCH_BLOCKS * GC_NCHUNKS];
@@ -593,7 +683,7 @@ static __thread uint32_t g_tls_pipe_first_block[NUM_PIPELINES];
 static __thread off64_t g_tls_pipe_first_block_off[NUM_PIPELINES];
 
 /* io_uring 批量读取的独立 raw buffer（避免与 compact buffer 重叠） */
-static __thread uint8_t *g_tls_iouring_raw_bufs[NUM_PIPELINES] = {NULL, NULL};
+static __thread uint8_t *g_tls_iouring_raw_bufs[NUM_PIPELINES] = {NULL};
 
 static int ensure_pipe_buffers(void) {
     for (int p = 0; p < NUM_PIPELINES; p++) {
@@ -660,6 +750,10 @@ struct gpuc_iouring {
 };
 
 static struct gpuc_iouring g_iouring = { -1, {0}, NULL, NULL, NULL, 0, 0, NULL, NULL, NULL, NULL, NULL, NULL, 0 };
+/* The ring is process-global. Keep each submit/drain transaction atomic so
+ * concurrent application threads cannot overwrite SQEs or consume another
+ * thread's CQEs. */
+static pthread_mutex_t g_iouring_lock = PTHREAD_MUTEX_INITIALIZER;
 
 static int gpuc_iouring_init(unsigned int entries) {
     if (g_iouring.initialized) return 0;
@@ -759,15 +853,25 @@ static int gpuc_iouring_enter_wait(int to_submit, int min_complete) {
                    (unsigned)min_complete, IORING_ENTER_GETEVENTS, NULL, 0);
 }
 
-static int gpuc_iouring_wait_all(int n, int *results) {
+static int gpuc_iouring_wait_all(int n, int *results, void *const *expected_bufs) {
     if (!g_iouring.initialized) return -1;
+    int seen[MAX_BATCH_BLOCKS] = {0};
     int completed = 0;
     while (completed < n) {
         unsigned head = *g_iouring.cq_head;
         unsigned tail = *g_iouring.cq_tail;
         while (head != tail && completed < n) {
             struct io_uring_cqe *cqe = &g_iouring.cqes[head & g_iouring.cq_mask];
-            if (results) results[completed] = cqe->res;
+            int result_index = -1;
+            for (int i = 0; i < n; i++) {
+                if (!seen[i] && expected_bufs[i] == (void *)(uintptr_t)cqe->user_data) {
+                    result_index = i;
+                    break;
+                }
+            }
+            if (result_index < 0) return -1;
+            seen[result_index] = 1;
+            if (results) results[result_index] = cqe->res;
             head++;
             completed++;
         }
@@ -885,7 +989,7 @@ static ssize_t read_compressed(int fd, fd_info_t *info, void *buf, size_t count)
     while (count > 0) {
         /* 如果有已提交的 batch，先消费它 */
         if (has_submitted) {
-            int prev = 1 - pipe_id;
+            int prev = (pipe_id + NUM_PIPELINES - 1) % NUM_PIPELINES;
 
             if (g_tls_pipe_n_compressed[prev] > 0) {
                 decomp_wait(get_stream_id(prev),
@@ -966,19 +1070,27 @@ static ssize_t read_compressed(int fd, fd_info_t *info, void *buf, size_t count)
 
         int use_iouring = g_iouring.initialized;
         if (use_iouring) {
+            void *iouring_bufs[MAX_BATCH_BLOCKS];
+            pthread_mutex_lock(&g_iouring_lock);
             for (int i = 0; i < decompress_nblocks; i++) {
                 uint32_t bid = first_block + i;
                 struct gpuc_block_entry *be = &info->blocks[bid];
                 uint8_t *read_buf = (be->comp_len == be->orig_len)
                     ? g_tls_pipe_decomp_bufs[pipe_id] + i * GPUC_BLOCK_SIZE
                     : g_tls_iouring_raw_bufs[pipe_id] + i * GPUC_BLOCK_SIZE;
-                gpuc_iouring_submit_pread(fd, read_buf, be->comp_len, (off64_t)be->offset);
+                iouring_bufs[i] = read_buf;
+                if (gpuc_iouring_submit_pread(fd, read_buf, be->comp_len,
+                                             (off64_t)be->offset) < 0) {
+                    use_iouring = 0;
+                    break;
+                }
             }
-            if (gpuc_iouring_enter_wait(decompress_nblocks, 0) < 0) {
+            if (use_iouring && gpuc_iouring_enter_wait(decompress_nblocks, 0) < 0) {
                 use_iouring = 0;  /* 提交失败，fallback */
-            } else {
+            } else if (use_iouring) {
                 int iouring_results[MAX_BATCH_BLOCKS];
-                if (gpuc_iouring_wait_all(decompress_nblocks, iouring_results) < 0) {
+                if (gpuc_iouring_wait_all(decompress_nblocks, iouring_results,
+                                          iouring_bufs) < 0) {
                     use_iouring = 0;
                 } else {
                     for (int i = 0; i < decompress_nblocks; i++) {
@@ -993,6 +1105,7 @@ static ssize_t read_compressed(int fd, fd_info_t *info, void *buf, size_t count)
                     }
                 }
             }
+            pthread_mutex_unlock(&g_iouring_lock);
         }
 
         for (int i = 0; i < decompress_nblocks; i++) {
@@ -1058,12 +1171,12 @@ static ssize_t read_compressed(int fd, fd_info_t *info, void *buf, size_t count)
         }
 
         has_submitted = 1;
-        pipe_id = 1 - pipe_id;
+        pipe_id = (pipe_id + 1) % NUM_PIPELINES;
     }
 
     /* 处理最后一个已提交但未消费的 batch */
     if (has_submitted) {
-        int last = 1 - pipe_id;
+        int last = (pipe_id + NUM_PIPELINES - 1) % NUM_PIPELINES;
         if (g_tls_pipe_n_compressed[last] > 0) {
             decomp_wait(get_stream_id(last),
                 g_tls_pipe_n_compressed[last],
@@ -1110,7 +1223,7 @@ static ssize_t read_compressed(int fd, fd_info_t *info, void *buf, size_t count)
 
     /* block cache：单 block 读取时缓存结果 */
     if (has_submitted) {
-        int last_pipe = 1 - pipe_id;
+        int last_pipe = (pipe_id + NUM_PIPELINES - 1) % NUM_PIPELINES;
         uint32_t last_block = (uint32_t)((orig_start + orig_count - 1) / GPUC_BLOCK_SIZE);
         if (first_block == last_block && g_tls_pipe_user_nblocks[last_pipe] > 0) {
             if (!info->cache_buf) {
@@ -1132,100 +1245,98 @@ static ssize_t read_compressed(int fd, fd_info_t *info, void *buf, size_t count)
 }
 
 /* ============================================================
- *  LZ4 压缩文件的 read 路径（简化实现，逐块解压）
+ *  LZ4 compressed read path
+ *
+ *  nvCOMP has high per-launch overhead. Decompress up to MAX_BATCH_BLOCKS
+ *  consecutive blocks in one call and retain the logical result as read-ahead.
  * ============================================================ */
 
-static ssize_t read_compressed_lz4(int fd, fd_info_t *info, void *buf, size_t count) {
-    ensure_backend_init();
-#ifndef GPUC_NO_FALLBACK
-    int use_cpu = should_cpu_fallback();
-#else
-    int use_cpu = 0;
-#endif
-    if (ensure_tls_buffers() != 0) {
+static int fill_lz4_readahead(int fd, fd_info_t *info, uint32_t first_block,
+                              int use_cpu) {
+    if (ensure_batch_tls_buffers() != 0) {
         errno = ENOMEM;
         return -1;
     }
-
-    off64_t start = info->cur_offset;
-    off64_t log_size = get_logical_size(info);
-    if (start >= log_size) return 0;
-    if (start + (off64_t)count > log_size)
-        count = (size_t)(log_size - start);
-
-    uint8_t *out_ptr = (uint8_t *)buf;
-    size_t total_read = 0;
-
-    while (count > 0) {
-        uint32_t block_id = (uint32_t)(start / GPUC_BLOCK_SIZE);
-        if (block_id >= info->hdr.num_blocks) break;
-
-        off64_t block_off = start % GPUC_BLOCK_SIZE;
-        size_t to_copy = GPUC_BLOCK_SIZE - (size_t)block_off;
-        if (to_copy > count) to_copy = count;
-
-        if (info->cache_valid && info->cache_block_id == block_id) {
-            memcpy(out_ptr, info->cache_buf + block_off, to_copy);
-        } else {
-            struct gpuc_block_entry *be = &info->blocks[block_id];
-            if (!info->cache_buf) {
-                info->cache_buf = (uint8_t *)malloc(GPUC_BLOCK_SIZE);
-                if (!info->cache_buf) {
-                    errno = ENOMEM;
-                    return (total_read > 0) ? (ssize_t)total_read : -1;
-                }
-            }
-
-            if (be->comp_len == be->orig_len) {
-                /* 整块 RAW 存储 */
-                ssize_t nr = real_pread64(fd, info->cache_buf, be->comp_len, (off64_t)be->offset);
-                if (nr != (ssize_t)be->comp_len) {
-                    return (total_read > 0) ? (ssize_t)total_read : -1;
-                }
-            } else {
-                ssize_t nr = real_pread64(fd, g_tls_decomp_buf, be->comp_len, (off64_t)be->offset);
-                if (nr != (ssize_t)be->comp_len) {
-                    return (total_read > 0) ? (ssize_t)total_read : -1;
-                }
-                int ret;
-                if (use_cpu)
-                    ret = cpu_lz4_decompress_128k(g_tls_decomp_buf, be->comp_len,
-                                                  info->cache_buf, be->orig_len);
-                else
-                    ret = gpu_lz4_decompress_128k(g_tls_decomp_buf, be->comp_len,
-                                                  info->cache_buf, be->orig_len);
-                if (ret != 0) {
-                    fprintf(stderr, "[HOOK] LZ4 decompress failed at block %u\n", block_id);
-                    return (total_read > 0) ? (ssize_t)total_read : -1;
-                }
-            }
-            info->cache_block_id = block_id;
-            info->cache_valid = 1;
-            memcpy(out_ptr, info->cache_buf + block_off, to_copy);
+    if (!info->ra_buf) {
+        info->ra_buf = (uint8_t *)malloc(LZ4_BATCH_BLOCKS * GPUC_BLOCK_SIZE);
+        if (!info->ra_buf) {
+            errno = ENOMEM;
+            return -1;
         }
-
-        out_ptr += to_copy;
-        start += to_copy;
-        count -= to_copy;
-        total_read += to_copy;
     }
 
-    info->cur_offset = start;
-    return (ssize_t)total_read;
+    uint32_t remaining = info->hdr.num_blocks - first_block;
+    int nblocks = remaining < LZ4_BATCH_BLOCKS ? (int)remaining : LZ4_BATCH_BLOCKS;
+    int ncompressed = 0;
+    size_t logical_len = 0;
+    const size_t input_stride = GC_NCHUNKS * GC_SLOT_SIZE;
+
+    for (int i = 0; i < nblocks; i++) {
+        struct gpuc_block_entry *be = &info->blocks[first_block + (uint32_t)i];
+        uint8_t *out = info->ra_buf + logical_len;
+        if (be->comp_len == be->orig_len) {
+            ssize_t nr = real_pread64(fd, out, be->comp_len, (off64_t)be->offset);
+            if (nr != (ssize_t)be->comp_len) return -1;
+        } else {
+            uint8_t *in = g_tls_batch_comp_bufs + (size_t)ncompressed * input_stride;
+            ssize_t nr = real_pread64(fd, in, be->comp_len, (off64_t)be->offset);
+            if (nr != (ssize_t)be->comp_len) return -1;
+            g_tls_batch_in_ptrs[ncompressed] = in;
+            g_tls_batch_in_lens[ncompressed] = be->comp_len;
+            g_tls_batch_out_ptrs[ncompressed] = out;
+            g_tls_batch_out_lens[ncompressed] = be->orig_len;
+            ncompressed++;
+        }
+        logical_len += be->orig_len;
+    }
+
+    if (ncompressed > 0) {
+        int ret = use_cpu
+            ? cpu_lz4_decompress_batch(ncompressed,
+                                       (const uint8_t **)g_tls_batch_in_ptrs,
+                                       g_tls_batch_in_lens, g_tls_batch_out_ptrs,
+                                       g_tls_batch_out_lens)
+            : gpu_lz4_decompress_batch(ncompressed,
+                                       (const uint8_t **)g_tls_batch_in_ptrs,
+                                       g_tls_batch_in_lens, g_tls_batch_out_ptrs,
+                                       g_tls_batch_out_lens);
+        if (ret != ncompressed) {
+            fprintf(stderr, "[HOOK] LZ4 batch decompress failed at block %u\n",
+                    first_block);
+            errno = EIO;
+            return -1;
+        }
+    }
+
+#ifndef GPUC_NO_VERIFY_CRC
+    size_t block_offset = 0;
+    for (int i = 0; i < nblocks; i++) {
+        struct gpuc_block_entry *be = &info->blocks[first_block + (uint32_t)i];
+        if (be->crc32 != 0 &&
+            gpuc_crc32(info->ra_buf + block_offset, be->orig_len) != be->crc32) {
+            fprintf(stderr, "[HOOK] LZ4 CRC32 mismatch at block %u\n",
+                    first_block + (uint32_t)i);
+            errno = EIO;
+            return -1;
+        }
+        block_offset += be->orig_len;
+    }
+#endif
+
+    info->ra_start_offset = (off64_t)first_block * GPUC_BLOCK_SIZE;
+    info->ra_valid_len = logical_len;
+    info->ra_active = 1;
+    return 0;
 }
 
-static ssize_t read_compressed_at_lz4(int fd, fd_info_t *info, void *buf, size_t count, off64_t offset) {
+static ssize_t read_compressed_at_lz4(int fd, fd_info_t *info, void *buf,
+                                      size_t count, off64_t offset) {
     ensure_backend_init();
 #ifndef GPUC_NO_FALLBACK
     int use_cpu = should_cpu_fallback();
 #else
     int use_cpu = 0;
 #endif
-    if (ensure_tls_buffers() != 0) {
-        errno = ENOMEM;
-        return -1;
-    }
-
     off64_t start = offset;
     off64_t log_size = get_logical_size(info);
     if (start >= log_size) return 0;
@@ -1236,52 +1347,19 @@ static ssize_t read_compressed_at_lz4(int fd, fd_info_t *info, void *buf, size_t
     size_t total_read = 0;
 
     while (count > 0) {
-        uint32_t block_id = (uint32_t)(start / GPUC_BLOCK_SIZE);
-        if (block_id >= info->hdr.num_blocks) break;
-
-        off64_t block_off = start % GPUC_BLOCK_SIZE;
-        size_t to_copy = GPUC_BLOCK_SIZE - (size_t)block_off;
-        if (to_copy > count) to_copy = count;
-
-        if (info->cache_valid && info->cache_block_id == block_id) {
-            memcpy(out_ptr, info->cache_buf + block_off, to_copy);
-        } else {
-            struct gpuc_block_entry *be = &info->blocks[block_id];
-            if (!info->cache_buf) {
-                info->cache_buf = (uint8_t *)malloc(GPUC_BLOCK_SIZE);
-                if (!info->cache_buf) {
-                    errno = ENOMEM;
-                    return (total_read > 0) ? (ssize_t)total_read : -1;
-                }
-            }
-
-            if (be->comp_len == be->orig_len) {
-                ssize_t nr = real_pread64(fd, info->cache_buf, be->comp_len, (off64_t)be->offset);
-                if (nr != (ssize_t)be->comp_len) {
-                    return (total_read > 0) ? (ssize_t)total_read : -1;
-                }
-            } else {
-                ssize_t nr = real_pread64(fd, g_tls_decomp_buf, be->comp_len, (off64_t)be->offset);
-                if (nr != (ssize_t)be->comp_len) {
-                    return (total_read > 0) ? (ssize_t)total_read : -1;
-                }
-                int ret;
-                if (use_cpu)
-                    ret = cpu_lz4_decompress_128k(g_tls_decomp_buf, be->comp_len,
-                                                  info->cache_buf, be->orig_len);
-                else
-                    ret = gpu_lz4_decompress_128k(g_tls_decomp_buf, be->comp_len,
-                                                  info->cache_buf, be->orig_len);
-                if (ret != 0) {
-                    fprintf(stderr, "[HOOK] LZ4 decompress failed at block %u\n", block_id);
-                    return (total_read > 0) ? (ssize_t)total_read : -1;
-                }
-            }
-            info->cache_block_id = block_id;
-            info->cache_valid = 1;
-            memcpy(out_ptr, info->cache_buf + block_off, to_copy);
+        off64_t ra_end = info->ra_start_offset + (off64_t)info->ra_valid_len;
+        if (!info->ra_active || start < info->ra_start_offset || start >= ra_end) {
+            uint32_t block_id = (uint32_t)(start / GPUC_BLOCK_SIZE);
+            if (block_id >= info->hdr.num_blocks ||
+                fill_lz4_readahead(fd, info, block_id, use_cpu) != 0)
+                return total_read > 0 ? (ssize_t)total_read : -1;
+            ra_end = info->ra_start_offset + (off64_t)info->ra_valid_len;
         }
 
+        size_t ra_offset = (size_t)(start - info->ra_start_offset);
+        size_t to_copy = (size_t)(ra_end - start);
+        if (to_copy > count) to_copy = count;
+        memcpy(out_ptr, info->ra_buf + ra_offset, to_copy);
         out_ptr += to_copy;
         start += to_copy;
         count -= to_copy;
@@ -1289,6 +1367,13 @@ static ssize_t read_compressed_at_lz4(int fd, fd_info_t *info, void *buf, size_t
     }
 
     return (ssize_t)total_read;
+}
+
+static ssize_t read_compressed_lz4(int fd, fd_info_t *info, void *buf,
+                                   size_t count) {
+    ssize_t ret = read_compressed_at_lz4(fd, info, buf, count, info->cur_offset);
+    if (ret > 0) info->cur_offset += ret;
+    return ret;
 }
 
 /* ============================================================
@@ -1364,7 +1449,7 @@ static ssize_t read_compressed_at(int fd, fd_info_t *info, void *buf, size_t cou
     while (count > 0) {
         /* 消费上一个已提交的 batch */
         if (has_submitted) {
-            int prev = 1 - pipe_id;
+            int prev = (pipe_id + NUM_PIPELINES - 1) % NUM_PIPELINES;
 
             if (g_tls_pipe_n_compressed[prev] > 0) {
                 decomp_wait(get_stream_id(prev),
@@ -1417,19 +1502,27 @@ static ssize_t read_compressed_at(int fd, fd_info_t *info, void *buf, size_t cou
 
         int use_iouring = g_iouring.initialized;
         if (use_iouring) {
+            void *iouring_bufs[MAX_BATCH_BLOCKS];
+            pthread_mutex_lock(&g_iouring_lock);
             for (int i = 0; i < nblocks; i++) {
                 uint32_t bid = first_block + i;
                 struct gpuc_block_entry *be = &info->blocks[bid];
                 uint8_t *read_buf = (be->comp_len == be->orig_len)
                     ? g_tls_pipe_decomp_bufs[pipe_id] + i * GPUC_BLOCK_SIZE
                     : g_tls_iouring_raw_bufs[pipe_id] + i * GPUC_BLOCK_SIZE;
-                gpuc_iouring_submit_pread(fd, read_buf, be->comp_len, (off64_t)be->offset);
+                iouring_bufs[i] = read_buf;
+                if (gpuc_iouring_submit_pread(fd, read_buf, be->comp_len,
+                                             (off64_t)be->offset) < 0) {
+                    use_iouring = 0;
+                    break;
+                }
             }
-            if (gpuc_iouring_enter_wait(nblocks, 0) < 0) {
+            if (use_iouring && gpuc_iouring_enter_wait(nblocks, 0) < 0) {
                 use_iouring = 0;
-            } else {
+            } else if (use_iouring) {
                 int iouring_results[MAX_BATCH_BLOCKS];
-                if (gpuc_iouring_wait_all(nblocks, iouring_results) < 0) {
+                if (gpuc_iouring_wait_all(nblocks, iouring_results,
+                                          iouring_bufs) < 0) {
                     use_iouring = 0;
                 } else {
                     for (int i = 0; i < nblocks; i++) {
@@ -1444,6 +1537,7 @@ static ssize_t read_compressed_at(int fd, fd_info_t *info, void *buf, size_t cou
                     }
                 }
             }
+            pthread_mutex_unlock(&g_iouring_lock);
         }
 
         for (int i = 0; i < nblocks; i++) {
@@ -1508,12 +1602,12 @@ static ssize_t read_compressed_at(int fd, fd_info_t *info, void *buf, size_t cou
         }
 
         has_submitted = 1;
-        pipe_id = 1 - pipe_id;
+        pipe_id = (pipe_id + 1) % NUM_PIPELINES;
     }
 
     /* 处理最后一个 batch */
     if (has_submitted) {
-        int last = 1 - pipe_id;
+        int last = (pipe_id + NUM_PIPELINES - 1) % NUM_PIPELINES;
         if (g_tls_pipe_n_compressed[last] > 0) {
             decomp_wait(get_stream_id(last),
                 g_tls_pipe_n_compressed[last],
@@ -1542,7 +1636,7 @@ static ssize_t read_compressed_at(int fd, fd_info_t *info, void *buf, size_t cou
 
     /* block cache：单 block 读取时缓存结果 */
     if (has_submitted) {
-        int last_pipe = 1 - pipe_id;
+        int last_pipe = (pipe_id + NUM_PIPELINES - 1) % NUM_PIPELINES;
         if (first_block_at == last_block_at && g_tls_pipe_user_nblocks[last_pipe] > 0) {
             if (!info->cache_buf) {
                 info->cache_buf = (uint8_t *)malloc(GPUC_BLOCK_SIZE);
@@ -1566,7 +1660,6 @@ static ssize_t read_compressed_at(int fd, fd_info_t *info, void *buf, size_t cou
  * ============================================================ */
 
 void __attribute__((constructor(101))) hook_init(void) {
-    FILE *f = fopen("/tmp/hook_init_ran_fio.txt", "w"); if (f) { fprintf(f, "ran\n"); fclose(f); }
     real_read     = dlsym(RTLD_NEXT, "read");
     real_write    = dlsym(RTLD_NEXT, "write");
     real_open     = dlsym(RTLD_NEXT, "open");
@@ -1625,12 +1718,6 @@ void __attribute__((constructor(101))) hook_init(void) {
     if (!real_dup)       fprintf(stderr, "[HOOK] WARN: dlsym(dup) failed\n");
     if (!real_dup2)      fprintf(stderr, "[HOOK] WARN: dlsym(dup2) failed\n");
     if (!real_dup3)      fprintf(stderr, "[HOOK] WARN: dlsym(dup3) failed\n");
-    FILE *f2 = fopen("/tmp/dlsym_results.txt", "w");
-    if (f2) {
-        fprintf(f2, "real_read=%p real_write=%p real_open=%p real_close=%p\n",
-                real_read, real_write, real_open, real_close);
-        fclose(f2);
-    }
     if (!real_sendfile)  fprintf(stderr, "[HOOK] WARN: dlsym(sendfile) failed\n");
     if (!real_mmap)      fprintf(stderr, "[HOOK] WARN: dlsym(mmap) failed\n");
     if (!real_munmap)    fprintf(stderr, "[HOOK] WARN: dlsym(munmap) failed\n");
@@ -1689,8 +1776,11 @@ void __attribute__((constructor(101))) hook_init(void) {
             fprintf(stderr, "[HOOK] Backend selected: GPU (CUDA offload, lazy init)\n");
             g_backend_msg_done = 1;
         }
-        /* 启动后台线程提前初始化 GPU，长生命周期应用首次 I/O 可降至 <10ms */
-        spawn_preinit_thread();
+        /*
+         * 不在后台线程并发初始化 CUDA。旧实现可能与第一次 I/O 的
+         * pthread_once 路径同时进入 gpu_compress_init()，竞争全局内存池。
+         * 当前统一由 ensure_backend_init() 串行 lazy-init。
+         */
     }
 #endif
 
@@ -1737,7 +1827,9 @@ int open(const char *pathname, int flags, ...) {
     if (is_whitelisted_path(pathname)) return fd;
 
     fd_info_t *info = (fd_info_t *)calloc(1, sizeof(fd_info_t));
+    if (!info) { real_close(fd); errno = ENOMEM; return -1; }
     info->active = 1;
+    info->open_flags = flags;
     info->phys_size = get_phys_size(fd);
 
     if (info->phys_size == 0) {
@@ -1756,9 +1848,22 @@ int open(const char *pathname, int flags, ...) {
         info->is_compressed = 0;
         info->header_pending = 1;
     } else if (info->phys_size >= (off64_t)sizeof(struct gpuc_header)) {
-        read_header(fd, info);
+        if (probe_header(fd, info) < 0) {
+            int saved = errno;
+            discard_unregistered_fd_info(info);
+            real_close(fd);
+            errno = saved;
+            return -1;
+        }
     }
 
+    if (info->has_header && normalize_managed_fd_flags(fd, info) != 0) {
+        int saved = errno;
+        discard_unregistered_fd_info(info);
+        real_close(fd);
+        errno = saved;
+        return -1;
+    }
     set_fd_info(fd, info);
     return fd;
 }
@@ -1785,16 +1890,38 @@ int open64(const char *pathname, int flags, ...) {
     if (is_whitelisted_path(pathname)) return fd;
 
     fd_info_t *info = (fd_info_t *)calloc(1, sizeof(fd_info_t));
+    if (!info) { real_close(fd); errno = ENOMEM; return -1; }
     info->active = 1;
+    info->open_flags = flags;
     info->phys_size = get_phys_size(fd);
 
     if (info->phys_size == 0) {
+        if (normalize_managed_fd_flags(fd, info) != 0) {
+            int saved = errno;
+            discard_unregistered_fd_info(info);
+            real_close(fd);
+            errno = saved;
+            return -1;
+        }
         write_raw_header(fd, info);
         info->phys_size = get_phys_size(fd);
     } else if (info->phys_size >= (off64_t)sizeof(struct gpuc_header)) {
-        read_header(fd, info);
+        if (probe_header(fd, info) < 0) {
+            int saved = errno;
+            discard_unregistered_fd_info(info);
+            real_close(fd);
+            errno = saved;
+            return -1;
+        }
     }
 
+    if (info->has_header && normalize_managed_fd_flags(fd, info) != 0) {
+        int saved = errno;
+        discard_unregistered_fd_info(info);
+        real_close(fd);
+        errno = saved;
+        return -1;
+    }
     set_fd_info(fd, info);
     return fd;
 }
@@ -1809,14 +1936,30 @@ int creat(const char *pathname, mode_t mode) {
     if (is_whitelisted_path(pathname)) return fd;
 
     fd_info_t *info = (fd_info_t *)calloc(1, sizeof(fd_info_t));
+    if (!info) { real_close(fd); errno = ENOMEM; return -1; }
     info->active = 1;
+    info->open_flags = O_WRONLY | O_CREAT | O_TRUNC;
     info->phys_size = get_phys_size(fd);
 
     if (info->phys_size == 0) {
+        if (normalize_managed_fd_flags(fd, info) != 0) {
+            int saved = errno;
+            discard_unregistered_fd_info(info);
+            real_close(fd);
+            errno = saved;
+            return -1;
+        }
         write_raw_header(fd, info);
         info->phys_size = get_phys_size(fd);
     }
 
+    if (info->has_header && normalize_managed_fd_flags(fd, info) != 0) {
+        int saved = errno;
+        discard_unregistered_fd_info(info);
+        real_close(fd);
+        errno = saved;
+        return -1;
+    }
     set_fd_info(fd, info);
     return fd;
 }
@@ -1861,10 +2004,17 @@ ssize_t write(int fd, const void *buf, size_t count) {
         }
     }
 
-    off64_t phys_off = info->cur_offset + (off64_t)info->hdr.header_size;
-    ssize_t ret = real_pwrite64(fd, buf, count, phys_off);
+    ssize_t ret;
+    if (info->open_flags & O_APPEND) {
+        off64_t logical_end = get_phys_size(fd) - (off64_t)info->hdr.header_size;
+        ret = real_write(fd, buf, count);
+        if (ret > 0) info->cur_offset = logical_end + ret;
+    } else {
+        off64_t phys_off = info->cur_offset + (off64_t)info->hdr.header_size;
+        ret = real_pwrite64(fd, buf, count, phys_off);
+    }
     if (ret > 0) {
-        info->cur_offset += ret;
+        if (!(info->open_flags & O_APPEND)) info->cur_offset += ret;
         info->phys_size = get_phys_size(fd);
     }
     return ret;
@@ -1965,8 +2115,18 @@ int ftruncate(int fd, off_t length) {
     if (!info || !info->has_header) {
         return real_ftruncate(fd, length);
     }
+    if (info->is_compressed) {
+        errno = EROFS;
+        return -1;
+    }
+    if (info->header_pending && flush_raw_header(fd, info) != 0) {
+        errno = EIO;
+        return -1;
+    }
     off_t phys_len = length + (off_t)info->hdr.header_size;
-    return real_ftruncate(fd, phys_len);
+    int ret = real_ftruncate(fd, phys_len);
+    if (ret == 0) info->phys_size = phys_len;
+    return ret;
 }
 
 int truncate(const char *path, off_t length) {
@@ -1974,14 +2134,18 @@ int truncate(const char *path, off_t length) {
         if (!real_truncate) { errno = ENOSYS; return -1; }
         return real_truncate(path, length);
     }
-    /* 尝试先 open 获取 fd_info，若文件是 GPUC 则调整长度 */
+    /* 直接读取 header；real_open() 创建的 fd 不会出现在 Hook fd 表中。 */
     int fd = real_open(path, O_RDONLY);
     if (fd >= 0) {
-        fd_info_t *info = get_fd_info(fd);
-        if (info && info->has_header) {
-            off_t phys_len = length + (off_t)info->hdr.header_size;
+        struct gpuc_header hdr;
+        ssize_t n = real_pread64(fd, &hdr, sizeof(hdr), 0);
+        if (n == (ssize_t)sizeof(hdr) && gpuc_is_header(&hdr)) {
             real_close(fd);
-            return real_truncate(path, phys_len);
+            if (hdr.state == GPUC_STATE_COMPRESSED || hdr.state == GPUC_STATE_INLINE) {
+                errno = EROFS;
+                return -1;
+            }
+            return real_truncate(path, length + (off_t)hdr.header_size);
         }
         real_close(fd);
     }
@@ -1992,6 +2156,51 @@ int truncate(const char *path, off_t length) {
  *  rename 拦截：当目标路径是数据库白名单时，避免把 GPUC header 带过去
  *  典型场景：LevelDB 写临时文件 *.dbtmp 再 rename 为 CURRENT
  * ============================================================ */
+
+static int copy_fd_xattrs(int srcfd, int dstfd) {
+    ssize_t names_len = flistxattr(srcfd, NULL, 0);
+    if (names_len <= 0) return names_len < 0 && errno != ENOTSUP ? -1 : 0;
+    char *names = (char *)malloc((size_t)names_len);
+    if (!names) return -1;
+    if (flistxattr(srcfd, names, (size_t)names_len) != names_len) {
+        free(names);
+        return -1;
+    }
+    for (char *name = names; name < names + names_len; name += strlen(name) + 1) {
+        ssize_t value_len = fgetxattr(srcfd, name, NULL, 0);
+        if (value_len < 0) { free(names); return -1; }
+        void *value = malloc(value_len ? (size_t)value_len : 1);
+        if (!value) { free(names); return -1; }
+        if (fgetxattr(srcfd, name, value, (size_t)value_len) != value_len ||
+            fsetxattr(dstfd, name, value, (size_t)value_len, 0) != 0) {
+            free(value);
+            free(names);
+            return -1;
+        }
+        free(value);
+    }
+    free(names);
+    return 0;
+}
+
+static void fsync_parent_dir(const char *path) {
+    char *copy = strdup(path);
+    if (!copy) return;
+    char *slash = strrchr(copy, '/');
+    const char *dir = ".";
+    if (slash) {
+        if (slash == copy) slash[1] = '\0';
+        else *slash = '\0';
+        dir = copy;
+    }
+    int dfd = real_open(dir, O_RDONLY | O_DIRECTORY);
+    if (dfd >= 0) {
+        (void)fsync(dfd);
+        real_close(dfd);
+    }
+    free(copy);
+}
+
 int rename(const char *oldpath, const char *newpath) {
     if (g_hooks_disabled) {
         if (!real_rename) { errno = ENOSYS; return -1; }
@@ -2031,8 +2240,19 @@ int rename(const char *oldpath, const char *newpath) {
         return real_rename(oldpath, newpath);
     }
 
-    /* 新建目标文件，跳过 header 写入原始内容 */
-    int fd_dst = real_open(newpath, O_WRONLY | O_CREAT | O_TRUNC, st.st_mode & 0777);
+    /* 在目标同目录写临时文件，完成并 fsync 后再原子替换目标。 */
+    char tmp_path[4096];
+    int fd_dst = -1;
+    for (unsigned attempt = 0; attempt < 100 && fd_dst < 0; attempt++) {
+        int n = snprintf(tmp_path, sizeof(tmp_path), "%s.gpucstrip.%ld.%u",
+                         newpath, (long)getpid(), attempt);
+        if (n < 0 || (size_t)n >= sizeof(tmp_path)) {
+            errno = ENAMETOOLONG;
+            break;
+        }
+        fd_dst = real_open(tmp_path, O_WRONLY | O_CREAT | O_EXCL, st.st_mode & 0777);
+        if (fd_dst < 0 && errno != EEXIST) break;
+    }
     if (fd_dst < 0) {
         real_close(fd_src);
         return -1;
@@ -2040,6 +2260,7 @@ int rename(const char *oldpath, const char *newpath) {
 
     if (real_lseek64(fd_src, (off64_t)hdr.header_size, SEEK_SET) < 0) {
         real_close(fd_src); real_close(fd_dst);
+        syscall(SYS_unlink, tmp_path);
         return -1;
     }
 
@@ -2047,14 +2268,35 @@ int rename(const char *oldpath, const char *newpath) {
     while ((nr = real_read(fd_src, buf, sizeof(buf))) > 0) {
         if (real_write(fd_dst, buf, (size_t)nr) != nr) {
             real_close(fd_src); real_close(fd_dst);
+            syscall(SYS_unlink, tmp_path);
             return -1;
         }
+    }
+    struct timespec rename_times[2] = {st.st_atim, st.st_mtim};
+    if (nr < 0 ||
+        fchmod(fd_dst, st.st_mode & 07777) != 0 ||
+        (fchown(fd_dst, st.st_uid, st.st_gid) != 0 && errno != EPERM) ||
+        copy_fd_xattrs(fd_src, fd_dst) != 0 ||
+        futimens(fd_dst, rename_times) != 0 ||
+        fsync(fd_dst) != 0) {
+        int saved = errno;
+        real_close(fd_src); real_close(fd_dst);
+        syscall(SYS_unlink, tmp_path);
+        errno = saved;
+        return -1;
     }
     real_close(fd_src);
     real_close(fd_dst);
 
-    /* 删除源文件 */
+    if (real_rename(tmp_path, newpath) != 0) {
+        int saved = errno;
+        syscall(SYS_unlink, tmp_path);
+        errno = saved;
+        return -1;
+    }
+    fsync_parent_dir(newpath);
     syscall(SYS_unlink, oldpath);
+    fsync_parent_dir(oldpath);
     return 0;
 }
 
@@ -2122,21 +2364,7 @@ int dup(int oldfd) {
         return real_dup(oldfd);
     }
     int newfd = real_dup(oldfd);
-    if (newfd >= 0) {
-        fd_info_t *old_info = get_fd_info(oldfd);
-        if (old_info && old_info->has_header) {
-            fd_info_t *new_info = (fd_info_t *)calloc(1, sizeof(fd_info_t));
-            *new_info = *old_info;
-            if (old_info->blocks && old_info->hdr.num_blocks > 0) {
-                size_t blocks_size = old_info->hdr.num_blocks * sizeof(struct gpuc_block_entry);
-                new_info->blocks = (struct gpuc_block_entry *)malloc(blocks_size);
-                if (new_info->blocks) {
-                    memcpy(new_info->blocks, old_info->blocks, blocks_size);
-                }
-            }
-            set_fd_info(newfd, new_info);
-        }
-    }
+    if (newfd >= 0) share_fd_info(oldfd, newfd);
     return newfd;
 }
 
@@ -2145,22 +2373,11 @@ int dup2(int oldfd, int newfd) {
         if (!real_dup2) { errno = ENOSYS; return -1; }
         return real_dup2(oldfd, newfd);
     }
+    if (oldfd == newfd) return real_dup2(oldfd, newfd);
     int ret = real_dup2(oldfd, newfd);
     if (ret >= 0) {
         clear_fd_info(newfd);
-        fd_info_t *old_info = get_fd_info(oldfd);
-        if (old_info && old_info->has_header) {
-            fd_info_t *info = (fd_info_t *)calloc(1, sizeof(fd_info_t));
-            *info = *old_info;
-            if (old_info->blocks && old_info->hdr.num_blocks > 0) {
-                size_t blocks_size = old_info->hdr.num_blocks * sizeof(struct gpuc_block_entry);
-                info->blocks = (struct gpuc_block_entry *)malloc(blocks_size);
-                if (info->blocks) {
-                    memcpy(info->blocks, old_info->blocks, blocks_size);
-                }
-            }
-            set_fd_info(newfd, info);
-        }
+        share_fd_info(oldfd, newfd);
     }
     return ret;
 }
@@ -2173,19 +2390,7 @@ int dup3(int oldfd, int newfd, int flags) {
     int ret = real_dup3(oldfd, newfd, flags);
     if (ret >= 0) {
         clear_fd_info(newfd);
-        fd_info_t *old_info = get_fd_info(oldfd);
-        if (old_info && old_info->has_header) {
-            fd_info_t *info = (fd_info_t *)calloc(1, sizeof(fd_info_t));
-            *info = *old_info;
-            if (old_info->blocks && old_info->hdr.num_blocks > 0) {
-                size_t blocks_size = old_info->hdr.num_blocks * sizeof(struct gpuc_block_entry);
-                info->blocks = (struct gpuc_block_entry *)malloc(blocks_size);
-                if (info->blocks) {
-                    memcpy(info->blocks, old_info->blocks, blocks_size);
-                }
-            }
-            set_fd_info(newfd, info);
-        }
+        share_fd_info(oldfd, newfd);
     }
     return ret;
 }
@@ -2227,6 +2432,10 @@ ssize_t pwrite64(int fd, const void *buf, size_t count, off64_t offset) {
     if (!info || !info->has_header) {
         return real_pwrite64(fd, buf, count, offset);
     }
+    if (info->is_compressed) {
+        errno = EROFS;
+        return -1;
+    }
     if (info->header_pending) {
         if (flush_raw_header(fd, info) != 0) {
             errno = EIO;
@@ -2234,7 +2443,9 @@ ssize_t pwrite64(int fd, const void *buf, size_t count, off64_t offset) {
         }
     }
     off64_t phys_off = offset + (off64_t)info->hdr.header_size;
-    return real_pwrite64(fd, buf, count, phys_off);
+    ssize_t ret = real_pwrite64(fd, buf, count, phys_off);
+    if (ret > 0) info->phys_size = get_phys_size(fd);
+    return ret;
 }
 
 /* pread / pwrite 别名（某些程序直接调用 pread 而非 pread64） */
@@ -2244,6 +2455,35 @@ ssize_t pread(int fd, void *buf, size_t count, off_t offset) {
 
 ssize_t pwrite(int fd, const void *buf, size_t count, off_t offset) {
     return pwrite64(fd, buf, count, (off64_t)offset);
+}
+
+/*
+ * With _FORTIFY_SOURCE, glibc may redirect pread/read to checked symbols.
+ * Interpose those too; otherwise a fortified application can observe the
+ * physical GPUC header even though the ordinary libc symbols are hooked.
+ */
+ssize_t __pread_chk(int fd, void *buf, size_t count, off_t offset, size_t buflen) {
+    if (count > buflen) {
+        errno = EOVERFLOW;
+        return -1;
+    }
+    return pread(fd, buf, count, offset);
+}
+
+ssize_t __pread64_chk(int fd, void *buf, size_t count, off64_t offset, size_t buflen) {
+    if (count > buflen) {
+        errno = EOVERFLOW;
+        return -1;
+    }
+    return pread64(fd, buf, count, offset);
+}
+
+ssize_t __read_chk(int fd, void *buf, size_t count, size_t buflen) {
+    if (count > buflen) {
+        errno = EOVERFLOW;
+        return -1;
+    }
+    return read(fd, buf, count);
 }
 
 /* ============================================================
@@ -2259,18 +2499,15 @@ ssize_t readv(int fd, const struct iovec *iov, int iovcnt) {
     if (!info || !info->has_header) {
         return real_readv(fd, iov, iovcnt);
     }
-    if (info->is_compressed) {
-        /* 简化处理：逐个 iov 用 read 模拟 */
-        ssize_t total = 0;
-        for (int i = 0; i < iovcnt; i++) {
-            ssize_t n = read(fd, iov[i].iov_base, iov[i].iov_len);
-            if (n < 0) return n;
-            total += n;
-            if ((size_t)n < iov[i].iov_len) break;
-        }
-        return total;
+    /* RAW 也必须经过逻辑偏移转换，不能把 real_readv 的物理 offset 暴露给应用。 */
+    ssize_t total = 0;
+    for (int i = 0; i < iovcnt; i++) {
+        ssize_t n = read(fd, iov[i].iov_base, iov[i].iov_len);
+        if (n < 0) return total > 0 ? total : -1;
+        total += n;
+        if ((size_t)n < iov[i].iov_len) break;
     }
-    return real_readv(fd, iov, iovcnt);
+    return total;
 }
 
 ssize_t writev(int fd, const struct iovec *iov, int iovcnt) {
@@ -2282,15 +2519,18 @@ ssize_t writev(int fd, const struct iovec *iov, int iovcnt) {
     if (!info || !info->has_header) {
         return real_writev(fd, iov, iovcnt);
     }
-    /* 延迟 header 写入 */
-    if (info->header_pending) {
-        if (flush_raw_header(fd, info) != 0) {
-            errno = EIO;
-            return -1;
-        }
+    if (info->is_compressed) {
+        errno = EROFS;
+        return -1;
     }
-    /* RAW 文件：底层偏移已由 lseek 同步，直接透传 */
-    return real_writev(fd, iov, iovcnt);
+    ssize_t total = 0;
+    for (int i = 0; i < iovcnt; i++) {
+        ssize_t n = write(fd, iov[i].iov_base, iov[i].iov_len);
+        if (n < 0) return total > 0 ? total : -1;
+        total += n;
+        if ((size_t)n < iov[i].iov_len) break;
+    }
+    return total;
 }
 
 /* ============================================================
@@ -2315,13 +2555,35 @@ int openat(int dirfd, const char *pathname, int flags, ...) {
     if (is_whitelisted_path(pathname)) return fd;
 
     fd_info_t *info = (fd_info_t *)calloc(1, sizeof(fd_info_t));
+    if (!info) { real_close(fd); errno = ENOMEM; return -1; }
     info->active = 1;
+    info->open_flags = flags;
     info->phys_size = get_phys_size(fd);
     if (info->phys_size == 0) {
+        if (normalize_managed_fd_flags(fd, info) != 0) {
+            int saved = errno;
+            discard_unregistered_fd_info(info);
+            real_close(fd);
+            errno = saved;
+            return -1;
+        }
         write_raw_header(fd, info);
         info->phys_size = get_phys_size(fd);
     } else if (info->phys_size >= (off64_t)sizeof(struct gpuc_header)) {
-        read_header(fd, info);
+        if (probe_header(fd, info) < 0) {
+            int saved = errno;
+            discard_unregistered_fd_info(info);
+            real_close(fd);
+            errno = saved;
+            return -1;
+        }
+    }
+    if (info->has_header && normalize_managed_fd_flags(fd, info) != 0) {
+        int saved = errno;
+        discard_unregistered_fd_info(info);
+        real_close(fd);
+        errno = saved;
+        return -1;
     }
     set_fd_info(fd, info);
     return fd;
@@ -2345,16 +2607,55 @@ int openat64(int dirfd, const char *pathname, int flags, ...) {
     if (is_whitelisted_path(pathname)) return fd;
 
     fd_info_t *info = (fd_info_t *)calloc(1, sizeof(fd_info_t));
+    if (!info) { real_close(fd); errno = ENOMEM; return -1; }
     info->active = 1;
+    info->open_flags = flags;
     info->phys_size = get_phys_size(fd);
     if (info->phys_size == 0) {
+        if (normalize_managed_fd_flags(fd, info) != 0) {
+            int saved = errno;
+            discard_unregistered_fd_info(info);
+            real_close(fd);
+            errno = saved;
+            return -1;
+        }
         write_raw_header(fd, info);
         info->phys_size = get_phys_size(fd);
     } else if (info->phys_size >= (off64_t)sizeof(struct gpuc_header)) {
-        read_header(fd, info);
+        if (probe_header(fd, info) < 0) {
+            int saved = errno;
+            discard_unregistered_fd_info(info);
+            real_close(fd);
+            errno = saved;
+            return -1;
+        }
+    }
+    if (info->has_header && normalize_managed_fd_flags(fd, info) != 0) {
+        int saved = errno;
+        discard_unregistered_fd_info(info);
+        real_close(fd);
+        errno = saved;
+        return -1;
     }
     set_fd_info(fd, info);
     return fd;
+}
+
+/* glibc _FORTIFY_SOURCE redirects open calls without O_CREAT to these names. */
+int __open_2(const char *pathname, int flags) {
+    return open(pathname, flags);
+}
+
+int __open64_2(const char *pathname, int flags) {
+    return open64(pathname, flags);
+}
+
+int __openat_2(int dirfd, const char *pathname, int flags) {
+    return openat(dirfd, pathname, flags);
+}
+
+int __openat64_2(int dirfd, const char *pathname, int flags) {
+    return openat64(dirfd, pathname, flags);
 }
 
 int __fxstat(int ver, int fd, struct stat *buf) {
@@ -2613,7 +2914,7 @@ void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
     }
 
     fd_info_t *info = get_fd_info(fd);
-    if (!info || !info->has_header || !info->is_compressed) {
+    if (!info || !info->has_header) {
         return real_mmap(addr, length, prot, flags, fd, offset);
     }
 
@@ -2638,54 +2939,25 @@ void *mmap(void *addr, size_t length, int prot, int flags, int fd, off_t offset)
                           MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
     if (buf == MAP_FAILED) return MAP_FAILED;
 
-    /* 小文件或小于预解压阈值：同步全量解压（保持原有行为） */
-    if (length <= MMAP_PRELOAD_SIZE) {
-        ssize_t nread = read_compressed_at(fd, info, buf, length, (off64_t)offset);
-        if (nread < 0 || (size_t)nread < length) {
-            real_munmap(buf, length);
-            errno = EIO;
-            return MAP_FAILED;
-        }
+    /*
+     * 正确性优先：在返回映射前同步填充完整范围。
+     *
+     * 旧实现只同步填充前 16 MB，随后让后台线程写入其余匿名页。应用若在
+     * 后台完成前访问后半段，会读到匿名页的初始零值，违反 mmap 的可见性
+     * 语义。真正的按需解压需要 userfaultfd（或等价的缺页同步机制），不能
+     * 用无同步的后台 memcpy 模拟。
+     */
+    ssize_t nread;
+    if (info->is_compressed) {
+        nread = read_compressed_at(fd, info, buf, length, (off64_t)offset);
     } else {
-        /* 大文件：同步解压前 MMAP_PRELOAD_SIZE，后台线程解压剩余部分 */
-        ssize_t nread = read_compressed_at(fd, info, buf, MMAP_PRELOAD_SIZE, (off64_t)offset);
-        if (nread < 0 || (size_t)nread < MMAP_PRELOAD_SIZE) {
-            real_munmap(buf, length);
-            errno = EIO;
-            return MAP_FAILED;
-        }
-
-        int dup_fd = dup(fd);
-        if (dup_fd >= 0) {
-            bg_ctx = (mmap_bg_ctx_t *)calloc(1, sizeof(mmap_bg_ctx_t));
-            if (bg_ctx) {
-                bg_ctx->fd = dup_fd;
-                bg_ctx->buf = (uint8_t *)buf;
-                bg_ctx->preload_len = MMAP_PRELOAD_SIZE;
-                bg_ctx->total_len = length;
-                bg_ctx->offset = (off64_t)offset;
-                bg_ctx->final_prot = prot;
-                bg_ctx->done = 0;
-                if (pthread_create(&bg_ctx->thread, NULL, mmap_background_decompress, bg_ctx) != 0) {
-                    free(bg_ctx);
-                    bg_ctx = NULL;
-                }
-            }
-            if (!bg_ctx) {
-                close(dup_fd);
-            }
-        }
-        if (!bg_ctx) {
-            /* 后台线程创建失败，回退到同步解压 */
-            ssize_t nread2 = read_compressed_at(fd, info, (uint8_t *)buf + MMAP_PRELOAD_SIZE,
-                                                length - MMAP_PRELOAD_SIZE,
-                                                (off64_t)offset + (off64_t)MMAP_PRELOAD_SIZE);
-            if (nread2 < 0 || (size_t)nread2 < length - MMAP_PRELOAD_SIZE) {
-                real_munmap(buf, length);
-                errno = EIO;
-                return MAP_FAILED;
-            }
-        }
+        nread = real_pread64(fd, buf, length,
+                             (off64_t)info->hdr.header_size + (off64_t)offset);
+    }
+    if (nread < 0 || (size_t)nread < length) {
+        real_munmap(buf, length);
+        errno = EIO;
+        return MAP_FAILED;
     }
 
     /* 按请求调整保护位 */
@@ -2774,4 +3046,3 @@ int msync(void *addr, size_t length, int flags) {
     pthread_mutex_unlock(&g_mmap_lock);
     return real_msync(addr, length, flags);
 }
-

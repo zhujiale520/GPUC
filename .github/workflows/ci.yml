@@ -1,0 +1,21 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  cpu-and-docs:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+      - name: Dependencies
+        run: sudo apt-get update && sudo apt-get install -y build-essential liblz4-dev python3
+      - name: Shell syntax
+        run: bash -n tests/*.sh scripts/*.sh
+      - name: CPU build and semantics
+        run: make cpu-only && make smoke-test
+      - name: Sanitizers
+        run: GPUC_LSAN=1 bash tests/sanitizer_cpu.sh
+      - name: Documentation links
+        run: python3 scripts/check_docs_links.py

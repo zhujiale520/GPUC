@@ -1,159 +1,157 @@
-#!/bin/bash
-set -e
+#!/usr/bin/env bash
+set -euo pipefail
 
-# ============================================================
-#  Compressibility Gradient Benchmark
-# ============================================================
-# 生成 0% / 25% / 50% / 75% / 100% 可压缩率数据，
-# 测试压缩率、压缩耗时、解压读带宽的关系。
-# ============================================================
+# Compressibility gradient with deterministic independent files, repeated
+# compression/read measurements, checksums, state and storage accounting.
 
-PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
-HOOK_SO="$PROJECT_DIR/bin/libgpuhook.so"
-GPU_DAEMON="$PROJECT_DIR/bin/gpu_compress_daemon"
-TESTDIR="/tmp/gpuc_compressibility_$$"
-RESULTDIR="/tmp/gpuc_compressibility_results_$$"
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
+RESULT_DIR="${GPUC_RESULT_DIR:-$PROJECT_DIR/results/local/compressibility_${RUN_ID}}"
+TEST_DIR="$(mktemp -d /tmp/gpuc-gradient-XXXXXX)"
+SIZE="${GPUC_SIZE:-256M}"
+RUNTIME="${GPUC_RUNTIME:-10}"
+REPEATS="${GPUC_REPEATS:-5}"
+BS="${GPUC_BS:-128k}"
+DIRECT="${GPUC_DIRECT:-0}"
+RATIO_LIST="${GPUC_RATIO_LIST:-0 25 50 75 100}"
 
-mkdir -p "$TESTDIR" "$RESULTDIR"
+mkdir -p "$RESULT_DIR"
+[[ "$DIRECT" == 0 ]] || { echo "[ERROR] GPUC compact format does not support true O_DIRECT; use GPUC_DIRECT=0" >&2; exit 2; }
+trap 'rm -rf -- "$TEST_DIR"' EXIT
 
-SIZE="512M"
-SIZE_BYTES=$(numfmt --from=iec "$SIZE")
-RUNTIME=15
-
-YELLOW='\033[1;33m'
-GREEN='\033[0;32m'
-BLUE='\033[0;34m'
-NC='\033[0m'
-
-RESULT_CSV="$RESULTDIR/results.csv"
-echo "compressibility,logical_mb,raw_create_sec,compress_sec,physical_mb,ratio_pct,bw_mb_s" > "$RESULT_CSV"
-
-# ----------------------------------------------------------
-#  生成指定可压缩率的文件
-#  ratio: 0, 25, 50, 75, 100
-# ----------------------------------------------------------
-generate_file() {
-    local ratio=$1
-    local outfile=$2
-    local bs=4096
-    local total=$SIZE_BYTES
-    local random_bytes=$((bs * (100 - ratio) / 100))
-    local zero_bytes=$((bs - random_bytes))
-
-    echo -e "${BLUE}生成可压缩率 ${ratio}% 文件...${NC}"
-    rm -f "$outfile"
-
-    # 使用 Python 生成混合数据，保证每 4KB 块内可压缩率精确
-    python3 - << PYEOF
-import os
-bs = $bs
-total = $total
-random_bytes = $random_bytes
-zero_bytes = $zero_bytes
-pattern = os.urandom(random_bytes) + b'\x00' * zero_bytes
-# 重复 pattern 直到 total（pattern 本身长度是 bs）
-with open('$outfile', 'wb') as f:
-    written = 0
-    while written < total:
-        chunk = pattern[:min(bs, total - written)]
-        f.write(chunk)
-        written += len(chunk)
-PYEOF
+state_of() {
+    python3 - "$1" <<'PY'
+import sys
+with open(sys.argv[1],"rb") as f: h=f.read(25)
+if len(h)<25 or h[:4]!=b"CUPG": print("PLAIN")
+elif h[24]==0: print("RAW")
+elif h[24]==1: print("COMPRESSED")
+elif h[24]==3: print("INLINE")
+else: print(f"STATE_{h[24]}")
+PY
 }
 
-# ----------------------------------------------------------
-#  运行测试
-# ----------------------------------------------------------
-run_test() {
-    local ratio=$1
-    local infile="$TESTDIR/data_${ratio}pct.bin"
-    local testfile="$TESTDIR/fio_${ratio}pct.bin"
-    local json_out="$RESULTDIR/fio_${ratio}pct.json"
-
-    # 生成输入文件
-    generate_file "$ratio" "$infile"
-
-    # 用 hook 创建 RAW 文件
-    echo -e "${BLUE}[$ratio%] 创建 RAW 文件${NC}"
-    local t0=$(date +%s.%N)
-    LD_PRELOAD="$HOOK_SO" GPUCOMPRESS_QUIET=1 cp "$infile" "$testfile"
-    sync
-    local t1=$(date +%s.%N)
-    local raw_create=$(printf "%.2f" $(python3 -c "print($t1 - $t0)"))
-
-    # daemon 压缩
-    echo -e "${BLUE}[$ratio%] GPU daemon 压缩${NC}"
-    local t2=$(date +%s.%N)
-    "$GPU_DAEMON" "$TESTDIR" >/dev/null 2>&1
-    local t3=$(date +%s.%N)
-    local compress_sec=$(printf "%.2f" $(python3 -c "print($t3 - $t2)"))
-
-    local logical_bytes=$(stat -c %s "$testfile")
-    local physical_bytes=$(du -B1 "$testfile" | cut -f1)
-    local logical_mb=$((logical_bytes / 1024 / 1024))
-    local physical_mb=$((physical_bytes / 1024 / 1024))
-    local ratio_pct=$(printf "%.1f" $(python3 -c "print($physical_bytes / $logical_bytes * 100)"))
-
-    echo -e "${GREEN}  RAW创建: ${raw_create}s, 压缩: ${compress_sec}s, 物理: ${physical_mb}MB, 压缩率: ${ratio_pct}%${NC}"
-
-    # 顺序读解压带宽
-    echo -e "${BLUE}[$ratio%] 顺序读解压带宽${NC}"
-    LD_PRELOAD="$HOOK_SO" GPUCOMPRESS_QUIET=1 \
-        fio --name="grad_${ratio}" --filename="$testfile" --size="$SIZE" --bs=128k \
-            --rw=read --direct=1 --ioengine=sync --runtime="$RUNTIME" --time_based --numjobs=1 \
-            --group_reporting --unlink=0 --output-format=json > "$json_out" 2>/dev/null
-
-    python3 - << PYEOF
-import json
-with open('$json_out') as f:
-    d = json.load(f)
-bw = d['jobs'][0]['read']['bw'] / 1024
-print(f"  bw={bw:.1f} MB/s")
-with open('$RESULT_CSV', 'a') as cf:
-    cf.write("$ratio,$logical_mb,$raw_create,$compress_sec,$physical_mb,$ratio_pct,%.1f\n" % bw)
-PYEOF
+logical_sha() {
+    local preload="$1" file="$2"
+    if [[ -n "$preload" ]]; then
+        LD_PRELOAD="$preload" GPUCOMPRESS_QUIET=1 \
+            dd if="$file" bs=1M status=none | sha256sum | awk '{print $1}'
+    else
+        sha256sum "$file" | awk '{print $1}'
+    fi
 }
 
-# ----------------------------------------------------------
-#  主流程
-# ----------------------------------------------------------
-echo "========================================"
-echo "  Compressibility Gradient Benchmark"
-echo "========================================"
-echo "目录: $TESTDIR"
-echo "大小: $SIZE"
-echo "========================================"
+cat > "$RESULT_DIR/environment.txt" <<EOF
+run_id=$RUN_ID
+git_commit=$(git -C "$PROJECT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)
+kernel=$(uname -srvmo)
+fio=$(fio --version)
+gpu=$(nvidia-smi --query-gpu=name,driver_version,compute_cap --format=csv,noheader | head -1)
+size=$SIZE
+runtime=$RUNTIME
+repeats=$REPEATS
+bs=$BS
+direct=$DIRECT
+ratio_list=$RATIO_LIST
+generator=percentage of deterministic 4KiB pages that contain a repeated nonzero byte; remaining pages use seeded pseudorandom bytes
+EOF
+echo "compressibility_pct,repeat,compress_sec,state,format_bytes,allocated_bytes,logical_sha256" > "$RESULT_DIR/compression_runs.csv"
+echo "compressibility_pct,scenario,repeat,bw_mib_s,iops,mean_lat_us,error,state,logical_sha256,format_bytes,allocated_bytes" > "$RESULT_DIR/read_runs.csv"
 
-for RATIO in 0 25 50 75 100; do
-    echo ""
-    echo -e "${YELLOW}########## 可压缩率 = ${RATIO}% ##########${NC}"
-    run_test "$RATIO"
+for ratio in $RATIO_LIST; do
+    ratio_dir="$TEST_DIR/r${ratio}"
+    mkdir -p "$ratio_dir"
+    input="$ratio_dir/input.bin"
+    baseline="$ratio_dir/baseline.bin"
+    gpuc="$ratio_dir/gpuc.bin"
+
+    echo "[SETUP] ratio=$ratio generating $SIZE..."
+    python3 - "$input" "$SIZE" "$ratio" <<'PY'
+import random,sys
+path,size,ratio=sys.argv[1],sys.argv[2].upper(),int(sys.argv[3])
+mul={"K":1<<10,"M":1<<20,"G":1<<30}; n=int(size[:-1])*mul[size[-1]]
+rng=random.Random(0x47505543 + ratio)
+with open(path,"wb",buffering=1<<20) as f:
+    for p in range(n//4096):
+        if p%100 < ratio:
+            f.write(bytes([1+(p*37)%251])*4096)
+        else:
+            # Python 3.8 compatibility: Random.randbytes() was added in 3.9.
+            f.write(rng.getrandbits(4096 * 8).to_bytes(4096, "little"))
+PY
+    cp "$input" "$baseline"
+    sha="$(sha256sum "$input" | awk '{print $1}')"
+
+    for repeat in $(seq 1 "$REPEATS"); do
+        rm -f "$gpuc"
+        LD_PRELOAD="$PROJECT_DIR/bin/libgpuhook.so" GPUCOMPRESS_QUIET=1 \
+            dd if="$input" of="$gpuc" bs=1M status=none
+        t0="$(date +%s%N)"
+        "$PROJECT_DIR/bin/gpu_compress_daemon" "$ratio_dir" >/dev/null
+        t1="$(date +%s%N)"
+        sec="$(python3 -c "print(($t1-$t0)/1e9)")"
+        state="$(state_of "$gpuc")"
+        got_sha="$(logical_sha "$PROJECT_DIR/bin/libgpuhook.so" "$gpuc")"
+        [[ "$got_sha" == "$sha" ]]
+        format_bytes="$(stat -c %s "$gpuc")"
+        allocated_bytes="$(du -B1 "$gpuc" | awk '{print $1}')"
+        printf '%s,%s,%.6f,%s,%s,%s,%s\n' \
+            "$ratio" "$repeat" "$sec" "$state" "$format_bytes" "$allocated_bytes" "$sha" \
+            >> "$RESULT_DIR/compression_runs.csv"
+        echo "  compress ratio=$ratio repeat=$repeat time=${sec}s state=$state bytes=$format_bytes"
+    done
+
+    # The last compressed artifact is used for all read repetitions.
+    [[ "$(logical_sha "$PROJECT_DIR/bin/libgpuhook.so" "$gpuc")" == "$sha" ]]
+    for repeat in $(seq 1 "$REPEATS"); do
+        if (( repeat % 2 == 1 )); then order="baseline gpuc"; else order="gpuc baseline"; fi
+        for scenario in $order; do
+            if [[ "$scenario" == baseline ]]; then
+                file="$baseline"; preload=""; state="PLAIN"
+            else
+                file="$gpuc"; preload="$PROJECT_DIR/bin/libgpuhook.so"; state="$(state_of "$gpuc")"
+            fi
+            json="$RESULT_DIR/r${ratio}_${scenario}_r${repeat}.json"
+            if [[ -n "$preload" ]]; then
+                LD_PRELOAD="$preload" GPUCOMPRESS_QUIET=1 \
+                    fio --name="${scenario}_r${ratio}" --filename="$file" --size="$SIZE" \
+                        --bs="$BS" --rw=read --runtime="$RUNTIME" --time_based \
+                        --direct="$DIRECT" --invalidate=0 --ioengine=sync --numjobs=1 \
+                        --group_reporting --output-format=json > "$json" 2>/dev/null
+            else
+                fio --name="${scenario}_r${ratio}" --filename="$file" --size="$SIZE" \
+                    --bs="$BS" --rw=read --runtime="$RUNTIME" --time_based \
+                    --direct="$DIRECT" --invalidate=0 --ioengine=sync --numjobs=1 \
+                    --group_reporting --output-format=json > "$json" 2>/dev/null
+            fi
+            format_bytes="$(stat -c %s "$file")"
+            allocated_bytes="$(du -B1 "$file" | awk '{print $1}')"
+            python3 - "$json" "$RESULT_DIR/read_runs.csv" "$ratio" "$scenario" "$repeat" "$state" "$sha" "$format_bytes" "$allocated_bytes" <<'PY'
+import csv,json,sys
+jpath,csvpath,ratio,scenario,repeat,state,sha,fmt,alloc=sys.argv[1:]
+d=json.load(open(jpath)); r=d["jobs"][0]["read"]; lat=r.get("lat_ns",{}).get("mean",0)/1000
+with open(csvpath,"a",newline="") as f:
+    csv.writer(f).writerow([ratio,scenario,repeat,r["bw"]/1024,r["iops"],lat,d["jobs"][0]["error"],state,sha,fmt,alloc])
+print(f"  read ratio={ratio:>3s} {scenario:8s} repeat={repeat} bw={r['bw']/1024:9.1f} MiB/s state={state}")
+PY
+        done
+    done
 done
 
-# ----------------------------------------------------------
-#  汇总
-# ----------------------------------------------------------
-echo ""
-echo "========================================"
-echo "       可压缩率梯度汇总"
-echo "========================================"
-python3 - << PYEOF
-import csv
-rows = []
-with open('$RESULT_CSV') as f:
-    reader = csv.DictReader(f)
-    for r in reader:
-        rows.append(r)
-
-print(f"{'可压缩率':<10} {'逻辑(MB)':<10} {'RAW创建(s)':<12} {'压缩(s)':<10} {'物理(MB)':<10} {'压缩率%':<10} {'读带宽(MB/s)':<15}")
-print("-" * 90)
-for r in rows:
-    print(f"{r['compressibility']:<10} {r['logical_mb']:<10} {r['raw_create_sec']:<12} {r['compress_sec']:<10} {r['physical_mb']:<10} {r['ratio_pct']:<10} {r['bw_mb_s']:<15}")
-
-print("\n--- 关键结论 ---")
-print("随着可压缩率提升，物理大小和压缩时间应下降；解压读带宽与压缩率关系可观察拐点。")
-PYEOF
-
-rm -rf "$TESTDIR"
-echo ""
-echo -e "${GREEN}完成。CSV: $RESULT_CSV${NC}"
+python3 - "$RESULT_DIR/read_runs.csv" "$RESULT_DIR/compression_runs.csv" "$RESULT_DIR/summary.csv" <<'PY'
+import csv,math,statistics,sys
+reads=list(csv.DictReader(open(sys.argv[1]))); comps=list(csv.DictReader(open(sys.argv[2])))
+groups={}
+for r in reads: groups.setdefault((int(r["compressibility_pct"]),r["scenario"],r["state"]),[]).append(float(r["bw_mib_s"]))
+comp_groups={}
+for r in comps: comp_groups.setdefault(int(r["compressibility_pct"]),[]).append(float(r["compress_sec"]))
+with open(sys.argv[3],"w",newline="") as f:
+    w=csv.writer(f); w.writerow(["compressibility_pct","scenario","state","n","mean_mib_s","stddev_mib_s","ci95_mib_s","mean_compress_sec"])
+    for key,vals in sorted(groups.items()):
+        mean=statistics.mean(vals); std=statistics.stdev(vals) if len(vals)>1 else 0
+        ci=1.96*std/math.sqrt(len(vals)) if len(vals)>1 else 0
+        cmean=statistics.mean(comp_groups[key[0]]) if key[1]=="gpuc" else ""
+        w.writerow([*key,len(vals),f"{mean:.3f}",f"{std:.3f}",f"{ci:.3f}",f"{cmean:.6f}" if cmean!="" else ""])
+        print(f"ratio={key[0]:3d}% {key[1]:8s} state={key[2]:10s} mean={mean:9.1f} 95%CI=±{ci:6.1f}")
+PY
+echo "[OK] $RESULT_DIR"
