@@ -331,6 +331,21 @@ bash tests/odirect_read.sh
 fio error。报告时必须引用 `environment.txt` 中的实际 source/filesystem；在
 SATA 上运行不能写成 NVMe 成绩。
 
+### 4.14 fio 压缩多线程退出回归
+
+```bash
+GPUC_SIZE=64M GPUC_RUNTIME=3 GPUC_REPEATS=5 \
+GPUC_BS_LIST="4k 16k 128k" GPUC_THREAD_LIST="1 4" \
+GPUC_SAMPLE_TIMEOUT=35 \
+bash tests/fio_compressed_thread_regression.sh
+```
+
+脚本生成逐页不同的非零可压缩 pattern，分别构造 SGLZ 与 LZ4 COMPRESSED
+文件。每个组合使用 fio sync engine 和 thread mode，保存逐轮 JSON、fio
+runtime、进程墙钟时间、吞吐和逻辑 SHA-256；任何 timeout、fio error 或校验
+不一致都会立即失败。2026-07-30 V100 正式结果为 60/60 通过，见
+`results/final/fio_compressed_threads_v100_20260730/`。
+
 ---
 
 ## 5. 关键环境变量
@@ -381,6 +396,10 @@ GPU Hook 需要可用的 CUDA 设备。CPU 路径请显式使用 `bin/libcpuhook
 # 临时禁用 Hook 定位问题
 LD_PRELOAD=./bin/libgpuhook.so GPUC_NO_HOOK=1 fio ...
 ```
+
+如果 fio 已完成 runtime 但多线程进程不退出，优先检查是否在 fd 表锁内调用
+CUDA、分配器或其他可能阻塞的资源释放函数。当前实现要求 fd 表锁只保护表项和
+引用计数，CUDA 页锁定内存必须在解锁后释放。可运行 4.14 的专项脚本复核。
 
 ### 6.5 空间不足
 

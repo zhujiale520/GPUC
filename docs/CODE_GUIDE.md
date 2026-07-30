@@ -845,7 +845,7 @@ handler 定位 128 KiB block → 读取/解压 → UFFDIO_COPY
 | **Lazy Init** | `hook.c` | **问题**：CUDA 在 shared library constructor 阶段初始化，此时 CUDA driver 可能尚未加载，导致 `cudaSetDevice` 失败。**解决**：第一次 I/O 操作时才初始化 CUDA，而非 `__attribute__((constructor))` 阶段。 |
 | **Device Memory Pool** | `gpu_compress.cu` | **问题**：每次解压调用 `cudaMalloc/cudaFree`，开销占解压总时间 15-20%。**解决**：`sglz_init()` 预分配 6MB device 内存池，`sglz_decompress_batch()` 复用，消除动态分配开销。 |
 | **Batch Decompress** | `hook.c` + `gpu_compress.cu` | **问题**：逐 block 解压时 kernel launch 和 memcpy 开销累积，小 I/O 场景下 GPU 优势被淹没。**解决**：一次处理最多 16 个 blocks，减少 kernel 启动次数和 H2D/D2H 拷贝轮次。 |
-| **多线程并发** | `hook.c` | **问题**：fio numjobs=8 时，全局 fd 表竞争导致性能不升反降。**解决**：`__thread` TLS 缓冲区消除数据竞争，`pthread_mutex` 保护 fd 表共享访问，实现 7x 线性扩展。 |
+| **多线程并发** | `hook.c` | **问题**：共享缓冲区会产生数据竞争，全局 fd 表锁的临界区过大会阻塞并发 close。**解决**：解压工作缓冲区改为 `__thread` TLS；fd 表锁只保护表项和引用计数，CUDA 页锁定缓冲区在锁外释放。V100 上 SGLZ/LZ4、4/16/128 KiB、1/4 fio 线程五轮共 60/60 正常退出。 |
 
 ---
 

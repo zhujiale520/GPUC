@@ -116,10 +116,13 @@
   `results/final/vdbench_capability_v100_20260729/`。
 - [x] fio I/O 矩阵：4/16/128 KiB，顺序/随机读、顺序/随机/70:30 混合写，
   1/4 应用线程，Baseline libaio QD 1/8/32，五轮、p95/p99/p99.9 和 95% CI。
-  压缩读固定单线程；并发扩展沿用独立的 128 KiB 五轮实验。
-- [!] 新矩阵中 fio thread 模式的 COMPRESSED 多线程读出现超长不返回；为避免
-  混淆变量，本矩阵固定压缩读单线程。现有 128 KiB 并发专项结果仍有效，但该
-  thread-mode 卡顿需作为独立稳定性问题继续定位。
+  旧正式矩阵的压缩读固定单线程；修复后 runner 已恢复 1/4 线程覆盖。
+- [x] 修复 fio thread 模式 COMPRESSED 多线程读退出卡死：根因是 `close()` 在
+  fd 表全局锁内调用 `cudaFreeHost()`，CUDA 同步期间其余线程全部等待同一锁。
+  当前只在锁内摘除 fd 引用，页锁定缓冲区在锁外释放。V100 正式回归覆盖
+  SGLZ/LZ4、4/16/128 KiB、1/4 线程、每组五轮，共 60/60 样本无超时、
+  fio error=0、逻辑 SHA-256 一致，最大墙钟时间 3.785 s（fio runtime 3 s）。
+  结果见 `results/final/fio_compressed_threads_v100_20260730/`。
 - [x] 修复 fio 混合读写触发的 RAW 长度错误：补齐 `ftruncate64`、
   `fallocate(64)`、`posix_fallocate(64)`，并禁止内部物理长度查询再次经过 Hook。
 - [x] 公开真实数据集：Project Gutenberg #2600，固定 URL、许可证、更新时间、

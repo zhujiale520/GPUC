@@ -18,6 +18,7 @@ REPEATS="${GPUC_REPEATS:-5}"
 BS_LIST="${GPUC_BS_LIST:-4k 16k 128k}"
 CONCURRENCY_LIST="${GPUC_CONCURRENCY_LIST:-1 4}"
 QD_LIST="${GPUC_QD_LIST:-1 8 32}"
+SAMPLE_TIMEOUT="${GPUC_SAMPLE_TIMEOUT:-$((RUNTIME + 30))}"
 HOOK="$PROJECT_DIR/bin/libgpuhook.so"
 DAEMON="$PROJECT_DIR/bin/gpu_compress_daemon"
 trap 'rm -rf -- "$TEST_DIR"' EXIT
@@ -70,7 +71,8 @@ runtime_s=$RUNTIME
 repeats=$REPEATS
 block_sizes=$BS_LIST
 application_concurrency=$CONCURRENCY_LIST
-compressed_read_concurrency=1 (multi-thread scaling is measured by the dedicated 128 KiB benchmark)
+compressed_read_concurrency=$CONCURRENCY_LIST
+sample_timeout_s=$SAMPLE_TIMEOUT
 baseline_libaio_queue_depths=$QD_LIST
 read_cache_mode=warm buffered I/O (direct=0), pre-read before each timed run
 intercepted_ioengine=sync, iodepth=1; numjobs is application concurrency
@@ -121,7 +123,8 @@ run_read() {
     if [ -n "$preload" ]; then
         LD_PRELOAD="$HOOK" GPUCOMPRESS_QUIET=1 \
             dd if="$path" of=/dev/null bs=1M status=none
-        LD_PRELOAD="$HOOK" GPUCOMPRESS_QUIET=1 \
+        timeout --signal=TERM --kill-after=10 "$SAMPLE_TIMEOUT" \
+            env LD_PRELOAD="$HOOK" GPUCOMPRESS_QUIET=1 \
             fio --name="$tag" --filename="$path" --size="$SIZE" --bs="$bs" \
                 --rw="$rw" --direct=0 --ioengine=sync --iodepth=1 \
                 --thread=1 --numjobs="$conc" --runtime="$RUNTIME" --time_based \
@@ -129,11 +132,12 @@ run_read() {
                 --percentile_list=50:95:99:99.9 --output-format=json > "$json"
     else
         dd if="$path" of=/dev/null bs=1M status=none
-        fio --name="$tag" --filename="$path" --size="$SIZE" --bs="$bs" \
-            --rw="$rw" --direct=0 --ioengine=sync --iodepth=1 \
-            --thread=1 --numjobs="$conc" --runtime="$RUNTIME" --time_based \
-            --group_reporting --randrepeat=1 --norandommap=1 \
-            --percentile_list=50:95:99:99.9 --output-format=json > "$json"
+        timeout --signal=TERM --kill-after=10 "$SAMPLE_TIMEOUT" \
+            fio --name="$tag" --filename="$path" --size="$SIZE" --bs="$bs" \
+                --rw="$rw" --direct=0 --ioengine=sync --iodepth=1 \
+                --thread=1 --numjobs="$conc" --runtime="$RUNTIME" --time_based \
+                --group_reporting --randrepeat=1 --norandommap=1 \
+                --percentile_list=50:95:99:99.9 --output-format=json > "$json"
     fi
     record_json "$json" read "$scenario" "$rw" "$bs" "$conc" sync 1 "$repeat"
 }
@@ -180,13 +184,8 @@ for repeat in $(seq 1 "$REPEATS"); do
             for conc in $CONCURRENCY_LIST; do
                 run_read baseline "$BASE" "" "$rw" "$bs" "$conc" "$repeat"
                 run_read hook_raw "$RAW" yes "$rw" "$bs" "$conc" "$repeat"
-                # GPUC multi-thread scaling has a dedicated five-run benchmark.
-                # Keep this block-size/randomness matrix single-threaded for
-                # compressed reads so one experiment changes one dimension.
-                if [[ "$conc" == 1 ]]; then
-                    run_read sglz "$SGLZ" yes "$rw" "$bs" "$conc" "$repeat"
-                    run_read lz4 "$LZ4" yes "$rw" "$bs" "$conc" "$repeat"
-                fi
+                run_read sglz "$SGLZ" yes "$rw" "$bs" "$conc" "$repeat"
+                run_read lz4 "$LZ4" yes "$rw" "$bs" "$conc" "$repeat"
             done
         done
         for rw in write randwrite randrw; do

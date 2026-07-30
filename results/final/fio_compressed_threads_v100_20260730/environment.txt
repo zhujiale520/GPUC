@@ -1,0 +1,14 @@
+run_id=20260730T012943Z
+git_commit=ed83a38419a2217867386a8099ed470d13de89c9
+kernel=Linux 5.15.0 #1 SMP Tue May 19 16:02:33 UTC 2026 x86_64 GNU/Linux
+fio=fio-3.16
+gpu=Tesla V100-SXM2-32GB, 570.181, 7.0
+size=64M
+runtime_s=3
+repeats=5
+block_sizes=4k 16k 128k
+fio_thread_jobs=1 4
+sample_timeout_s=35
+ioengine=sync
+cache=warm buffered I/O
+logical_sha256=84147cf0f6d7ce2b3a5d1e5c6188ebcbdd45dc84c3e6ec96227e3fce172c2512

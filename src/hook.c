@@ -352,9 +352,20 @@ typedef struct {
 static fd_info_t *g_fd_table[MAX_FD];
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 
-static void release_fd_info_locked(fd_info_t *info) {
+/*
+ * Dropping the last reference and destroying fd_info are intentionally split.
+ * cudaFreeHost may synchronize with the CUDA driver and must never run while
+ * g_lock is held: fio closes several job fds concurrently and one slow CUDA
+ * release would otherwise block every close() on the process-wide fd table.
+ */
+static fd_info_t *drop_fd_info_ref_locked(fd_info_t *info) {
+    if (!info) return NULL;
+    if (--info->refcount > 0) return NULL;
+    return info;
+}
+
+static void destroy_fd_info(fd_info_t *info) {
     if (!info) return;
-    if (--info->refcount > 0) return;
     free(info->blocks);
     if (info->ra_buf_pinned) gpu_tls_free_pinned(info->ra_buf);
     else free(info->ra_buf);
@@ -373,29 +384,36 @@ static fd_info_t* get_fd_info(int fd) {
 static void set_fd_info(int fd, fd_info_t *info) {
     if (fd < 0 || fd >= MAX_FD) return;
     pthread_mutex_lock(&g_lock);
-    release_fd_info_locked(g_fd_table[fd]);
+    fd_info_t *old_info = drop_fd_info_ref_locked(g_fd_table[fd]);
     if (info && info->refcount <= 0) info->refcount = 1;
     g_fd_table[fd] = info;
     pthread_mutex_unlock(&g_lock);
+    destroy_fd_info(old_info);
 }
 
 static void share_fd_info(int oldfd, int newfd) {
     if (oldfd < 0 || oldfd >= MAX_FD || newfd < 0 || newfd >= MAX_FD) return;
+    if (oldfd == newfd) return;
     pthread_mutex_lock(&g_lock);
     fd_info_t *info = g_fd_table[oldfd];
+    fd_info_t *old_info = drop_fd_info_ref_locked(g_fd_table[newfd]);
     if (info) {
         info->refcount++;
         g_fd_table[newfd] = info;
+    } else {
+        g_fd_table[newfd] = NULL;
     }
     pthread_mutex_unlock(&g_lock);
+    destroy_fd_info(old_info);
 }
 
 static void clear_fd_info(int fd) {
     if (fd < 0 || fd >= MAX_FD) return;
     pthread_mutex_lock(&g_lock);
-    release_fd_info_locked(g_fd_table[fd]);
+    fd_info_t *old_info = drop_fd_info_ref_locked(g_fd_table[fd]);
     g_fd_table[fd] = NULL;
     pthread_mutex_unlock(&g_lock);
+    destroy_fd_info(old_info);
 }
 
 /* ============================================================
@@ -573,12 +591,7 @@ static size_t physical_block_read_len(const fd_info_t *info,
 }
 
 static void discard_unregistered_fd_info(fd_info_t *info) {
-    if (!info) return;
-    free(info->blocks);
-    if (info->ra_buf_pinned) gpu_tls_free_pinned(info->ra_buf);
-    else free(info->ra_buf);
-    free(info->cache_buf);
-    free(info);
+    destroy_fd_info(info);
 }
 
 static int write_raw_header(int fd, fd_info_t *info) {
