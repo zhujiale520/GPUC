@@ -535,14 +535,46 @@ static int process_lz4_request(lz4_decomp_pool_t *p, lz4_request_t *r) {
                         (size_t)m * sizeof(nvcompStatus_t),
                         cudaMemcpyDeviceToHost, p->stream) != cudaSuccess)
         return -1;
+    /*
+     * nvCOMP packs device outputs contiguously. Storage reads normally request
+     * adjacent 128 KiB blocks, so merge adjacent host destinations into a
+     * single D2H transfer instead of submitting one CUDA copy per block.
+     * Wrapped/random batches still fall back to one copy per contiguous run.
+     */
     out_off = 0;
-    for (int j = 0; j < m; j++) {
-        int i = p->indices[j];
-        if (cudaMemcpyAsync(r->out_bufs[i], (uint8_t *)p->d_out + out_off,
-                            r->out_lens[i], cudaMemcpyDeviceToHost,
-                            p->stream) != cudaSuccess)
-            return -1;
-        out_off += r->out_lens[i];
+    const char *disable_coalesce = getenv("GPUC_D2H_COALESCE");
+    if (disable_coalesce && strcmp(disable_coalesce, "0") == 0) {
+        for (int j = 0; j < m; j++) {
+            int i = p->indices[j];
+            if (cudaMemcpyAsync(r->out_bufs[i],
+                                (uint8_t *)p->d_out + out_off,
+                                r->out_lens[i], cudaMemcpyDeviceToHost,
+                                p->stream) != cudaSuccess)
+                return -1;
+            out_off += r->out_lens[i];
+        }
+    } else {
+        for (int first = 0; first < m;) {
+            int first_i = p->indices[first];
+            size_t run_bytes = r->out_lens[first_i];
+            int next = first + 1;
+            while (next < m) {
+                int prev_i = p->indices[next - 1];
+                int next_i = p->indices[next];
+                if (r->out_bufs[next_i] !=
+                    r->out_bufs[prev_i] + r->out_lens[prev_i])
+                    break;
+                run_bytes += r->out_lens[next_i];
+                next++;
+            }
+            if (cudaMemcpyAsync(r->out_bufs[first_i],
+                                (uint8_t *)p->d_out + out_off, run_bytes,
+                                cudaMemcpyDeviceToHost,
+                                p->stream) != cudaSuccess)
+                return -1;
+            out_off += run_bytes;
+            first = next;
+        }
     }
     if (cudaEventRecord(p->d2h_done, p->stream) != cudaSuccess ||
         cudaStreamSynchronize(p->stream) != cudaSuccess)

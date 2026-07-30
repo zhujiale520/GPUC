@@ -22,12 +22,12 @@
   `third_party/manual/pcm/build/` 成功编译 PCM。`pcm-memory` 正确识别
   Xeon 6505P（Granite Rapids），但当前会话缺少 `/dev/cpu/*/msr`、ACPI MCFG
   和 uncore PCI 配置空间；`PCM_NO_MSR=1` 也明确报告无法访问内存控制器。
-  随后管理员已在宿主机加载 MSR 并完成五轮正式实验，结果见
-  `../pcm_dram_v100_20260730/`。DRAM bandwidth 阻塞已经解除，结果显示 GPU
-  路径显著增加主机 DRAM 写带宽。
+  随后管理员已在宿主机加载 MSR。第一版 16 MiB 结果可能驻留 LLC；修正后的
+  512 MiB 稳态五轮见 `../pcm_dram_512m_v100_20260730/`：GPU 总 DRAM
+  bandwidth 比 CPU 低约 47.75%，但 D2H 写带宽仍约 4.48 GB/s。
 
-当前只剩 cycles/LLC miss 仍受匹配内核 perf 缺失影响；不能把 PCM IMC 带宽
-替代为 cache miss。
+通用 cycles/instructions/cache 事件已由 `../perf_offload_v100_20260730/`
+补齐；精确型号化 LLC-load-misses 仍不受支持，不能用通用事件冒充。
 
 ## 存储设备
 

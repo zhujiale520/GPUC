@@ -162,9 +162,16 @@ SGLZ 本轮只有 44.2 MiB/s，说明不同后端的同步策略仍需继续剖�
 CPU 时间，并在共享核心争用时保护更多业务吞吐。它不证明 GPU 的绝对解压吞吐
 超过 CPU，也不证明主机 DRAM 容量下降。
 
-GPU 单请求平均分段为 queue 0.019 ms、pack 0.003 ms、H2D 0.560 ms、
-kernel 0.143 ms、D2H 1.451 ms、unpack 0.001 ms，总计 2.423 ms。D2H 是当前
-最大阶段，说明下一轮应优先减少返回拷贝和同步，而不是继续只优化 kernel。
+旧实现每批提交 128 次 D2H。`results/final/d2h_coalesce_v100_20260730/`
+在 512 MiB 轮转工作集上对旧方式和连续区间合并各做五轮 A/B：
+
+| D2H 方式 | 最大吞吐 MiB/s | D2H ms/批 | 请求总计 ms/批 |
+|---|---:|---:|---:|
+| 每块一次拷贝 | 1822.98 ±301.36 | 8.522 ±1.502 | 9.002 ±1.526 |
+| 连续区间合并 | **4895.29 ±145.46** | **2.669 ±0.079** | **3.158 ±0.092** |
+
+合并后 D2H 降低约 68.7%，最大吞吐提高约 168.5%。该结果只归因于同一实现开关
+的 A/B；正式固定 4 GiB/s 资源实验默认启用合并。
 
 ### 4.8 SQLite 真实业务
 
@@ -196,27 +203,42 @@ fio 错误数为 0，读取为 62.9 MiB/s。
 
 统一 CSV 已包含 CPU time、RSS、page fault、context switch、GPU utilization、
 power 和 GPU pipeline 分段。管理员在宿主机加载 MSR 后，
-`results/final/pcm_dram_v100_20260730/` 使用 Intel PCM external-program 模式
-覆盖每个完整场景。Baseline、CPU LZ4、GPU LZ4 均运行 10 秒、各五轮；CPU/GPU
-都限制在约 4096 MiB/s，4 个业务 worker 与解压任务使用相同亲和性，并轮换
-场景顺序：
+`results/final/pcm_dram_512m_v100_20260730/` 使用 512 MiB 轮转工作集；
+allocation、compression 和 warmup 完成后通过 ready/start 握手启动 10 秒稳态，
+PCM 每秒采样并只汇总完全位于稳态区间内的 9 个样本。Baseline、CPU LZ4、
+GPU LZ4 各五轮，CPU/GPU 都限制在约 4096 MiB/s，4 个业务 worker 与解压任务
+使用相同亲和性，并轮换场景顺序：
 
 | 场景 | DRAM Read MB/s | 95% CI | DRAM Write MB/s | 95% CI | DRAM Total MB/s | 95% CI |
 |---|---:|---:|---:|---:|---:|---:|
-| Baseline | 55.93 | ±1.68 | 41.08 | ±0.55 | 97.01 | ±2.23 |
-| CPU LZ4 | 72.02 | ±18.43 | 44.08 | ±1.10 | 116.09 | ±19.26 |
-| GPU LZ4 | 104.96 | ±20.95 | 2970.64 | ±334.96 | 3075.61 | ±342.02 |
+| Baseline | 23.80 | ±4.66 | 20.53 | ±1.53 | 44.33 | ±6.20 |
+| CPU LZ4 | 4416.34 | ±22.62 | 4329.12 | ±9.45 | 8745.46 | ±29.06 |
+| GPU LZ4 | 86.40 | ±3.51 | 4483.11 | ±9.70 | 4569.51 | ±7.15 |
 
-CPU/GPU 实际解压吞吐分别为 4091.41±2.20 和 4090.33±0.67 MiB/s。GPU 总
-DRAM 带宽约为 CPU 的 26.49 倍，写带宽约为 67.39 倍。该方向与 GPU 解压结果
-经 D2H DMA 写回 pinned host buffer 一致：CPU 数据反复驻留 cache 时 IMC 流量
-较低，而 DMA 写回会到达内存控制器。因此当前 GPU 路径减少的是 CPU 计算与业务
-争用，不是主机 DRAM bandwidth；结合 GPU RSS 高约 2.1 MiB，DRAM 容量和带宽
-两个口径均没有节省证据。
+CPU/GPU 实际解压吞吐分别为 4093.00±2.24 和 4093.96±2.27 MiB/s。相同逻辑
+吞吐下，GPU 总 DRAM bandwidth 比 CPU 低约 **47.75%**：CPU 路径同时从主机
+内存读取约 4.42 GB/s 并写入约 4.33 GB/s；GPU 路径读取的是压缩输入，主机读取
+约 86 MB/s，但 D2H 仍写入约 4.48 GB/s。GPU 写带宽反而比 CPU 高约 3.56%，
+所以准确结论是“减少总主机 DRAM 带宽，未消除写回流量”。
 
-PCM 是全系统 IMC 口径，不能当成单进程精确流量；GPU 写带宽低于 4096 MiB/s
-逻辑处理量也不能直接解释为复制效率。当前 `/usr/bin/perf` 仍缺少自定义 5.15.0
-内核对应工具，因此 cycles 和 LLC miss 继续标为环境阻塞。
+GPU 最大 RSS 为 1168728.8 KiB，CPU 为 1072827.2 KiB，GPU 高约 8.94%，因此
+没有 DRAM 容量节省证据。第一版 16 MiB 结果保留在
+`results/final/pcm_dram_v100_20260730/` 作为 cache-resident 方法学反例，不再
+作为主结论。PCM 是全系统 IMC 口径，不能当成单进程精确流量。
+
+`results/final/perf_offload_v100_20260730/` 另用 `perf_event_open` 在初始化、
+压缩和 warmup 之后启用进程及继承线程计数器，只覆盖 10 秒稳态阶段。512 MiB
+轮转工作集、固定约 4096 MiB/s、五轮结果为：
+
+| 场景 | 业务 ops/s | Instructions | Cache references | Cache misses | Miss rate |
+|---|---:|---:|---:|---:|---:|
+| Baseline | 1.7994e9 | 2.1597e11 | 5.74e3 | 743 | 12.99% |
+| CPU LZ4 | 1.5738e9 | 2.1262e11 | 6.7635e8 | 6.4359e8 | 95.16% |
+| GPU LZ4 | **1.6376e9** | **2.0745e11** | 7.0867e8 | **8.60e5** | **0.12%** |
+
+GPU 相对 CPU 多保留约 4.06% 业务吞吐，用户态 instructions 少约 2.43%，通用
+cache misses 少约 99.87%。本机型号化 `LLC-loads/LLC-load-misses` 事件不受
+支持，因此表中是 Linux 通用硬件 cache 事件，不能改名为精确 LLC-load-misses。
 
 ### 4.11 压缩成本与 break-even
 
@@ -258,9 +280,8 @@ nvCOMP LZ4 进入 COMPRESSED，占用比 **68.76%**。LZ4 压缩耗时
 
 CPU/GPU/无解压三场景均五轮保存 `pidstat -u -r -w`、`sar -u -r -B -W`
 和 200 ms `nvidia-smi` 原始日志。固定约 4 GiB/s 时，GPU worker 平均约
-0.509 s/5 s 主机 CPU，GPU 利用率约 45.7%。Intel PCM IMC 正式结果已在
-4.10 节单列；匹配自定义内核的 perf 仍不可用，故 cycles、instructions 和
-LLC miss 继续标为环境阻塞。
+0.509 s/5 s 主机 CPU，GPU 利用率约 45.7%。Intel PCM IMC 与进程级通用
+cycles/instructions/cache 事件已在 4.10 节单列；精确型号化 LLC 事件仍不支持。
 
 V100 板卡边界下，GPU 场景平均功耗约 59.97 W，空闲场景约 58.05 W；
 按二者差值计算的增量能耗约 **0.482 J/GiB**。这不是 CPU package 或整机
@@ -404,15 +425,16 @@ SGLZ/LZ4，已纳入 `make test`。同时，Hook 对 `st_size=0` 的空只读对
   60/60 样本无超时、无 fio 错误且 SHA 一致。
 - Vdbench 5.04.07 三类 workload、4 线程、五轮共 50/50 样本通过，且修复了
   共享 fd 压缩读状态竞争；其压缩随机读结果也明确显示当前架构的性能短板。
-- Intel PCM 五轮显示同为约 4096 MiB/s 解压时，GPU/CPU 总 DRAM 带宽约为
-  3075.61/116.09 MB/s；当前 GPU 路径节省 CPU，但没有节省主机 DRAM 带宽。
+- 512 MiB 稳态 Intel PCM 五轮显示同为约 4094 MiB/s 解压时，GPU/CPU 总
+  DRAM 带宽约为 4569.51/8745.46 MB/s，GPU 低约 47.75%；但 GPU D2H 写带宽
+  仍约 4483.11 MB/s，且最大 RSS 高约 8.94%。
 
 不能陈述：
 
 - 顺序读普遍快于 Baseline；
 - GPU 绝对解压吞吐高于 CPU，或压缩文件读快于 Baseline；
-- GPU 减少了主机 DRAM 容量或带宽；PCM 实测结果恰好相反；
-- 已测得 LLC miss/cycles；当前只有 PCM IMC bandwidth；
+- GPU 减少了主机 DRAM 容量，或消除了主机 DRAM 写回；
+- 已测得精确型号化 LLC-load-misses；当前只有通用 cache-misses；
 - 已完成 NVMe 性能验证；
 - mmap 每次只解压一个 4 KiB 页，或完整扫描成本已经消失；
 - 对任意应用完全透明，或已达到生产级。
@@ -420,8 +442,8 @@ SGLZ/LZ4，已纳入 `make test`。同时，Hook 对 `st_size=0` 的空只读对
 ## 6. 下一步
 
 1. 在可挂载的独占 NVMe 上复跑 direct I/O，补队列深度、IOPS 与 p99；
-2. 安装匹配自定义内核的 perf，补 cycles 与 LLC miss；
-3. 减少 GPU D2H 返回拷贝和上下文切换，重测 DRAM bandwidth 与文件读路径；
+2. 在支持型号化 LLC 事件的环境补精确 LLC-load-misses；通用 perf 计数已完成；
+3. D2H 连续区间合并和 512 MiB 稳态 PCM 已完成；继续减少 D2H 写回及 RSS；
 4. 优化 userfaultfd handler 的并发调度与首次 CUDA fault 延迟；
 5. 在公开数据库备份等二进制数据上继续扩展已完成的 Gutenberg workload；
 6. 在独立 btrfs 压缩卷验证 zstd 生效，并继续补 ZFS/DM 横向对比；

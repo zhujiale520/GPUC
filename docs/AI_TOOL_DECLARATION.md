@@ -54,8 +54,11 @@
      COMPRESSED 并发读状态竞争和 `/proc/stat` 伪文件误接管，完成三类 workload、
      4 线程、五轮共 50 个正式样本并整理原始结果与边界。
    - 从 Intel 官方仓库构建 PCM，编写管理员权限下的分场景 DRAM bandwidth
-     runner；团队成员执行 sudo 后，核验 Baseline/CPU/GPU 各五轮 IMC 原始数据，
-     并保留 GPU D2H 写回显著增加主机 DRAM 带宽的负面结论。
+     runner；团队成员执行 sudo 后，核验 Baseline/CPU/GPU 各五轮 IMC 原始数据。
+     第一版 16 MiB 方法被识别为可能驻留 LLC，随后改为 512 MiB 轮转工作集和
+     稳态区间采样并重新完成五轮。
+   - 将资源实验扩展为 512 MiB 轮转工作集和稳态阶段计数，增加进程及继承线程的
+     Linux 通用 perf 事件；合并连续 D2H 返回区间并完成五轮开关 A/B。
 ## 3. 成果说明
 
 AI 工具辅助产生的关键成果包括：
@@ -69,15 +72,19 @@ AI 工具辅助产生的关键成果包括：
 - 新增并发、损坏格式、POSIX 语义、sanitizer、冷缓存、消融、批大小、压缩率梯度
   与 CPU 业务卸载测试。修复后的同吞吐实验显示 GPU 额外主机 CPU 成本降低约
   28.8%，SQLite 相对 CPU 路径 QPS 高约 7.3%、p99 低约 50.5%；结果边界和
-  NVMe 与 LLC/cycles 环境缺口均在报告中保留；DRAM bandwidth 后续已由
-  管理员宿主机 PCM 正式补齐，并保留 GPU 写带宽显著增加的负面结果。
+  NVMe 与精确型号化 LLC 事件缺口均在报告中保留；通用 cycles/instructions/
+  cache 事件已经五轮补齐。512 MiB 稳态 PCM 显示 GPU 总 DRAM bandwidth
+  比 CPU 低约 47.75%，同时保留 D2H 写回和 RSS 没有降低的边界。
 - userfaultfd 将 256 MiB COMPRESSED 的 `mmap()` 返回降到约 0.215 ms，同时
   单独保留约 147 ms 首次 fault 和约 5.65 s 完整扫描成本；确定性故障恢复五项
   PASS，CPU Hook gcov 行覆盖率为 41.38%。
 - Vdbench 三类 workload 的 50/50 样本状态和 SHA-256 校验通过；同时保留
   COMPRESSED 共享 fd 随机读取明显较慢的负面结果，不将页缓存数据解释为 NVMe。
-- PCM 五轮结果显示 GPU/CPU 总 DRAM 带宽约为 3075.61/116.09 MB/s，因此材料
-  明确区分“CPU 资源卸载”与“DRAM 带宽节省”，不将前者扩张为后者。
+- 512 MiB 稳态 PCM 五轮显示 GPU/CPU 总 DRAM 带宽约为
+  4569.51/8745.46 MB/s；材料只主张总 bandwidth 降低约 47.75%，同时明确
+  GPU 写带宽约 4.48 GB/s、RSS 高约 8.94%，不扩张为容量节省或消除写回。
+- 连续 D2H 合并五轮 A/B 将单批回传由 8.522 ms 降到 2.669 ms，最大吞吐由
+  1822.98 MiB/s 提高到 4895.29 MiB/s；完整原始输出和 95% CI 已保存。
 
 AI 辅助内容已完成编译、自动测试和结果交叉核验；最终提交前仍由团队进行人工审查
 并决定是否纳入 git 版本管理。

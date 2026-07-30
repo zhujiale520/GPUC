@@ -385,9 +385,38 @@ sudo env \
   bash tests/pcm_dram_offload.sh
 ```
 
-脚本按轮次旋转 Baseline、CPU LZ4、GPU LZ4，使用 `pcm-memory` 的 external
-program 模式覆盖每个完整场景。输出 `runs.csv`、`summary.csv` 及每轮原始 PCM
-CSV/诊断日志。该指标是全系统 IMC 带宽，运行时应停止无关内存密集任务。
+脚本按轮次旋转 Baseline、CPU LZ4、GPU LZ4，默认使用 512 MiB 轮转工作集。
+测试程序完成初始化后写 ready 文件；PCM 以 1 秒间隔采样，脚本再启动稳态阶段，
+只汇总完全落在 start/end 时间戳内的采样。输出 `runs.csv`、`summary.csv` 及
+每轮原始 PCM CSV/诊断日志。该指标是全系统 IMC 带宽，运行时应停止无关内存
+密集任务。
+
+### 4.17 进程级 perf 通用硬件事件
+
+```bash
+GPUC_RESULT_DIR=results/local/perf_offload \
+GPUC_RUNTIME=10 GPUC_REPEATS=5 GPUC_WORKSET_MIB=512 \
+GPUC_TARGET_MIB_S=4096 bash tests/perf_offload.sh
+```
+
+计数器在 allocation/compression/warmup 后、稳态开始前启用，覆盖当前进程及继承
+线程并排除 kernel/hypervisor。输出 cycles、instructions、IPC、
+cache-references 和 cache-misses。最后两项为 Linux 通用硬件事件；不得改写成
+本机不支持的精确 `LLC-loads`/`LLC-load-misses`。
+
+### 4.18 NVMe 安全入口
+
+管理员先挂载并创建可销毁的测试目录；脚本本身不会分区、格式化或挂载：
+
+```bash
+GPUC_NVME_DIR=/mnt/gpuc_nvme/gpuc-bench \
+GPUC_RESULT_DIR=results/local/nvme_v100 \
+GPUC_SIZE=512M GPUC_RUNTIME=10 GPUC_REPEATS=5 \
+bash tests/nvme_formal.sh
+```
+
+入口会用 `findmnt` 和 `lsblk` 拒绝非 NVMe 路径，检查可写性和至少 2 GiB 空闲
+空间，然后才把 fio 临时文件限制在 `GPUC_NVME_DIR` 下。
 
 ---
 
@@ -406,6 +435,9 @@ CSV/诊断日志。该指标是全系统 IMC 带宽，运行时应停止无关�
 | `GPUC_ENABLE_NVIDIA_SMI_FALLBACK` | 允许低频调用 `nvidia-smi` 做负载 fallback 探索；默认关闭，避免读路径创建进程 | `0` |
 | `GPUC_WORKER_CPU` | 固定长期 LZ4 GPU worker 的 CPU affinity | 不固定 |
 | `GPUC_CUDA_SPIN_WAIT` | `1` 使用 CUDA busy-spin；默认 blocking sync 节省主机 CPU | `0` |
+| `GPUC_WORKSET_MIB` | CPU/GPU 资源实验的轮转工作集大小 | `512`（正式 runner） |
+| `GPUC_BATCH_BLOCKS` | 每次 LZ4 batch 的 128 KiB block 数 | `128` |
+| `GPUC_D2H_COALESCE` | `0` 关闭连续 D2H 合并，仅用于 A/B | `1` |
 
 ---
 

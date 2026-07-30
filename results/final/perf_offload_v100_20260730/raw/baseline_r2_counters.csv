@@ -1,0 +1,2 @@
+scenario,elapsed_s,cycles,instructions,cache_references,cache_misses
+baseline,10.000663609,161878126453,215845551154,6148,290

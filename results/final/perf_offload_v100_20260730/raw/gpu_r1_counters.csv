@@ -1,0 +1,2 @@
+scenario,elapsed_s,cycles,instructions,cache_references,cache_misses
+gpu,10.000440850,161251762286,207457014105,710805877,890467

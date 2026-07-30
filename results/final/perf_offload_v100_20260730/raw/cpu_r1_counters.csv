@@ -1,0 +1,2 @@
+scenario,elapsed_s,cycles,instructions,cache_references,cache_misses
+cpu,10.000631747,161734839178,212896324332,676063890,645097169

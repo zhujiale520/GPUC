@@ -11,7 +11,12 @@ set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
 RESULT_DIR="${GPUC_RESULT_DIR:-$PROJECT_DIR/results/local/io_matrix_${RUN_ID}}"
-TEST_DIR="$(mktemp -d /tmp/gpuc-io-matrix-XXXXXX)"
+TEST_ROOT="${GPUC_TEST_ROOT:-/tmp}"
+[[ -d "$TEST_ROOT" && -w "$TEST_ROOT" ]] || {
+    echo "ERROR: GPUC_TEST_ROOT must be an existing writable directory: $TEST_ROOT" >&2
+    exit 2
+}
+TEST_DIR="$(mktemp -d "$TEST_ROOT/gpuc-io-matrix-XXXXXX")"
 SIZE="${GPUC_SIZE:-64M}"
 RUNTIME="${GPUC_RUNTIME:-2}"
 REPEATS="${GPUC_REPEATS:-5}"
@@ -64,8 +69,9 @@ kernel=$(uname -srvmo)
 fio=$(fio --version)
 gpu=$(nvidia-smi --query-gpu=name,driver_version,compute_cap --format=csv,noheader | head -1)
 cpu=$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2); print $2; exit}')
-filesystem=$(findmnt -no FSTYPE -T "$PROJECT_DIR")
-source=$(findmnt -no SOURCE -T "$PROJECT_DIR")
+test_root=$TEST_ROOT
+filesystem=$(findmnt -no FSTYPE -T "$TEST_DIR")
+source=$(findmnt -no SOURCE -T "$TEST_DIR")
 size=$SIZE
 runtime_s=$RUNTIME
 repeats=$REPEATS

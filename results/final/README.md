@@ -31,7 +31,10 @@ checkpoint `035e42b02a5a2a929c14c0de8fa1f1a5e86088b8` 为起点，随后加入�
 | `stability_10m_v100_20260729/` | 256 MiB、128 KiB、持续 600 秒 | fio error=0，600 个带宽样本，前后逻辑 SHA 一致 |
 | `coverage_cpu_20260729/` | GCC/gcov CPU Hook/Daemon/SGLZ/LZ4 | Hook 行 41.38%、分支执行 50.06%；CI 最低门槛 35% |
 | `vdbench_v100_20260730/` | Vdbench 5.04.07，256 MiB，4 线程，三类 workload，各五轮 | 50/50 样本通过且 SHA 一致；共享 fd 正确性已修复，压缩随机读仍是明确短板 |
-| `pcm_dram_v100_20260730/` | Intel PCM，Baseline/CPU/GPU 同吞吐，各五轮 | GPU/CPU 总 DRAM 带宽 3075.61/116.09 MB/s；GPU 节省 CPU 但显著增加 D2H 写带宽 |
+| `pcm_dram_v100_20260730/` | 第一版 16 MiB Intel PCM，各五轮 | cache-resident 方法学反例，不再作为主结论 |
+| `pcm_dram_512m_v100_20260730/` | 512 MiB 轮转工作集、稳态 PCM，各五轮 | GPU/CPU 总 DRAM 带宽 4569.51/8745.46 MB/s，GPU 低 47.75%；D2H 写回仍约 4483.11 MB/s |
+| `perf_offload_v100_20260730/` | 稳态进程及继承线程通用 perf 事件，各五轮 | GPU 相对 CPU 业务吞吐 +4.06%，instructions -2.43%，通用 cache misses -99.87% |
+| `d2h_coalesce_v100_20260730/` | 连续 D2H 合并开关 A/B，各五轮 | D2H 8.522→2.669 ms，最大吞吐 1822.98→4895.29 MiB/s |
 
 `break_even.csv` 根据 cold、headers 和可压缩率梯度的实测均值计算。所有已测
 COMPRESSED 读取都慢于对应 Baseline，因此即使离线压缩成本按 0 计算，也不存在
@@ -42,9 +45,11 @@ COMPRESSED 读取都慢于对应 Baseline，因此即使离线压缩成本按 0 
 - warm-cache 与 cold-cache 分开解释；没有把 page cache 带宽当磁盘带宽。
 - 新版 COMPRESSED 格式支持 4 KiB 对齐 direct I/O；旧格式、RAW 和 INLINE 仍会
   清除 `O_DIRECT`。正式 direct 结果来自 SATA/ext4，不是 NVMe。
-- Intel PCM IMC bandwidth 已由管理员宿主机完成；GPU 约 3075.61 MB/s，
-  CPU 约 116.09 MB/s，不能宣称 DRAM bandwidth 节省。cycles/LLC miss 仍因
-  缺少匹配自定义内核的 perf 而未测。
+- 512 MiB 稳态 Intel PCM 已完成；GPU 总 DRAM bandwidth 比 CPU 低约
+  47.75%，但 D2H 写带宽高约 3.56%、最大 RSS 高约 8.94%，只能主张总带宽
+  下降，不能主张容量节省或消除写回。
+- cycles、instructions 和通用 cache 事件已完成；精确型号化
+  `LLC-load-misses` 在本机不受支持，不能用通用 cache-misses 冒充。
 - `stat` 的格式长度包含稀疏逻辑区，不等于磁盘占用；空间结论使用
   `du -B1` 的 allocated bytes。
 - `results/final/high_concurrency_v100_20260725/` 是保留的历史无效结果，

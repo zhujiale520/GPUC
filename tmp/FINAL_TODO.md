@@ -21,12 +21,14 @@
   `O_DIRECT` 标志保留、逻辑内容正确和 fio 0 error。
 - [x] 输出统一 CPU time、RSS、page fault、context switch、GPU utilization/power
   和 pipeline profile CSV。
-- [x] DRAM IMC bandwidth：管理员宿主机运行 Intel PCM，Baseline/CPU/GPU
-  同吞吐场景各五轮完成。总带宽分别为 97.01±2.23、116.09±19.26、
-  3075.61±342.02 MB/s；GPU 没有节省 DRAM bandwidth，D2H 写回使写带宽显著
-  增加。结果见 `results/final/pcm_dram_v100_20260730/`。
-- [!] LLC miss/cycles：`perf` 仍缺少当前自定义内核的实际工具；DRAM 结果不能
-  替代 LLC miss，后续在匹配 perf 环境补测。
+- [x] 512 MiB 稳态 DRAM IMC bandwidth：脚本排除初始化阶段，三场景各五轮。
+  CPU/GPU 同为约 4094 MiB/s 时，总带宽分别为 8745.46±29.06 和
+  4569.51±7.15 MB/s，GPU 低约 47.75%；但 D2H 写带宽仍约 4483.11 MB/s，
+  最大 RSS 高约 8.94%。结果见 `results/final/pcm_dram_512m_v100_20260730/`。
+  第一版 16 MiB 结果仅作为 cache-resident 方法学反例保留。
+- [x] 进程级 perf：使用内核 `perf_event_open` 在稳态区间采集进程及继承线程，
+  512 MiB 工作集、三场景各五轮；cycles/instructions/通用 cache 事件已保存。
+  本机不支持精确 `LLC-load-misses`，不得把通用 cache-misses 改名。
 - [!] 独占 NVMe 性能：机器有未挂载的 `nvme0n1`，当前会话不能挂载；
   O_DIRECT 软件路径已验收，正式 NVMe 性能需在有设备权限环境复跑。
 
@@ -155,6 +157,8 @@
     89.85%/97.17%，95% CI 不重叠。
 - [x] 已记录解压带宽、CPU user/sys、worker/submit CPU、RSS、fault、context
   switch、GPU 利用率/功耗和 pipeline profile。
+- [x] 合并连续 D2H：512 MiB 五轮 A/B 中单批 D2H 8.522→2.669 ms（-68.7%），
+  最大吞吐 1822.98→4895.29 MiB/s（+168.5%）。
 - [x] 增加压缩耗时并计算读取摊销：所有已测 COMPRESSED 读取慢于 Baseline，
   当前不存在正的性能 break-even，见 `results/final/break_even.csv`。
 - [!] 文件大小 × 可压缩率 × 并发数的正向 break-even 图：当前没有交叉点，

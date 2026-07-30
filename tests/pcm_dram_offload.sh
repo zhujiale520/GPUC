@@ -14,6 +14,8 @@ REPEATS="${GPUC_REPEATS:-5}"
 WORKERS="${GPUC_BUSINESS_WORKERS:-4}"
 DECOMP_CPU="${GPUC_DECOMP_CPU:-0}"
 TARGET_MIB_S="${GPUC_TARGET_MIB_S:-4096}"
+WORKSET_MIB="${GPUC_WORKSET_MIB:-512}"
+BATCH_BLOCKS="${GPUC_BATCH_BLOCKS:-128}"
 export GPUC_WORKER_CPU="${GPUC_WORKER_CPU:-$DECOMP_CPU}"
 
 if [[ "$EUID" -ne 0 ]]; then
@@ -53,7 +55,9 @@ trap restore_owner EXIT
     echo "target_mib_s=$TARGET_MIB_S"
     echo "decomp_cpu=$DECOMP_CPU"
     echo "gpu_worker_cpu=$GPUC_WORKER_CPU"
-    echo "scope=whole-system IMC bandwidth while one scenario runs"
+    echo "workset_mib=$WORKSET_MIB"
+    echo "batch_blocks=$BATCH_BLOCKS"
+    echo "scope=whole-system IMC bandwidth; only complete steady-state 1s intervals"
     echo "unit=PCM MB/s"
 } > "$RESULT_DIR/environment.txt"
 
@@ -61,24 +65,34 @@ echo "scenario,repeat,dram_read_mb_s,dram_write_mb_s,dram_total_mb_s,elapsed_s,b
     > "$RESULT_DIR/runs.csv"
 
 parse_sample() {
-    local scenario=$1 repeat=$2 pcm_csv=$3 app_output=$4
-    python3 - "$scenario" "$repeat" "$pcm_csv" "$app_output" "$RESULT_DIR/runs.csv" <<'PY'
+    local scenario=$1 repeat=$2 pcm_csv=$3 app_output=$4 phase_file=$5
+    python3 - "$scenario" "$repeat" "$pcm_csv" "$app_output" "$phase_file" "$RESULT_DIR/runs.csv" <<'PY'
 import csv
+import datetime
 import sys
 
-scenario, repeat, pcm_path, app_path, output = sys.argv[1:]
+scenario, repeat, pcm_path, app_path, phase_path, output = sys.argv[1:]
 
 rows = [row for row in csv.reader(open(pcm_path, errors="replace")) if row]
-pcm_values = None
-for row in reversed(rows):
+phase = {}
+for label, value in csv.reader(open(phase_path)):
+    phase[label] = float(value)
+samples = []
+for row in rows:
     try:
+        timestamp = datetime.datetime.strptime(
+            f"{row[0].strip()} {row[1].strip()}", "%Y-%m-%d %H:%M:%S.%f"
+        ).replace(tzinfo=datetime.timezone.utc).timestamp()
         tail = [float(value.strip()) for value in row[-3:]]
     except (ValueError, IndexError):
         continue
-    pcm_values = tail
-    break
-if pcm_values is None:
-    raise SystemExit(f"no PCM system totals in {pcm_path}")
+    # A timestamp is the end of the preceding 1-second PCM interval. Keep only
+    # intervals wholly inside the application's measured steady-state window.
+    if timestamp >= phase["start"] + 1.05 and timestamp <= phase["end"]:
+        samples.append(tail)
+if not samples:
+    raise SystemExit(f"no complete steady-state PCM intervals in {pcm_path}")
+pcm_values = [sum(values) / len(values) for values in zip(*samples)]
 
 lines = [line.strip() for line in open(app_path, errors="replace") if line.strip()]
 app = None
@@ -114,7 +128,7 @@ with open(output, "a", newline="") as f:
 print(
     f"[PASS] {scenario:8s} repeat={repeat} "
     f"DRAM={pcm_values[2]:.2f} MB/s "
-    f"read={pcm_values[0]:.2f} write={pcm_values[1]:.2f}"
+    f"read={pcm_values[0]:.2f} write={pcm_values[1]:.2f} intervals={len(samples)}"
 )
 PY
 }
@@ -128,13 +142,38 @@ for repeat in $(seq 1 "$REPEATS"); do
         pcm_csv="$RESULT_DIR/raw/${tag}_pcm.csv"
         app_output="$RESULT_DIR/raw/${tag}_app.txt"
         diagnostics="$RESULT_DIR/raw/${tag}_pcm.stderr"
+        phase_file="$RESULT_DIR/raw/${tag}_phase.csv"
+        ready_file="$RESULT_DIR/raw/${tag}.ready"
+        start_file="$RESULT_DIR/raw/${tag}.start"
 
-        "$PCM" 0 -silent -csv="$pcm_csv" -- \
+        rm -f "$ready_file" "$start_file" "$phase_file"
+        "$PCM" 1 -f -silent -csv="$pcm_csv" -- \
+            /usr/bin/env \
+            GPUC_WORKSET_MIB="$WORKSET_MIB" \
+            GPUC_BATCH_BLOCKS="$BATCH_BLOCKS" \
+            GPUC_READY_FILE="$ready_file" \
+            GPUC_START_FILE="$start_file" \
+            GPUC_PHASE_FILE="$phase_file" \
+            GPUC_WORKER_CPU="$GPUC_WORKER_CPU" \
             "$TEST_BIN" "$scenario" "$DURATION" "$WORKERS" \
             "$DECOMP_CPU" "$TARGET_MIB_S" \
-            > "$app_output" 2> "$diagnostics"
+            > "$app_output" 2> "$diagnostics" &
+        pcm_pid=$!
+        for _ in $(seq 1 1200); do
+            [[ -e "$ready_file" ]] && break
+            kill -0 "$pcm_pid" 2>/dev/null || break
+            sleep 0.05
+        done
+        if [[ ! -e "$ready_file" ]]; then
+            wait "$pcm_pid" || true
+            echo "ERROR: benchmark did not reach ready state: $diagnostics" >&2
+            exit 1
+        fi
+        sleep 1.2
+        : > "$start_file"
+        wait "$pcm_pid"
 
-        parse_sample "$scenario" "$repeat" "$pcm_csv" "$app_output"
+        parse_sample "$scenario" "$repeat" "$pcm_csv" "$app_output" "$phase_file"
     done
 done
 
