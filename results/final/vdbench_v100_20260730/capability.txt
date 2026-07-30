@@ -1,0 +1,7 @@
+official_download=https://www.oracle.com/downloads/server-storage/vdbench-downloads.html
+license=Oracle license acceptance and account login required
+VDBENCH_HOME=/home/ubuntu/project3136859-386240/third_party/manual/vdbench50407
+GPUC_JAVA_HOME=/home/ubuntu/project3136859-386240/third_party/manual/java8
+vdbench_zip_sha256=51a60a9cd38df448a984a464254e059273c99679215420b64564b11fdf7c4ece
+java=openjdk version "1.8.0_492"
+vdbench=/home/ubuntu/project3136859-386240/third_party/manual/vdbench50407/vdbench

@@ -1,0 +1,30 @@
+
+
+Copyright (c) 2000, 2018, Oracle and/or its affiliates. All rights reserved.
+Vdbench distribution: vdbench50407 Tue June 05  9:49:29 MDT 2018
+For documentation, see 'vdbench.pdf'.
+
+11:22:20.071 Created output directory '/home/ubuntu/project3136859-386240/results/final/vdbench_v100_20260730/lz4_seq_read_r1'
+11:22:20.091 input argument scanned: '-fresults/final/vdbench_v100_20260730/lz4_seq_read_r1.par'
+11:22:20.091 input argument scanned: '-oresults/final/vdbench_v100_20260730/lz4_seq_read_r1'
+11:22:20.259 Starting slave: /home/ubuntu/project3136859-386240/third_party/manual/vdbench50407/vdbench SlaveJvm -m localhost -n localhost-10-260730-11.22.20.051 -l localhost-0 -p 5570   
+11:22:20.608 All slaves are now connected
+11:22:22.002 Starting RD=seqread; I/O rate: Uncontrolled MAX; elapsed=10 warmup=2; For loops: None
+
+Jul 30, 2026    interval        i/o   MB/sec   bytes   read     resp     read    write     read    write     resp  queue  cpu%  cpu%
+                               rate  1024**2     i/o    pct     time     resp     resp      max      max   stddev  depth sys+u   sys
+11:22:23.096           1      136.0    17.00  131072 100.00   24.381   24.381    0.000   481.78     0.00   80.859    3.8   4.6   0.7
+11:22:24.015           2      178.0    22.25  131072 100.00   21.311   21.311    0.000   551.32     0.00   72.924    3.9   5.6   0.4
+11:22:25.012           3      271.0    33.88  131072 100.00   13.804   13.804    0.000   458.06     0.00   54.966    4.0   4.8   0.2
+11:22:26.012           4      301.0    37.63  131072 100.00   12.499   12.499    0.000   471.45     0.00   57.046    4.0   4.7   0.0
+11:22:27.014           5      360.0    45.00  131072 100.00   10.915   10.915    0.000   787.76     0.00   67.726    4.0   4.8   0.2
+11:22:28.010           6      261.0    32.63  131072 100.00   16.679   16.679    0.000   752.23     0.00   72.952    4.0   5.5   0.3
+11:22:29.009           7      293.0    36.63  131072 100.00   15.132   15.132    0.000   858.70     0.00   74.636    4.0   4.7   0.3
+11:22:30.008           8      498.0    62.25  131072 100.00    7.550    7.550    0.000   818.70     0.00   51.220    4.0   4.6   0.2
+11:22:31.007           9      476.0    59.50  131072 100.00    8.746    8.746    0.000   936.71     0.00   55.543    4.0   4.6   0.1
+11:22:32.009          10      261.0    32.63  131072 100.00   15.371   15.371    0.000   691.63     0.00   67.147    4.0   4.5   0.1
+11:22:33.009          11      271.0    33.88  131072 100.00   14.781   14.781    0.000   549.35     0.00   58.455    4.0   5.1   0.2
+11:22:34.018          12      337.0    42.13  131072 100.00   10.684   10.684    0.000   677.98     0.00   60.772    4.0   5.3   0.3
+11:22:34.024    avg_3-12      332.9    41.61  131072 100.00   11.944   11.944    0.000   936.71     0.00   61.493    4.0   4.9   0.2
+11:22:34.850 Vdbench execution completed successfully. Output directory: /home/ubuntu/project3136859-386240/results/final/vdbench_v100_20260730/lz4_seq_read_r1 
+

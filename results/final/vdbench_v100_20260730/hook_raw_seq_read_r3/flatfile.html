@@ -1,0 +1,58 @@
+<title>Vdbench hook_raw_seq_read_r3/flatfile.html</title><pre>
+*
+* 'flatfile.html' contains Vdbench generated information in a column by column ASCII format. 
+* The first line in the file contains a one word 'column header name'; the rest of the file 
+* contains data that belongs to each column. The objective of this file format is to allow 
+* easy transfer of information to a spreadsheet and therefore the creation of performance 
+* charts different from the performance charts that can be created by Sun StorageTek Workload 
+* Analysis Tool (Swat) available for download from Sun.
+* See also 'Selective flatfile parsing' in the documentation. 
+*
+* Run             : Name of run from RD=
+* Interval        : Reporting interval number
+* reqrate         : Requested i/o rate
+* rate            : Observed i/o rate
+* MB/sec          : Megabytes per second (MB=1024*1024)
+* bytes/io        : Average data transfersize
+* read%           : Observed read percentage
+* resp            : Observed response time
+* read_resp       : Observed read response time
+* write_resp      : Observed write response time
+* resp_max        : Observed maximum response time
+* read_max        : Observed maximum read response time
+* write_max       : Observed maximum write response time
+* resp_std        : Standard deviation response time
+* read_std        : Standard deviation reads
+* write_std       : Standard deviation writes
+* xfersize        : data transfer size requested
+* threads         : number of threads requested
+* rdpct           : read% requested
+* rhpct           : readhit% requested
+* whpct           : writehit% requested
+* seekpct         : seek% requested
+* lunsize         : Total amount of Gigabytes of all luns (GB= 1024*1024*1024)
+* version         : Vdbench version identifier
+* compratio       : Requested compression ratio
+* dedupratio      : Requested dedup ratio
+* queue_depth     : Vdbench calculated average i/o queue depth
+* cpu_used        : kstat: cpu% user+sys
+* cpu_user        : kstat: cpu% user
+* cpu_kernel      : kstat: cpu% sys 
+* cpu_wait        : kstat: cpu% wait
+* cpu_idle        : kstat: cpu% idle
+* 'n/a'           : Data not available, or conflicting data. eg. multiple different xfersize parameters used.
+* 
+         tod               timestamp Run Interval reqrate rate MB/sec bytes/io read% resp read_resp write_resp resp_max read_max write_max resp_std read_std write_std xfersize threads rdpct rhpct whpct seekpct lunsize version compratio dedupratio queue_depth cpu_used cpu_user cpu_kernel cpu_wait cpu_idle 
+11:28:20.079 07/30/2026-11:28:20-UTC seqread 1 9999988 132974 16621.75 131072 100 0.0194 0.0194 0 0.217 0.217 0 0.0039 0.0039 0 131072 4 100 0 0 0 0.25 n/a 1 n/a 2.5824 9.7791 4.0161 5.763 0 0 
+11:28:21.012 07/30/2026-11:28:21-UTC seqread 2 9999988 212201 26525.125 131072 100 0.018 0.018 0 0.15 0.15 0 0.0015 0.0015 0 131072 4 100 0 0 0 0.25 n/a 1 n/a 3.8298 18.5185 2.0434 16.4751 0 0 
+11:28:22.012 07/30/2026-11:28:22-UTC seqread 3 9999988 217198 27149.75 131072 100 0.018 0.018 0 0.039 0.039 0 0.0014 0.0014 0 131072 4 100 0 0 0 0.25 n/a 1 n/a 3.9078 17.7426 1.4577 16.2849 0 0 
+11:28:23.011 07/30/2026-11:28:23-UTC seqread 4 9999988 218091 27261.375 131072 100 0.018 0.018 0 0.167 0.167 0 0.0014 0.0014 0 131072 4 100 0 0 0 0.25 n/a 1 n/a 3.9213 17.5687 1.0824 16.4863 0 0 
+11:28:24.010 07/30/2026-11:28:24-UTC seqread 5 9999988 216249 27031.125 131072 100 0.018 0.018 0 0.041 0.041 0 0.0015 0.0015 0 131072 4 100 0 0 0 0.25 n/a 1 n/a 3.8941 17.5833 1.25 16.3333 0 0 
+11:28:25.008 07/30/2026-11:28:25-UTC seqread 6 9999988 216744 27093 131072 100 0.0181 0.0181 0 0.146 0.146 0 0.0015 0.0015 0 131072 4 100 0 0 0 0.25 n/a 1 n/a 3.9184 18.3827 1.8758 16.5069 0 0 
+11:28:26.009 07/30/2026-11:28:26-UTC seqread 7 9999988 216901 27112.625 131072 100 0.018 0.018 0 0.047 0.047 0 0.0014 0.0014 0 131072 4 100 0 0 0 0.25 n/a 1 n/a 3.9013 17.3767 1.1278 16.2489 0 0 
+11:28:27.009 07/30/2026-11:28:27-UTC seqread 8 9999988 217887 27235.875 131072 100 0.018 0.018 0 0.15 0.15 0 0.0014 0.0014 0 131072 4 100 0 0 0 0.25 n/a 1 n/a 3.918 17.6251 1.2084 16.4167 0 0 
+11:28:28.008 07/30/2026-11:28:28-UTC seqread 9 9999988 215940 26992.5 131072 100 0.018 0.018 0 0.05 0.05 0 0.0015 0.0015 0 131072 4 100 0 0 0 0.25 n/a 1 n/a 3.8878 17.652 1.4988 16.1532 0 0 
+11:28:29.008 07/30/2026-11:28:29-UTC seqread 10 9999988 218153 27269.125 131072 100 0.018 0.018 0 0.148 0.148 0 0.0015 0.0015 0 131072 4 100 0 0 0 0.25 n/a 1 n/a 3.922 17.5344 1.2495 16.2849 0 0 
+11:28:30.007 07/30/2026-11:28:30-UTC seqread 11 9999988 216962 27120.25 131072 100 0.018 0.018 0 0.051 0.051 0 0.002 0.002 0 131072 4 100 0 0 0 0.25 n/a 1 n/a 3.9039 17.4113 1.1273 16.2839 0 0 
+11:28:31.014 07/30/2026-11:28:31-UTC seqread 12 9999988 219327 27415.875 131072 100 0.0179 0.0179 0 0.148 0.148 0 0.0014 0.0014 0 131072 4 100 0 0 0 0.25 n/a 1 n/a 3.9238 18.3749 1.9583 16.4166 0 0 
+11:28:31.030 07/30/2026-11:28:31-UTC seqread  avg_3-12 9999988 217345.2 27168.15 131072 100 0.018 0.018 0 0.167 0.167 0 0.0015 0.0015 0 131072 4 100 0 0 0 0.25 n/a 1 n/a 3.9098 17.7253 1.3837 16.3416 0 0 

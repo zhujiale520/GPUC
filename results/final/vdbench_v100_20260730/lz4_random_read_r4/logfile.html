@@ -1,0 +1,57 @@
+<title>Vdbench lz4_random_read_r4/logfile.html</title><pre>
+Copyright (c) 2000, 2018, Oracle and/or its affiliates. All rights reserved.
+Vdbench distribution: vdbench50407
+
+11:33:57.064 input argument scanned: '-fresults/final/vdbench_v100_20260730/lz4_random_read_r4.par'
+11:33:57.064 input argument scanned: '-oresults/final/vdbench_v100_20260730/lz4_random_read_r4'
+11:33:57.064 java.vendor                   Temurin
+11:33:57.064 java.home                     /home/ubuntu/project3136859-386240/third_party/manual/java8
+11:33:57.064 java.vm.specification.version 1.8
+11:33:57.064 java.vm.version               25.492-b09
+11:33:57.064 java.vm.vendor                Temurin
+11:33:57.064 java.specification.version    1.8
+11:33:57.064 java.class.version            52.0
+11:33:57.064 user.name                     ubuntu
+11:33:57.064 user.dir                      /home/ubuntu/project3136859-386240
+11:33:57.064 java.io.tmpdir                /tmp
+11:33:57.064 java.class.path               /home/ubuntu/project3136859-386240/third_party/manual/vdbench50407/:/home/ubuntu/project3136859-386240/third_party/manual/vdbench50407/classes:/home/ubuntu/project3136859-386240/third_party/manual/vdbench50407/vdbench.jar
+11:33:57.064 os.name                       Linux
+11:33:57.064 os.arch                       amd64
+11:33:57.064 os.version                    5.15.0
+11:33:57.065 sun.arch.data.model           64
+11:33:57.072 Flushing all reports
+11:33:57.271 Starting slave: /home/ubuntu/project3136859-386240/third_party/manual/vdbench50407/vdbench SlaveJvm -m localhost -n localhost-10-260730-11.33.57.033 -l localhost-0 -p 5570   
+11:33:57.604 Slave localhost-0 (pid 232892) connected to master 232845
+11:33:57.614 All slaves are now connected
+11:33:57.710 sd=sd1,lun=/tmp/gpuc-vdbench-LBGM8i/lz4/data.bin lun size: 268,435,456 bytes; 0.2500 GB (1024**3); 0.2684 GB (1000**3)
+
+Link to Run Definitions:         <A HREF="#_463345942">randread For loops: None</A>
+
+11:33:57.761 Flushing all reports
+11:33:57.819 Waiting for synchronization of all slaves
+11:33:58.420 Synchronization of all slaves complete
+
+<a name="_463345942"></a><i><b>11:33:59.002 Starting RD=randread; I/O rate: Uncontrolled MAX; elapsed=10 warmup=2; For loops: None</b></i>
+
+
+Jul 30, 2026    interval        i/o   MB/sec   bytes   read     resp     read    write     read    write     resp  queue  cpu%  cpu%
+                               rate  1024**2     i/o    pct     time     resp     resp      max      max   stddev  depth sys+u   sys
+11:34:00.095           1       63.0     0.25    4096 100.00   14.741   14.741    0.000   165.89     0.00   20.490    3.7   4.6   0.7
+11:34:01.017           2       90.0     0.35    4096 100.00   21.259   21.259    0.000  1001.49     0.00  104.553    3.9   5.4   0.3
+11:34:02.011           3       93.0     0.36    4096 100.00   31.258   31.258    0.000  1954.58     0.00  201.652    4.0   4.5   0.3
+11:34:03.011           4       90.0     0.35    4096 100.00   22.213   22.213    0.000  1049.32     0.00  109.564    4.0   4.5   0.3
+11:34:04.012           5       96.0     0.38    4096 100.00   24.877   24.877    0.000  1432.43     0.00  145.253    4.0   4.4   0.2
+11:34:05.006           6      108.0     0.42    4096 100.00    9.224    9.224    0.000     9.77     0.00    1.756    4.0   4.5   0.2
+11:34:06.008           7       94.0     0.37    4096 100.00   73.467   73.467    0.000  5954.77     0.00  613.147    4.0   4.2   0.2
+11:34:07.008           8      108.0     0.42    4096 100.00    9.262    9.262    0.000     9.65     0.00    1.311    4.0   4.3   0.2
+11:34:08.007           9      108.0     0.42    4096 100.00    9.230    9.230    0.000     9.72     0.00    1.335    4.0   4.4   0.1
+11:34:09.008          10      107.0     0.42    4096 100.00    9.296    9.296    0.000     9.80     0.00    1.220    4.0   4.2   0.2
+11:34:10.009          11      111.0     0.43    4096 100.00    9.012    9.012    0.000     9.46     0.00    1.228    4.0   4.2   0.1
+11:34:11.015          12      108.0     0.42    4096 100.00    9.282    9.282    0.000     9.88     0.00    1.788    4.0   4.6   0.2
+11:34:11.021    avg_3-12      102.3     0.40    4096 100.00   19.737   19.737    0.000  5954.77     0.00  203.052    4.0   4.4   0.2
+11:34:11.333 Flushing all reports
+11:34:11.333 Java Heap in MB. max:  455.500; current:   77.500; used:   18.043; free:   59.457
+11:34:11.387 Ending Reporter
+11:34:11.864 Vdbench execution completed successfully. Output directory: /home/ubuntu/project3136859-386240/results/final/vdbench_v100_20260730/lz4_random_read_r4 
+
+11:34:12.969 Java Heap in MB. max:  455.500; current:   77.500; used:   16.298; free:   61.202

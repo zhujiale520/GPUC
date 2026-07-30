@@ -322,6 +322,12 @@ static int is_whitelisted_path(const char *pathname) {
 
 typedef struct {
     int refcount;          /* duplicated fds share one open-file description */
+    /*
+     * read-ahead/cache state belongs to the open-file description. Vdbench
+     * issues concurrent pread64 calls through one shared fd, so that mutable
+     * state must be serialized. Separate open fds still execute independently.
+     */
+    pthread_mutex_t io_lock;
     int active;
     int has_header;
     int is_compressed;
@@ -352,6 +358,17 @@ typedef struct {
 static fd_info_t *g_fd_table[MAX_FD];
 static pthread_mutex_t g_lock = PTHREAD_MUTEX_INITIALIZER;
 
+static fd_info_t *allocate_fd_info(void) {
+    fd_info_t *info = (fd_info_t *)calloc(1, sizeof(fd_info_t));
+    if (!info) return NULL;
+    if (pthread_mutex_init(&info->io_lock, NULL) != 0) {
+        free(info);
+        errno = ENOMEM;
+        return NULL;
+    }
+    return info;
+}
+
 /*
  * Dropping the last reference and destroying fd_info are intentionally split.
  * cudaFreeHost may synchronize with the CUDA driver and must never run while
@@ -370,6 +387,7 @@ static void destroy_fd_info(fd_info_t *info) {
     if (info->ra_buf_pinned) gpu_tls_free_pinned(info->ra_buf);
     else free(info->ra_buf);
     free(info->cache_buf);
+    pthread_mutex_destroy(&info->io_lock);
     free(info);
 }
 
@@ -592,6 +610,15 @@ static size_t physical_block_read_len(const fd_info_t *info,
 
 static void discard_unregistered_fd_info(fd_info_t *info) {
     destroy_fd_info(info);
+}
+
+static int should_passthrough_empty_readonly(int flags, off64_t phys_size) {
+    /*
+     * procfs/sysfs expose many readable pseudo-files as regular files with
+     * st_size == 0. Registering those as empty GPUC RAW files makes tools such
+     * as Vdbench observe EOF for /proc/stat and lose CPU telemetry.
+     */
+    return phys_size == 0 && (flags & O_ACCMODE) == O_RDONLY;
 }
 
 static int write_raw_header(int fd, fd_info_t *info) {
@@ -1470,7 +1497,8 @@ static ssize_t read_raw(int fd, fd_info_t *info, void *buf, size_t count) {
  *  压缩文件的 pread 路径（指定 offset，不修改 cur_offset）
  * ============================================================ */
 
-static ssize_t read_compressed_at(int fd, fd_info_t *info, void *buf, size_t count, off64_t offset) {
+static ssize_t read_compressed_at_unlocked(int fd, fd_info_t *info, void *buf,
+                                           size_t count, off64_t offset) {
     /* ---- 小文件内联：直接从 header 后读取原始数据（无需 GPU 解压） ---- */
     if (info->hdr.state == GPUC_STATE_INLINE) {
         off64_t log_size = get_logical_size(info);
@@ -1732,6 +1760,14 @@ static ssize_t read_compressed_at(int fd, fd_info_t *info, void *buf, size_t cou
     return (ssize_t)total_read;
 }
 
+static ssize_t read_compressed_at(int fd, fd_info_t *info, void *buf,
+                                  size_t count, off64_t offset) {
+    pthread_mutex_lock(&info->io_lock);
+    ssize_t ret = read_compressed_at_unlocked(fd, info, buf, count, offset);
+    pthread_mutex_unlock(&info->io_lock);
+    return ret;
+}
+
 
 /* ============================================================
  *  构造函数 / 析构函数
@@ -1916,11 +1952,15 @@ int open(const char *pathname, int flags, ...) {
     if (!is_regular_file(fd)) return fd;
     if (is_whitelisted_path(pathname)) return fd;
 
-    fd_info_t *info = (fd_info_t *)calloc(1, sizeof(fd_info_t));
+    fd_info_t *info = allocate_fd_info();
     if (!info) { real_close(fd); errno = ENOMEM; return -1; }
     info->active = 1;
     info->open_flags = flags;
     info->phys_size = get_phys_size(fd);
+    if (should_passthrough_empty_readonly(flags, info->phys_size)) {
+        discard_unregistered_fd_info(info);
+        return fd;
+    }
 
     if (info->phys_size == 0) {
         /* 延迟写入 header：只初始化结构体，等首次 write/close 时实际写入 */
@@ -1979,11 +2019,15 @@ int open64(const char *pathname, int flags, ...) {
     if (!is_regular_file(fd)) return fd;
     if (is_whitelisted_path(pathname)) return fd;
 
-    fd_info_t *info = (fd_info_t *)calloc(1, sizeof(fd_info_t));
+    fd_info_t *info = allocate_fd_info();
     if (!info) { real_close(fd); errno = ENOMEM; return -1; }
     info->active = 1;
     info->open_flags = flags;
     info->phys_size = get_phys_size(fd);
+    if (should_passthrough_empty_readonly(flags, info->phys_size)) {
+        discard_unregistered_fd_info(info);
+        return fd;
+    }
 
     if (info->phys_size == 0) {
         if (normalize_managed_fd_flags(fd, info) != 0) {
@@ -2025,7 +2069,7 @@ int creat(const char *pathname, mode_t mode) {
     if (fd < 0) return fd;
     if (is_whitelisted_path(pathname)) return fd;
 
-    fd_info_t *info = (fd_info_t *)calloc(1, sizeof(fd_info_t));
+    fd_info_t *info = allocate_fd_info();
     if (!info) { real_close(fd); errno = ENOMEM; return -1; }
     info->active = 1;
     info->open_flags = O_WRONLY | O_CREAT | O_TRUNC;
@@ -2063,10 +2107,12 @@ ssize_t read(int fd, void *buf, size_t count) {
     if (!info || !info->has_header) {
         return real_read(fd, buf, count);
     }
-    if (info->is_compressed) {
-        return read_compressed(fd, info, buf, count);
-    }
-    return read_raw(fd, info, buf, count);
+    pthread_mutex_lock(&info->io_lock);
+    ssize_t ret = info->is_compressed
+        ? read_compressed(fd, info, buf, count)
+        : read_raw(fd, info, buf, count);
+    pthread_mutex_unlock(&info->io_lock);
+    return ret;
 }
 
 ssize_t write(int fd, const void *buf, size_t count) {
@@ -2785,11 +2831,15 @@ int openat(int dirfd, const char *pathname, int flags, ...) {
     if (!is_regular_file(fd)) return fd;
     if (is_whitelisted_path(pathname)) return fd;
 
-    fd_info_t *info = (fd_info_t *)calloc(1, sizeof(fd_info_t));
+    fd_info_t *info = allocate_fd_info();
     if (!info) { real_close(fd); errno = ENOMEM; return -1; }
     info->active = 1;
     info->open_flags = flags;
     info->phys_size = get_phys_size(fd);
+    if (should_passthrough_empty_readonly(flags, info->phys_size)) {
+        discard_unregistered_fd_info(info);
+        return fd;
+    }
     if (info->phys_size == 0) {
         if (normalize_managed_fd_flags(fd, info) != 0) {
             int saved = errno;
@@ -2837,11 +2887,15 @@ int openat64(int dirfd, const char *pathname, int flags, ...) {
     if (!is_regular_file(fd)) return fd;
     if (is_whitelisted_path(pathname)) return fd;
 
-    fd_info_t *info = (fd_info_t *)calloc(1, sizeof(fd_info_t));
+    fd_info_t *info = allocate_fd_info();
     if (!info) { real_close(fd); errno = ENOMEM; return -1; }
     info->active = 1;
     info->open_flags = flags;
     info->phys_size = get_phys_size(fd);
+    if (should_passthrough_empty_readonly(flags, info->phys_size)) {
+        discard_unregistered_fd_info(info);
+        return fd;
+    }
     if (info->phys_size == 0) {
         if (normalize_managed_fd_flags(fd, info) != 0) {
             int saved = errno;

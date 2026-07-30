@@ -1,0 +1,41 @@
+
+
+Copyright (c) 2000, 2018, Oracle and/or its affiliates. All rights reserved.
+Vdbench distribution: vdbench50407 Tue June 05  9:49:29 MDT 2018
+For documentation, see 'vdbench.pdf'.
+
+11:24:02.501 Created output directory '/home/ubuntu/project3136859-386240/results/final/vdbench_v100_20260730/baseline_mixed_rw_r1'
+11:24:02.520 input argument scanned: '-fresults/final/vdbench_v100_20260730/baseline_mixed_rw_r1.par'
+11:24:02.520 input argument scanned: '-oresults/final/vdbench_v100_20260730/baseline_mixed_rw_r1'
+11:24:02.726 Starting slave: /home/ubuntu/project3136859-386240/third_party/manual/vdbench50407/vdbench SlaveJvm -m localhost -n localhost-10-260730-11.24.02.483 -l localhost-0 -p 5570   
+11:24:03.051 All slaves are now connected
+11:24:04.002 Starting RD=mixed; I/O rate: Uncontrolled MAX; elapsed=10 warmup=2; For loops: None
+
+Jul 30, 2026    interval        i/o   MB/sec   bytes   read     resp     read    write     read    write     resp  queue  cpu%  cpu%
+                               rate  1024**2     i/o    pct     time     resp     resp      max      max   stddev  depth sys+u   sys
+11:24:05.078           1   196728.0   768.47    4096  69.85    0.004    0.003    0.004     0.18     0.04    0.003    0.7  10.3   2.5
+11:24:06.015           2   512345.0  2001.35    4096  70.00    0.003    0.003    0.005     0.06     1.39    0.008    1.8  19.0   8.2
+11:24:07.010           3   537464.0  2099.47    4096  70.00    0.003    0.003    0.004     0.04     0.04    0.003    1.8  17.9   7.7
+11:24:08.010           4   531510.0  2076.21    4096  70.08    0.003    0.003    0.004     0.04     0.04    0.003    1.8  17.6   8.4
+11:24:09.009           5   544574.0  2127.24    4096  70.04    0.003    0.003    0.004     0.04     0.05    0.003    1.8  17.8   7.6
+11:24:10.011           6   513316.0  2005.14    4096  70.03    0.003    0.003    0.004     0.17     0.04    0.003    1.7  17.9   8.4
+11:24:11.012           7   542344.0  2118.53    4096  69.96    0.003    0.003    0.004     0.05     0.60    0.005    1.8  17.8   8.4
+11:24:12.009           8   463840.0  1811.88    4096  70.08    0.004    0.003    0.008     0.19    76.80    0.225    2.1  17.7   8.5
+11:24:13.008           9   483924.0  1890.33    4096  70.06    0.004    0.003    0.006     0.14     2.15    0.019    2.0  18.7   8.8
+11:24:14.009          10   480157.0  1875.61    4096  69.94    0.004    0.003    0.006    16.93    17.00    0.051    1.9  18.1   8.7
+11:24:15.008          11   492970.0  1925.66    4096  69.95    0.004    0.003    0.005     0.14     2.84    0.013    1.8  18.0   8.7
+11:24:16.017          12   507876.0  1983.89    4096  69.92    0.004    0.003    0.005     0.14    18.14    0.060    1.9  19.2   9.2
+11:24:16.029    avg_3-12   509797.5  1991.40    4096  70.01    0.004    0.003    0.005    16.93    76.80    0.073    1.9  18.1   8.4
+11:24:16.062 *
+11:24:16.062 ****************************************************************************************
+11:24:16.062 * Warning: total amount of i/o per second per slave (509,798) greater than 100,000.    *
+11:24:16.063 * You may need to adjust your total slave count.                                       *
+11:24:16.063 *                                                                                      *
+11:24:16.063 * See 'jvms=' in documentation for raw (SD/WD) workloads).                             *
+11:24:16.063 * See 'host=' and/or 'clients=' in documentation for file system (FSD/FWD) workloads). *
+11:24:16.064 *                                                                                      *
+11:24:16.064 * rd=mixed actively used 1 slaves.                                                     *
+11:24:16.065 ****************************************************************************************
+11:24:16.065 *
+11:24:17.278 Vdbench execution completed successfully. Output directory: /home/ubuntu/project3136859-386240/results/final/vdbench_v100_20260730/baseline_mixed_rw_r1 
+

@@ -1,0 +1,41 @@
+
+
+Copyright (c) 2000, 2018, Oracle and/or its affiliates. All rights reserved.
+Vdbench distribution: vdbench50407 Tue June 05  9:49:29 MDT 2018
+For documentation, see 'vdbench.pdf'.
+
+11:31:24.558 Created output directory '/home/ubuntu/project3136859-386240/results/final/vdbench_v100_20260730/baseline_seq_read_r4'
+11:31:24.577 input argument scanned: '-fresults/final/vdbench_v100_20260730/baseline_seq_read_r4.par'
+11:31:24.577 input argument scanned: '-oresults/final/vdbench_v100_20260730/baseline_seq_read_r4'
+11:31:24.712 Starting slave: /home/ubuntu/project3136859-386240/third_party/manual/vdbench50407/vdbench SlaveJvm -m localhost -n localhost-10-260730-11.31.24.538 -l localhost-0 -p 5570   
+11:31:25.041 All slaves are now connected
+11:31:26.002 Starting RD=seqread; I/O rate: Uncontrolled MAX; elapsed=10 warmup=2; For loops: None
+
+Jul 30, 2026    interval        i/o   MB/sec   bytes   read     resp     read    write     read    write     resp  queue  cpu%  cpu%
+                               rate  1024**2     i/o    pct     time     resp     resp      max      max   stddev  depth sys+u   sys
+11:31:27.077           1   105993.0 13249.13  131072 100.00    0.020    0.020    0.000     0.18     0.00    0.004    2.1   9.7   5.1
+11:31:28.014           2   204582.0 25572.75  131072 100.00    0.019    0.019    0.000     0.17     0.00    0.001    3.8  18.3  16.2
+11:31:29.013           3   210705.0 26338.13  131072 100.00    0.019    0.019    0.000     0.07     0.00    0.001    3.9  17.8  16.2
+11:31:30.013           4   211719.0 26464.88  131072 100.00    0.019    0.019    0.000     0.17     0.00    0.001    3.9  17.6  16.3
+11:31:31.015           5   210339.0 26292.38  131072 100.00    0.019    0.019    0.000     0.10     0.00    0.001    3.9  17.5  16.4
+11:31:32.010           6   211095.0 26386.88  131072 100.00    0.019    0.019    0.000     0.17     0.00    0.001    3.9  18.6  16.5
+11:31:33.011           7   210875.0 26359.38  131072 100.00    0.019    0.019    0.000     0.10     0.00    0.001    3.9  17.8  16.6
+11:31:34.010           8   211482.0 26435.25  131072 100.00    0.019    0.019    0.000     0.17     0.00    0.001    3.9  17.6  16.2
+11:31:35.009           9   210560.0 26320.00  131072 100.00    0.019    0.019    0.000     0.10     0.00    0.001    3.9  17.8  16.6
+11:31:36.009          10   211765.0 26470.63  131072 100.00    0.019    0.019    0.000     0.17     0.00    0.001    3.9  17.6  16.4
+11:31:37.009          11   213603.0 26700.38  131072 100.00    0.018    0.018    0.000     0.10     0.00    0.001    3.9  17.5  16.5
+11:31:38.016          12   213369.0 26671.13  131072 100.00    0.018    0.018    0.000     0.17     0.00    0.001    3.9  18.1  16.6
+11:31:38.024    avg_3-12   211551.2 26443.90  131072 100.00    0.018    0.018    0.000     0.17     0.00    0.001    3.9  17.8  16.4
+11:31:38.034 *
+11:31:38.034 ****************************************************************************************
+11:31:38.034 * Warning: total amount of i/o per second per slave (211,551) greater than 100,000.    *
+11:31:38.036 * You may need to adjust your total slave count.                                       *
+11:31:38.036 *                                                                                      *
+11:31:38.036 * See 'jvms=' in documentation for raw (SD/WD) workloads).                             *
+11:31:38.036 * See 'host=' and/or 'clients=' in documentation for file system (FSD/FWD) workloads). *
+11:31:38.036 *                                                                                      *
+11:31:38.036 * rd=seqread actively used 1 slaves.                                                   *
+11:31:38.037 ****************************************************************************************
+11:31:38.037 *
+11:31:39.272 Vdbench execution completed successfully. Output directory: /home/ubuntu/project3136859-386240/results/final/vdbench_v100_20260730/baseline_seq_read_r4 
+

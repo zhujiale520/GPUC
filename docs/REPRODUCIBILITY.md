@@ -346,6 +346,49 @@ runtime、进程墙钟时间、吞吐和逻辑 SHA-256；任何 timeout、fio er
 不一致都会立即失败。2026-07-30 V100 正式结果为 60/60 通过，见
 `results/final/fio_compressed_threads_v100_20260730/`。
 
+### 4.15 Vdbench 5.04.07
+
+Oracle Vdbench 需要用户自行接受许可证，本仓库不再分发其压缩包。将 5.04.07
+解压到 `third_party/manual/vdbench50407/`，并将 Java 8 运行时放到
+`third_party/manual/java8/`，或分别设置 `VDBENCH_HOME` 和
+`GPUC_JAVA_HOME`。先运行官方自检：
+
+```bash
+PATH="$PWD/third_party/manual/java8/bin:$PATH" \
+third_party/manual/vdbench50407/vdbench -t
+```
+
+正式复现命令：
+
+```bash
+GPUC_RESULT_DIR=results/local/vdbench \
+GPUC_SIZE=256m GPUC_RUNTIME=10 GPUC_WARMUP=2 \
+GPUC_REPEATS=5 GPUC_THREADS=4 GPUC_SAMPLE_TIMEOUT=90 \
+bash tests/vdbench_benchmark.sh
+```
+
+脚本统一使用 buffered I/O，生成内容一致的 Baseline、Hook RAW、SGLZ、LZ4
+持久文件；运行 128 KiB 顺序读、4 KiB 随机读及 Baseline/RAW 70:30 随机混合
+读写。输出包含逐轮 Vdbench HTML、直方图、`runs.csv`、95% CI、环境和逻辑
+SHA-256。直方图 p95/p99 是桶上界。COMPRESSED 是只读对象，不运行混合写。
+
+### 4.16 Intel PCM DRAM bandwidth
+
+Intel PCM 需要 root 访问 MSR、ACPI MCFG 和服务器 uncore PCI 空间。不得把密码
+写入命令或脚本；由管理员在交互式终端执行：
+
+```bash
+sudo env \
+  GPUC_RESULT_DIR="$PWD/results/local/pcm_dram" \
+  GPUC_RUNTIME=10 GPUC_REPEATS=5 GPUC_TARGET_MIB_S=4096 \
+  GPUC_DECOMP_CPU=0 GPUC_WORKER_CPU=0 \
+  bash tests/pcm_dram_offload.sh
+```
+
+脚本按轮次旋转 Baseline、CPU LZ4、GPU LZ4，使用 `pcm-memory` 的 external
+program 模式覆盖每个完整场景。输出 `runs.csv`、`summary.csv` 及每轮原始 PCM
+CSV/诊断日志。该指标是全系统 IMC 带宽，运行时应停止无关内存密集任务。
+
 ---
 
 ## 5. 关键环境变量

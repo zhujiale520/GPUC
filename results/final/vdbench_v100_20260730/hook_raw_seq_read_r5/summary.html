@@ -1,0 +1,51 @@
+<title>Vdbench hook_raw_seq_read_r5/summary.html</title><pre>
+Copyright (c) 2000, 2018, Oracle and/or its affiliates. All rights reserved.
+Vdbench summary report, created 11:35:05 Jul 30 2026 UTC (11:35:06 Jul 30 2026 UTC)
+
+Link to logfile:                 <A HREF="logfile.html">logfile</A>
+Run totals:                      <A HREF="totals.html">totals</A>
+Vdbench status:                  <A HREF="status.html">status</A>
+Copy of input parameter files:   <A HREF="parmfile.html">parmfile</A>
+Copy of parameter scan detail:   <A HREF="parmscan.html">parmscan</A>
+Link to errorlog:                <A HREF="errorlog.html">errorlog</A>
+Link to flatfile:                <A HREF="flatfile.html">flatfile</A>
+
+Link to HOST reports:            <A HREF="localhost.html">localhost</A>
+Link to response time histogram: <A HREF="histogram.html">histogram</A>
+Link to workload skew report:    <A HREF="skew.html">skew</A>
+Link to SD reports:              <A HREF="sd1.html">sd1</A>     
+
+Link to Run Definitions:         <A HREF="#_463345942">seqread For loops: None</A>
+
+Link to config output:           <A HREF="config.html">config</A>
+
+<a name="_463345942"></a><i><b>11:35:08.002 Starting RD=seqread; I/O rate: Uncontrolled MAX; elapsed=10 warmup=2; For loops: None</b></i>
+
+
+Jul 30, 2026    interval        i/o   MB/sec   bytes   read     resp     read    write     read    write     resp  queue  cpu%  cpu%
+                               rate  1024**2     i/o    pct     time     resp     resp      max      max   stddev  depth sys+u   sys
+11:35:09.094           1   191544.0 23943.00  131072 100.00    0.019    0.019    0.000     0.22     0.00    0.003    3.6  10.7   6.9
+11:35:10.014           2   208484.0 26060.50  131072 100.00    0.018    0.018    0.000     0.10     0.00    0.002    3.8  18.4  16.2
+11:35:11.012           3   216991.0 27123.88  131072 100.00    0.018    0.018    0.000     0.10     0.00    0.002    3.9  17.9  16.3
+11:35:12.010           4   218101.0 27262.63  131072 100.00    0.018    0.018    0.000     0.07     0.00    0.001    3.9  17.6  16.3
+11:35:13.011           5   214859.0 26857.38  131072 100.00    0.018    0.018    0.000     0.11     0.00    0.002    3.9  17.6  16.1
+11:35:14.010           6   217905.0 27238.13  131072 100.00    0.018    0.018    0.000     0.07     0.00    0.001    3.9  17.8  16.3
+11:35:15.011           7   216790.0 27098.75  131072 100.00    0.018    0.018    0.000     0.11     0.00    0.001    3.9  17.3  16.0
+11:35:16.008           8   217951.0 27243.88  131072 100.00    0.018    0.018    0.000     0.05     0.00    0.001    3.9  17.5  16.1
+11:35:17.009           9   216924.0 27115.50  131072 100.00    0.018    0.018    0.000     0.07     0.00    0.002    3.9  17.6  16.1
+11:35:18.008          10   218230.0 27278.75  131072 100.00    0.018    0.018    0.000     0.07     0.00    0.001    3.9  17.5  16.2
+11:35:19.008          11   217172.0 27146.50  131072 100.00    0.018    0.018    0.000     0.07     0.00    0.001    3.9  17.4  16.0
+11:35:20.017          12   219995.0 27499.38  131072 100.00    0.018    0.018    0.000     0.07     0.00    0.001    3.9  17.5  16.2
+11:35:20.022    avg_3-12   217491.8 27186.48  131072 100.00    0.018    0.018    0.000     0.11     0.00    0.002    3.9  17.6  16.2
+11:35:20.026 *
+11:35:20.026 ****************************************************************************************
+11:35:20.026 * Warning: total amount of i/o per second per slave (217,492) greater than 100,000.    *
+11:35:20.026 * You may need to adjust your total slave count.                                       *
+11:35:20.026 *                                                                                      *
+11:35:20.026 * See 'jvms=' in documentation for raw (SD/WD) workloads).                             *
+11:35:20.026 * See 'host=' and/or 'clients=' in documentation for file system (FSD/FWD) workloads). *
+11:35:20.026 *                                                                                      *
+11:35:20.026 * rd=seqread actively used 1 slaves.                                                   *
+11:35:20.027 ****************************************************************************************
+11:35:20.027 *
+11:35:20.864 Vdbench execution completed successfully

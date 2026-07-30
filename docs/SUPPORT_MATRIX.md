@@ -1,6 +1,6 @@
 # GPUC 支持矩阵与能力边界
 
-> 适用版本：2026-07-29。本文是 README、设计报告、实验报告和 Demo 的统一口径。
+> 适用版本：2026-07-30。本文是 README、设计报告、实验报告和 Demo 的统一口径。
 > “支持”表示已有自动测试；“有限支持”表示必须满足表中前提；“不支持”不会静默
 > 退化为可能破坏数据的行为。
 
@@ -28,7 +28,8 @@ Hook 的应用透明读取。启用范围由 `LD_PRELOAD` 精确控制，因此�
 | RAW `write/pwrite/writev/truncate/fallocate` | 支持 | 保持逻辑 offset、append、dup 和长度语义 | `test_posix_semantics` |
 | COMPRESSED/INLINE 修改 | 只读策略 | `write/pwrite/writev/truncate/ftruncate/fallocate/posix_fallocate` 返回 `EROFS` | `test_posix_semantics compressed` |
 | `sendfile` | 有限支持 | 压缩对象通过用户态 read/write 回退，不是内核零拷贝 | 集成测试 |
-| 多进程/多线程读 | 有限支持 | 已验证 32 线程边界；吞吐在 16 线程后饱和 | 并发实验 |
+| 多进程/多线程读 | 有限支持 | 已验证 32 个独立 fd；同一 fd 的共享 read-ahead 状态加锁保证正确性，但调用会序列化 | 并发实验、4 线程共享 fd 随机 pread |
+| `/proc`/`sysfs` 空只读伪文件 | 透传 | `st_size=0` 且只读时不注册为 GPUC RAW，避免破坏监控工具 | Vdbench CPU 指标、procstat 回归 |
 | 数据库原生文件 | 透传 | `.db/.wal/.sst/.log` 等白名单不添加 GPUC header | rename/POSIX 测试 |
 
 ## 3. mmap

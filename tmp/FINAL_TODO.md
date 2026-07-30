@@ -21,8 +21,12 @@
   `O_DIRECT` 标志保留、逻辑内容正确和 fio 0 error。
 - [x] 输出统一 CPU time、RSS、page fault、context switch、GPU utilization/power
   和 pipeline profile CSV。
-- [!] DRAM IMC bandwidth/LLC miss：当前缺少匹配内核的 perf/Intel PCM，
-  `perf_event_paranoid=2` 且无提权权限；能力审计已留证，不能伪造结果。
+- [x] DRAM IMC bandwidth：管理员宿主机运行 Intel PCM，Baseline/CPU/GPU
+  同吞吐场景各五轮完成。总带宽分别为 97.01±2.23、116.09±19.26、
+  3075.61±342.02 MB/s；GPU 没有节省 DRAM bandwidth，D2H 写回使写带宽显著
+  增加。结果见 `results/final/pcm_dram_v100_20260730/`。
+- [!] LLC miss/cycles：`perf` 仍缺少当前自定义内核的实际工具；DRAM 结果不能
+  替代 LLC miss，后续在匹配 perf 环境补测。
 - [!] 独占 NVMe 性能：机器有未挂载的 `nvme0n1`，当前会话不能挂载；
   O_DIRECT 软件路径已验收，正式 NVMe 性能需在有设备权限环境复跑。
 
@@ -102,7 +106,7 @@
 
 ## P1：增强决赛说服力
 
-### P1 补充实验（2026-07-29）
+### P1 补充实验（2026-07-30）
 
 - [!] 鲲鹏 920/AArch64：按用户安排暂不实施；当前没有对应硬件，不能用 x86
   交叉编译冒充实测。
@@ -111,9 +115,16 @@
 - [!] Btrfs/ZFS/DM 公平基线：已增加只读能力审计并保存
   `results/final/storage_baseline_capability_v100_20260729/`。本机无 root/CAP_SYS_ADMIN、
   无可见 loop 节点，ZFS/zpool 不存在，因此没有格式化或伪造文件系统结果。
-- [!] vdbench：已增加顺序读、4 KiB 随机读和 70:30 混合读写参数及运行脚本；
-  Oracle Vdbench 需要接受许可证且本机没有 Java/Vdbench，阻塞证据保存在
-  `results/final/vdbench_capability_v100_20260729/`。
+- [x] vdbench：使用用户提供、已接受 Oracle 许可的 Vdbench 5.04.07 和项目私有
+  Temurin Java 8 完成自检及 V100 正式实验。覆盖 128 KiB 顺序读、4 KiB 随机读、
+  70:30 随机混合读写，4 线程、每组五轮、50/50 样本通过，所有逻辑 SHA-256
+  一致；原始 HTML、直方图、CPU 指标和 95% CI 保存在
+  `results/final/vdbench_v100_20260730/`。许可包和 Java 不进入仓库。
+- [x] 修复 Vdbench 暴露的共享 fd 并发读错误：为同一 open file description 的
+  COMPRESSED 读取状态增加互斥保护，新增 4 线程共享一个 fd、随机 `pread`
+  的 SGLZ/LZ4 回归并纳入 `make test`。
+- [x] 修复 Hook 将 `/proc/stat` 等 `st_size=0` 的只读伪文件误识别为 RAW：
+  空只读对象现在直接透传；Vdbench Hook 场景的 CPU 指标恢复为数值。
 - [x] fio I/O 矩阵：4/16/128 KiB，顺序/随机读、顺序/随机/70:30 混合写，
   1/4 应用线程，Baseline libaio QD 1/8/32，五轮、p95/p99/p99.9 和 95% CI。
   旧正式矩阵的压缩读固定单线程；修复后 runner 已恢复 1/4 线程覆盖。
@@ -130,7 +141,8 @@
   `results/final/public_dataset_pg2600_v100_20260729/`。
 - [x] 系统资源：五轮保存 pidstat `-u -r -w`、sar `-u -r -B -W`、
   nvidia-smi 200 ms 原始日志和统一摘要，见
-  `results/final/system_resource_v100_20260729/`。
+  `results/final/system_resource_v100_20260729/`；另以 Intel PCM 完成五轮
+  全系统 IMC 带宽，见 `results/final/pcm_dram_v100_20260730/`。
 - [-] 能效：已输出 GPU 板卡总功耗边界和相对空闲板卡的增量 J/GiB；
   V100 GPU 路径约 0.482 J/GiB（增量板卡边界）。本机无 RAPL/IPMI/外部功率计，
   因而尚不能称为 CPU package 或整机能效。

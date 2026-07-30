@@ -1,0 +1,44 @@
+<title>Vdbench hook_raw_mixed_rw_r1/localhost-0.stdout.html</title><pre>
+stdout/stderr for slave=localhost-0
+
+11:24:20.026 11:24:20.025 SlaveJvm execution parameter:  '-m localhost'
+11:24:20.027 11:24:20.026 SlaveJvm execution parameter:  '-n localhost-10-260730-11.24.19.611'
+11:24:20.027 11:24:20.026 SlaveJvm execution parameter:  '-l localhost-0'
+11:24:20.027 11:24:20.026 SlaveJvm execution parameter:  '-p 5570'
+11:24:20.027 11:24:20.026 SlaveJvm positional parameter: 'SlaveJvm'
+11:24:20.112 11:24:20.111 successfully connected to master localhost
+11:24:20.113 11:24:20.112 Connection to localhost using port 5570 successful
+11:24:20.252 11:24:20.252 ticks_per_second: 100
+11:24:20.265 11:24:20.265 Configuration interpretation took 0.01 seconds
+
+Link to Run Definitions:         <A HREF="#_463345942">mixed For loops: None</A>
+
+11:24:20.471 11:24:20.470 File '/var/log/messages' does not exist. Monitoring bypassed
+11:24:20.471 11:24:20.471 Beginning of run setup
+11:24:20.471 11:24:20.471 **********************
+11:24:20.472 
+11:24:20.472 
+11:24:20.472 11:24:20.471 File '/var/log/messages.1' does not exist. Monitoring bypassed
+11:24:20.597 11:24:20.596 Opening sd=sd1,lun=/tmp/gpuc-vdbench-LBGM8i/mixed_raw.bin; write: true; flags: OpenFlags: 0x00000000 OtherFlags: 0x00000000
+11:24:20.609 11:24:20.609 Started 1 Workload Generator threads.
+11:24:20.653 11:24:20.653 Started  4 i/o threads for sd1
+11:24:20.653 11:24:20.653 Started a total of  4 i/o threads.
+11:24:20.654 11:24:20.653 Waiting for task synchronization
+11:24:20.654 11:24:20.653 task_wait_start_complete: IO_task /tmp/gpuc-vdbench-LBGM8i/mixed_raw.bin 1
+11:24:20.854 11:24:20.853 Requesting full garbage collection
+11:24:20.855 11:24:20.854 GcTracker: cum:   0 intv:  0 ms:       0 mss:  0.00% Heap_MB max:   911 curr:   252 used:   157 free:    94 
+11:24:20.908 11:24:20.907 GcTracker: cum:   2 intv:  2 ms:      49 mss:  0.00% Heap_MB max:   911 curr:   252 used:    17 free:   235 
+11:24:20.908 11:24:20.907 task_wait_start_complete() end
+
+<a name="_463345942"></a><i><b>11:24:21.008 Starting RD=mixed; I/O rate: Uncontrolled MAX; elapsed=10 warmup=2; For loops: None</b></i>
+
+11:24:21.011 11:24:21.010 task_run_all(): 5 tasks
+11:24:33.142 11:24:33.142 Sent 4 interrupts to 4 waiting IO_task threads
+11:24:33.143 11:24:33.143 Java Heap in MB. max:  910.500; current:  253.000; used:   30.579; free:  222.421
+11:24:33.143 11:24:33.143 Maximum native memory allocation:       32,768; Current allocation:            0
+11:24:33.143 11:24:33.143 End of run
+11:24:33.143 11:24:33.143 **********
+11:24:33.143 
+11:24:33.143 
+11:24:33.327 11:24:33.326 Master is requesting slave shutdown
+11:24:33.327 11:24:33.327 Java Heap in MB. max:  910.500; current:  253.000; used:   30.584; free:  222.416

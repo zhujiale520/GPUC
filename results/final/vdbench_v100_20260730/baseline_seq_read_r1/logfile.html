@@ -1,0 +1,68 @@
+<title>Vdbench baseline_seq_read_r1/logfile.html</title><pre>
+Copyright (c) 2000, 2018, Oracle and/or its affiliates. All rights reserved.
+Vdbench distribution: vdbench50407
+
+11:21:11.333 input argument scanned: '-fresults/final/vdbench_v100_20260730/baseline_seq_read_r1.par'
+11:21:11.333 input argument scanned: '-oresults/final/vdbench_v100_20260730/baseline_seq_read_r1'
+11:21:11.333 java.vendor                   Temurin
+11:21:11.333 java.home                     /home/ubuntu/project3136859-386240/third_party/manual/java8
+11:21:11.333 java.vm.specification.version 1.8
+11:21:11.333 java.vm.version               25.492-b09
+11:21:11.333 java.vm.vendor                Temurin
+11:21:11.333 java.specification.version    1.8
+11:21:11.333 java.class.version            52.0
+11:21:11.333 user.name                     ubuntu
+11:21:11.333 user.dir                      /home/ubuntu/project3136859-386240
+11:21:11.333 java.io.tmpdir                /tmp
+11:21:11.335 java.class.path               /home/ubuntu/project3136859-386240/third_party/manual/vdbench50407/:/home/ubuntu/project3136859-386240/third_party/manual/vdbench50407/classes:/home/ubuntu/project3136859-386240/third_party/manual/vdbench50407/vdbench.jar
+11:21:11.335 os.name                       Linux
+11:21:11.335 os.arch                       amd64
+11:21:11.335 os.version                    5.15.0
+11:21:11.335 sun.arch.data.model           64
+11:21:11.340 Flushing all reports
+11:21:11.567 Starting slave: /home/ubuntu/project3136859-386240/third_party/manual/vdbench50407/vdbench SlaveJvm -m localhost -n localhost-10-260730-11.21.11.302 -l localhost-0 -p 5570   
+11:21:11.868 Slave localhost-0 (pid 227432) connected to master 227385
+11:21:11.904 All slaves are now connected
+11:21:11.982 sd=sd1,lun=/tmp/gpuc-vdbench-LBGM8i/baseline.bin lun size: 268,435,456 bytes; 0.2500 GB (1024**3); 0.2684 GB (1000**3)
+
+Link to Run Definitions:         <A HREF="#_463345942">seqread For loops: None</A>
+
+11:21:12.022 Flushing all reports
+11:21:12.079 Waiting for synchronization of all slaves
+11:21:12.680 Synchronization of all slaves complete
+
+<a name="_463345942"></a><i><b>11:21:13.006 Starting RD=seqread; I/O rate: Uncontrolled MAX; elapsed=10 warmup=2; For loops: None</b></i>
+
+
+Jul 30, 2026    interval        i/o   MB/sec   bytes   read     resp     read    write     read    write     resp  queue  cpu%  cpu%
+                               rate  1024**2     i/o    pct     time     resp     resp      max      max   stddev  depth sys+u   sys
+11:21:14.073           1   130362.0 16295.25  131072 100.00    0.020    0.020    0.000     0.17     0.00    0.004    2.6  10.0   6.1
+11:21:15.016           2   205199.0 25649.88  131072 100.00    0.019    0.019    0.000     0.07     0.00    0.001    3.8  19.1  16.9
+11:21:16.012           3   209099.0 26137.38  131072 100.00    0.019    0.019    0.000     0.18     0.00    0.001    3.9  18.9  17.0
+11:21:17.012           4   210005.0 26250.63  131072 100.00    0.019    0.019    0.000     0.06     0.00    0.001    3.9  18.5  17.1
+11:21:18.012           5   207526.0 25940.75  131072 100.00    0.019    0.019    0.000     0.06     0.00    0.002    3.9  18.1  17.0
+11:21:19.010           6   211070.0 26383.75  131072 100.00    0.019    0.019    0.000     0.08     0.00    0.001    3.9  18.2  16.8
+11:21:20.011           7   207049.0 25881.13  131072 100.00    0.019    0.019    0.000     0.06     0.00    0.002    3.9  17.4  16.3
+11:21:21.009           8   211201.0 26400.13  131072 100.00    0.019    0.019    0.000     0.05     0.00    0.001    3.9  17.5  16.3
+11:21:22.009           9   209081.0 26135.13  131072 100.00    0.019    0.019    0.000     0.17     0.00    0.002    3.9  17.4  16.4
+11:21:23.010          10   211813.0 26476.63  131072 100.00    0.019    0.019    0.000     0.04     0.00    0.001    3.9  17.4  16.5
+11:21:24.010          11   212091.0 26511.38  131072 100.00    0.018    0.018    0.000     0.17     0.00    0.001    3.9  17.3  16.1
+11:21:25.020          12   209262.0 26157.75  131072 100.00    0.019    0.019    0.000     0.05     0.00    0.002    3.9  17.5  16.2
+11:21:25.027    avg_3-12   209819.7 26227.46  131072 100.00    0.019    0.019    0.000     0.18     0.00    0.001    3.9  17.8  16.6
+11:21:25.036 *
+11:21:25.036 ****************************************************************************************
+11:21:25.036 * Warning: total amount of i/o per second per slave (209,820) greater than 100,000.    *
+11:21:25.037 * You may need to adjust your total slave count.                                       *
+11:21:25.037 *                                                                                      *
+11:21:25.037 * See 'jvms=' in documentation for raw (SD/WD) workloads).                             *
+11:21:25.038 * See 'host=' and/or 'clients=' in documentation for file system (FSD/FWD) workloads). *
+11:21:25.038 *                                                                                      *
+11:21:25.038 * rd=seqread actively used 1 slaves.                                                   *
+11:21:25.038 ****************************************************************************************
+11:21:25.038 *
+11:21:25.240 Flushing all reports
+11:21:25.240 Java Heap in MB. max:  455.500; current:   61.500; used:   29.827; free:   31.673
+11:21:25.296 Ending Reporter
+11:21:26.125 Vdbench execution completed successfully. Output directory: /home/ubuntu/project3136859-386240/results/final/vdbench_v100_20260730/baseline_seq_read_r1 
+
+11:21:27.130 Java Heap in MB. max:  455.500; current:   77.500; used:   17.639; free:   59.861

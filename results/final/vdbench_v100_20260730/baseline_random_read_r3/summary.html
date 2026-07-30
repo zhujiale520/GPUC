@@ -1,0 +1,51 @@
+<title>Vdbench baseline_random_read_r3/summary.html</title><pre>
+Copyright (c) 2000, 2018, Oracle and/or its affiliates. All rights reserved.
+Vdbench summary report, created 11:29:25 Jul 30 2026 UTC (11:29:25 Jul 30 2026 UTC)
+
+Link to logfile:                 <A HREF="logfile.html">logfile</A>
+Run totals:                      <A HREF="totals.html">totals</A>
+Vdbench status:                  <A HREF="status.html">status</A>
+Copy of input parameter files:   <A HREF="parmfile.html">parmfile</A>
+Copy of parameter scan detail:   <A HREF="parmscan.html">parmscan</A>
+Link to errorlog:                <A HREF="errorlog.html">errorlog</A>
+Link to flatfile:                <A HREF="flatfile.html">flatfile</A>
+
+Link to HOST reports:            <A HREF="localhost.html">localhost</A>
+Link to response time histogram: <A HREF="histogram.html">histogram</A>
+Link to workload skew report:    <A HREF="skew.html">skew</A>
+Link to SD reports:              <A HREF="sd1.html">sd1</A>     
+
+Link to Run Definitions:         <A HREF="#_463345942">randread For loops: None</A>
+
+Link to config output:           <A HREF="config.html">config</A>
+
+<a name="_463345942"></a><i><b>11:29:27.003 Starting RD=randread; I/O rate: Uncontrolled MAX; elapsed=10 warmup=2; For loops: None</b></i>
+
+
+Jul 30, 2026    interval        i/o   MB/sec   bytes   read     resp     read    write     read    write     resp  queue  cpu%  cpu%
+                               rate  1024**2     i/o    pct     time     resp     resp      max      max   stddev  depth sys+u   sys
+11:29:28.068           1   460241.0  1797.82    4096 100.00    0.003    0.003    0.000     0.05     0.00    0.003    1.4  11.1   3.4
+11:29:29.012           2   557841.0  2179.07    4096 100.00    0.003    0.003    0.000     0.05     0.00    0.003    1.6  18.2   7.4
+11:29:30.011           3   569929.0  2226.29    4096 100.00    0.003    0.003    0.000     0.05     0.00    0.003    1.6  17.4   7.6
+11:29:31.010           4   533430.0  2083.71    4096 100.00    0.003    0.003    0.000     0.05     0.00    0.003    1.5  17.1   7.1
+11:29:32.008           5   521567.0  2037.37    4096 100.00    0.003    0.003    0.000     0.06     0.00    0.003    1.6  17.2   6.9
+11:29:33.007           6   539574.0  2107.71    4096 100.00    0.003    0.003    0.000     0.05     0.00    0.003    1.6  17.3   7.5
+11:29:34.007           7   530412.0  2071.92    4096 100.00    0.003    0.003    0.000     0.05     0.00    0.003    1.6  17.6   7.8
+11:29:35.009           8   534644.0  2088.45    4096 100.00    0.003    0.003    0.000     0.06     0.00    0.003    1.6  17.3   7.0
+11:29:36.008           9   540963.0  2113.14    4096 100.00    0.003    0.003    0.000     0.05     0.00    0.003    1.6  17.5   7.2
+11:29:37.008          10   552555.0  2158.42    4096 100.00    0.003    0.003    0.000     0.05     0.00    0.003    1.6  17.6   7.4
+11:29:38.009          11   519977.0  2031.16    4096 100.00    0.003    0.003    0.000     0.05     0.00    0.003    1.6  17.5   7.3
+11:29:39.019          12   538724.0  2104.39    4096 100.00    0.003    0.003    0.000     0.07     0.00    0.003    1.6  17.5   7.4
+11:29:39.026    avg_3-12   538177.5  2102.26    4096 100.00    0.003    0.003    0.000     0.07     0.00    0.003    1.6  17.4   7.3
+11:29:39.037 *
+11:29:39.037 ****************************************************************************************
+11:29:39.037 * Warning: total amount of i/o per second per slave (538,178) greater than 100,000.    *
+11:29:39.037 * You may need to adjust your total slave count.                                       *
+11:29:39.037 *                                                                                      *
+11:29:39.037 * See 'jvms=' in documentation for raw (SD/WD) workloads).                             *
+11:29:39.037 * See 'host=' and/or 'clients=' in documentation for file system (FSD/FWD) workloads). *
+11:29:39.038 *                                                                                      *
+11:29:39.038 * rd=randread actively used 1 slaves.                                                  *
+11:29:39.039 ****************************************************************************************
+11:29:39.040 *
+11:29:39.838 Vdbench execution completed successfully

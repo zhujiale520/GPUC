@@ -7,7 +7,7 @@
 | 工具名称 | 提供方 | 使用版本/形态 |
 |---------|--------|--------------|
 | Kimi Code CLI | 月之暗面（Moonshot AI） | 命令行交互式 AI 编程助手 |
-| OpenAI Codex | OpenAI | 仓库内交互式代码审查、实验修复与材料整理助手（2026-07-25 至 2026-07-29） |
+| OpenAI Codex | OpenAI | 仓库内交互式代码审查、实验修复与材料整理助手（2026-07-25 至 2026-07-30） |
 
 ## 2. 使用场景
 
@@ -50,6 +50,12 @@
      pattern 正确性、首次 fault 和完整扫描实验。
    - 增加 Daemon ENOSPC/SIGKILL/重启、GPU 不可见降级、长稳 SHA，以及 GCC
      gcov/CI 覆盖率门槛；统一只读归档模型和 LD_PRELOAD 支持矩阵。
+   - 接入用户提供的许可版 Vdbench 5.04.07 与项目私有 Java，修复共享 fd
+     COMPRESSED 并发读状态竞争和 `/proc/stat` 伪文件误接管，完成三类 workload、
+     4 线程、五轮共 50 个正式样本并整理原始结果与边界。
+   - 从 Intel 官方仓库构建 PCM，编写管理员权限下的分场景 DRAM bandwidth
+     runner；团队成员执行 sudo 后，核验 Baseline/CPU/GPU 各五轮 IMC 原始数据，
+     并保留 GPU D2H 写回显著增加主机 DRAM 带宽的负面结论。
 ## 3. 成果说明
 
 AI 工具辅助产生的关键成果包括：
@@ -63,10 +69,15 @@ AI 工具辅助产生的关键成果包括：
 - 新增并发、损坏格式、POSIX 语义、sanitizer、冷缓存、消融、批大小、压缩率梯度
   与 CPU 业务卸载测试。修复后的同吞吐实验显示 GPU 额外主机 CPU 成本降低约
   28.8%，SQLite 相对 CPU 路径 QPS 高约 7.3%、p99 低约 50.5%；结果边界和
-  DRAM/NVMe 环境缺口均在报告中保留。
+  NVMe 与 LLC/cycles 环境缺口均在报告中保留；DRAM bandwidth 后续已由
+  管理员宿主机 PCM 正式补齐，并保留 GPU 写带宽显著增加的负面结果。
 - userfaultfd 将 256 MiB COMPRESSED 的 `mmap()` 返回降到约 0.215 ms，同时
   单独保留约 147 ms 首次 fault 和约 5.65 s 完整扫描成本；确定性故障恢复五项
   PASS，CPU Hook gcov 行覆盖率为 41.38%。
+- Vdbench 三类 workload 的 50/50 样本状态和 SHA-256 校验通过；同时保留
+  COMPRESSED 共享 fd 随机读取明显较慢的负面结果，不将页缓存数据解释为 NVMe。
+- PCM 五轮结果显示 GPU/CPU 总 DRAM 带宽约为 3075.61/116.09 MB/s，因此材料
+  明确区分“CPU 资源卸载”与“DRAM 带宽节省”，不将前者扩张为后者。
 
 AI 辅助内容已完成编译、自动测试和结果交叉核验；最终提交前仍由团队进行人工审查
 并决定是否纳入 git 版本管理。

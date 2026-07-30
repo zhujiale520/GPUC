@@ -167,6 +167,9 @@ $(BINDIR)/test_cold_read: dirs tests/test_cold_read.c
 $(BINDIR)/test_odirect_compressed: dirs tests/test_odirect_compressed.c
 	$(GCC) -O3 $(filter-out dirs,$^) -o $@
 
+$(BINDIR)/test_shared_pread: dirs tests/test_shared_pread.c
+	$(GCC) -O2 -Wall -Wextra -pthread $(filter-out dirs,$^) -o $@
+
 # ----------------------------------------------------------
 # 测试目标
 # ----------------------------------------------------------
@@ -174,11 +177,13 @@ unit-test: all $(BINDIR)/test_compress
 	@echo "=== Running unit tests ==="
 	$(BINDIR)/test_compress
 
-integration-test: all $(BINDIR)/test_hook
+integration-test: all $(BINDIR)/test_hook $(BINDIR)/test_shared_pread
 	@echo "=== Running integration tests ==="
 	bash tests/test_integration.sh
 	bash tests/test_mixed_compressibility.sh
 	bash tests/test_inline.sh
+	bash tests/test_shared_pread.sh
+	bash tests/test_empty_readonly_passthrough.sh
 
 test: unit-test integration-test
 

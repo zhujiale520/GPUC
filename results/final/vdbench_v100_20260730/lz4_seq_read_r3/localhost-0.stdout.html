@@ -1,0 +1,45 @@
+<title>Vdbench lz4_seq_read_r3/localhost-0.stdout.html</title><pre>
+stdout/stderr for slave=localhost-0
+
+11:29:08.405 11:29:08.404 SlaveJvm execution parameter:  '-m localhost'
+11:29:08.406 11:29:08.405 SlaveJvm execution parameter:  '-n localhost-10-260730-11.29.07.948'
+11:29:08.406 11:29:08.405 SlaveJvm execution parameter:  '-l localhost-0'
+11:29:08.406 11:29:08.405 SlaveJvm execution parameter:  '-p 5570'
+11:29:08.406 11:29:08.405 SlaveJvm positional parameter: 'SlaveJvm'
+11:29:08.518 11:29:08.516 successfully connected to master localhost
+11:29:08.518 11:29:08.517 Connection to localhost using port 5570 successful
+11:29:08.649 11:29:08.648 ticks_per_second: 100
+11:29:08.660 11:29:08.659 Configuration interpretation took 0.01 seconds
+
+Link to Run Definitions:         <A HREF="#_463345942">seqread For loops: None</A>
+
+11:29:08.869 11:29:08.869 File '/var/log/messages' does not exist. Monitoring bypassed
+11:29:08.870 11:29:08.869 Beginning of run setup
+11:29:08.870 11:29:08.869 **********************
+11:29:08.870 
+11:29:08.870 
+11:29:08.870 11:29:08.870 File '/var/log/messages.1' does not exist. Monitoring bypassed
+11:29:08.993 11:29:08.992 Opening sd=sd1,lun=/tmp/gpuc-vdbench-LBGM8i/lz4/data.bin; write: false; flags: OpenFlags: 0x00000000 OtherFlags: 0x00000000
+11:29:09.004 11:29:09.004 Started 1 Workload Generator threads.
+11:29:09.046 11:29:09.046 Started  4 i/o threads for sd1
+11:29:09.047 11:29:09.046 Started a total of  4 i/o threads.
+11:29:09.047 11:29:09.046 Waiting for task synchronization
+11:29:09.047 11:29:09.046 task_wait_start_complete: IO_task /tmp/gpuc-vdbench-LBGM8i/lz4/data.bin 1
+11:29:09.247 11:29:09.247 Requesting full garbage collection
+11:29:09.248 11:29:09.248 GcTracker: cum:   0 intv:  0 ms:       0 mss:  0.00% Heap_MB max:   911 curr:   252 used:   157 free:    94 
+11:29:09.304 11:29:09.303 GcTracker: cum:   2 intv:  2 ms:      52 mss:  0.00% Heap_MB max:   911 curr:   252 used:    17 free:   235 
+11:29:09.304 11:29:09.303 task_wait_start_complete() end
+
+<a name="_463345942"></a><i><b>11:29:10.002 Starting RD=seqread; I/O rate: Uncontrolled MAX; elapsed=10 warmup=2; For loops: None</b></i>
+
+11:29:10.005 11:29:10.004 task_run_all(): 5 tasks
+11:29:22.257 11:29:22.256 Interrupts issued for tasks WG_task: 2
+11:29:22.257 11:29:22.257 Sent 4 interrupts to 4 waiting IO_task threads
+11:29:22.260 11:29:22.260 Java Heap in MB. max:  910.500; current:  251.500; used:   22.285; free:  229.215
+11:29:22.261 11:29:22.260 Maximum native memory allocation:      524,288; Current allocation:            0
+11:29:22.261 11:29:22.261 End of run
+11:29:22.261 11:29:22.261 **********
+11:29:22.261 
+11:29:22.261 
+11:29:22.723 11:29:22.722 Master is requesting slave shutdown
+11:29:22.723 11:29:22.723 Java Heap in MB. max:  910.500; current:  251.500; used:   22.285; free:  229.215

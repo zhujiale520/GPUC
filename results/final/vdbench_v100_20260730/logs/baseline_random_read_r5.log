@@ -1,0 +1,41 @@
+
+
+Copyright (c) 2000, 2018, Oracle and/or its affiliates. All rights reserved.
+Vdbench distribution: vdbench50407 Tue June 05  9:49:29 MDT 2018
+For documentation, see 'vdbench.pdf'.
+
+11:36:13.903 Created output directory '/home/ubuntu/project3136859-386240/results/final/vdbench_v100_20260730/baseline_random_read_r5'
+11:36:13.922 input argument scanned: '-fresults/final/vdbench_v100_20260730/baseline_random_read_r5.par'
+11:36:13.923 input argument scanned: '-oresults/final/vdbench_v100_20260730/baseline_random_read_r5'
+11:36:14.071 Starting slave: /home/ubuntu/project3136859-386240/third_party/manual/vdbench50407/vdbench SlaveJvm -m localhost -n localhost-10-260730-11.36.13.886 -l localhost-0 -p 5570   
+11:36:14.340 All slaves are now connected
+11:36:16.002 Starting RD=randread; I/O rate: Uncontrolled MAX; elapsed=10 warmup=2; For loops: None
+
+Jul 30, 2026    interval        i/o   MB/sec   bytes   read     resp     read    write     read    write     resp  queue  cpu%  cpu%
+                               rate  1024**2     i/o    pct     time     resp     resp      max      max   stddev  depth sys+u   sys
+11:36:17.059           1   347160.0  1356.09    4096 100.00    0.003    0.003    0.000     0.94     0.00    0.003    1.1   8.5   2.6
+11:36:18.014           2   488656.0  1908.81    4096 100.00    0.003    0.003    0.000     0.18     0.00    0.003    1.5  17.3   7.8
+11:36:19.015           3   542806.0  2120.34    4096 100.00    0.003    0.003    0.000     0.05     0.00    0.003    1.5  17.3   7.4
+11:36:20.010           4   504612.0  1971.14    4096 100.00    0.003    0.003    0.000     0.05     0.00    0.003    1.5  17.4   7.5
+11:36:21.011           5   557875.0  2179.20    4096 100.00    0.003    0.003    0.000     0.04     0.00    0.003    1.6  17.4   8.0
+11:36:22.010           6   517281.0  2020.63    4096 100.00    0.003    0.003    0.000     0.17     0.00    0.003    1.5  16.9   6.9
+11:36:23.009           7   549456.0  2146.31    4096 100.00    0.003    0.003    0.000     0.04     0.00    0.003    1.6  17.1   7.5
+11:36:24.009           8   548763.0  2143.61    4096 100.00    0.003    0.003    0.000     0.07     0.00    0.003    1.6  17.5   7.3
+11:36:25.008           9   543117.0  2121.55    4096 100.00    0.003    0.003    0.000     0.05     0.00    0.003    1.6  17.5   7.8
+11:36:26.008          10   559207.0  2184.40    4096 100.00    0.003    0.003    0.000     0.05     0.00    0.003    1.6  17.2   7.6
+11:36:27.009          11   553964.0  2163.92    4096 100.00    0.003    0.003    0.000     0.05     0.00    0.003    1.6  17.3   7.5
+11:36:28.018          12   551324.0  2153.61    4096 100.00    0.003    0.003    0.000     0.05     0.00    0.003    1.6  17.6   7.5
+11:36:28.025    avg_3-12   542840.5  2120.47    4096 100.00    0.003    0.003    0.000     0.17     0.00    0.003    1.6  17.3   7.5
+11:36:28.034 *
+11:36:28.034 ****************************************************************************************
+11:36:28.034 * Warning: total amount of i/o per second per slave (542,841) greater than 100,000.    *
+11:36:28.034 * You may need to adjust your total slave count.                                       *
+11:36:28.034 *                                                                                      *
+11:36:28.035 * See 'jvms=' in documentation for raw (SD/WD) workloads).                             *
+11:36:28.035 * See 'host=' and/or 'clients=' in documentation for file system (FSD/FWD) workloads). *
+11:36:28.035 *                                                                                      *
+11:36:28.035 * rd=randread actively used 1 slaves.                                                  *
+11:36:28.036 ****************************************************************************************
+11:36:28.036 *
+11:36:28.562 Vdbench execution completed successfully. Output directory: /home/ubuntu/project3136859-386240/results/final/vdbench_v100_20260730/baseline_random_read_r5 
+

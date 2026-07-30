@@ -13,17 +13,21 @@
 - `sar -r` 与 `sar -B` 可运行；审计时系统平均内存使用约 1.75 GiB、
   major fault 为 0。它们是全机观测，不作为 CPU/GPU 路径的归因数据。
 
-## 当前无法可靠测量的指标
+## 2026-07-30 后续状态
 
 - `/usr/bin/perf` 只是缺失内核配套工具的包装器，执行 `perf stat` 报告
   `perf not found for kernel 5.15.0`。
-- `kernel.perf_event_paranoid=2`，且当前容器没有可用的 sudo 权限。
-- 未安装 Intel PCM；当前 Xeon 6505P 的 uncore PMU 没有内核导出的命名 IMC
-  event。不能猜测 raw event 编号后把结果称为 DRAM 带宽。
+- 2026-07-30 已从 Intel 官方仓库固定
+  `4246ea47f27c471bcc8484c065886f31f449933e` 并在
+  `third_party/manual/pcm/build/` 成功编译 PCM。`pcm-memory` 正确识别
+  Xeon 6505P（Granite Rapids），但当前会话缺少 `/dev/cpu/*/msr`、ACPI MCFG
+  和 uncore PCI 配置空间；`PCM_NO_MSR=1` 也明确报告无法访问内存控制器。
+  随后管理员已在宿主机加载 MSR 并完成五轮正式实验，结果见
+  `../pcm_dram_v100_20260730/`。DRAM bandwidth 阻塞已经解除，结果显示 GPU
+  路径显著增加主机 DRAM 写带宽。
 
-因此，本轮可以比较主机 CPU 时间、进程内存容量、缺页和上下文切换，但不能声称
-已经测得 DRAM 控制器带宽或 LLC miss。部署环境补齐匹配内核的 `linux-tools` 或
-Intel PCM 后，应按相同场景补测。
+当前只剩 cycles/LLC miss 仍受匹配内核 perf 缺失影响；不能把 PCM IMC 带宽
+替代为 cache miss。
 
 ## 存储设备
 

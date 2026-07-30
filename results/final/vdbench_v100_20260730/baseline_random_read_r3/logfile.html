@@ -1,0 +1,68 @@
+<title>Vdbench baseline_random_read_r3/logfile.html</title><pre>
+Copyright (c) 2000, 2018, Oracle and/or its affiliates. All rights reserved.
+Vdbench distribution: vdbench50407
+
+11:29:25.139 input argument scanned: '-fresults/final/vdbench_v100_20260730/baseline_random_read_r3.par'
+11:29:25.139 input argument scanned: '-oresults/final/vdbench_v100_20260730/baseline_random_read_r3'
+11:29:25.139 java.vendor                   Temurin
+11:29:25.140 java.home                     /home/ubuntu/project3136859-386240/third_party/manual/java8
+11:29:25.140 java.vm.specification.version 1.8
+11:29:25.140 java.vm.version               25.492-b09
+11:29:25.140 java.vm.vendor                Temurin
+11:29:25.140 java.specification.version    1.8
+11:29:25.140 java.class.version            52.0
+11:29:25.140 user.name                     ubuntu
+11:29:25.140 user.dir                      /home/ubuntu/project3136859-386240
+11:29:25.140 java.io.tmpdir                /tmp
+11:29:25.140 java.class.path               /home/ubuntu/project3136859-386240/third_party/manual/vdbench50407/:/home/ubuntu/project3136859-386240/third_party/manual/vdbench50407/classes:/home/ubuntu/project3136859-386240/third_party/manual/vdbench50407/vdbench.jar
+11:29:25.140 os.name                       Linux
+11:29:25.140 os.arch                       amd64
+11:29:25.140 os.version                    5.15.0
+11:29:25.140 sun.arch.data.model           64
+11:29:25.148 Flushing all reports
+11:29:25.279 Starting slave: /home/ubuntu/project3136859-386240/third_party/manual/vdbench50407/vdbench SlaveJvm -m localhost -n localhost-10-260730-11.29.25.103 -l localhost-0 -p 5570   
+11:29:25.570 Slave localhost-0 (pid 231128) connected to master 231081
+11:29:25.607 All slaves are now connected
+11:29:25.695 sd=sd1,lun=/tmp/gpuc-vdbench-LBGM8i/baseline.bin lun size: 268,435,456 bytes; 0.2500 GB (1024**3); 0.2684 GB (1000**3)
+
+Link to Run Definitions:         <A HREF="#_463345942">randread For loops: None</A>
+
+11:29:25.735 Flushing all reports
+11:29:25.789 Waiting for synchronization of all slaves
+11:29:26.390 Synchronization of all slaves complete
+
+<a name="_463345942"></a><i><b>11:29:27.003 Starting RD=randread; I/O rate: Uncontrolled MAX; elapsed=10 warmup=2; For loops: None</b></i>
+
+
+Jul 30, 2026    interval        i/o   MB/sec   bytes   read     resp     read    write     read    write     resp  queue  cpu%  cpu%
+                               rate  1024**2     i/o    pct     time     resp     resp      max      max   stddev  depth sys+u   sys
+11:29:28.069           1   460241.0  1797.82    4096 100.00    0.003    0.003    0.000     0.05     0.00    0.003    1.4  11.1   3.4
+11:29:29.015           2   557841.0  2179.07    4096 100.00    0.003    0.003    0.000     0.05     0.00    0.003    1.6  18.2   7.4
+11:29:30.011           3   569929.0  2226.29    4096 100.00    0.003    0.003    0.000     0.05     0.00    0.003    1.6  17.4   7.6
+11:29:31.010           4   533430.0  2083.71    4096 100.00    0.003    0.003    0.000     0.05     0.00    0.003    1.5  17.1   7.1
+11:29:32.008           5   521567.0  2037.37    4096 100.00    0.003    0.003    0.000     0.06     0.00    0.003    1.6  17.2   6.9
+11:29:33.007           6   539574.0  2107.71    4096 100.00    0.003    0.003    0.000     0.05     0.00    0.003    1.6  17.3   7.5
+11:29:34.007           7   530412.0  2071.92    4096 100.00    0.003    0.003    0.000     0.05     0.00    0.003    1.6  17.6   7.8
+11:29:35.009           8   534644.0  2088.45    4096 100.00    0.003    0.003    0.000     0.06     0.00    0.003    1.6  17.3   7.0
+11:29:36.008           9   540963.0  2113.14    4096 100.00    0.003    0.003    0.000     0.05     0.00    0.003    1.6  17.5   7.2
+11:29:37.008          10   552555.0  2158.42    4096 100.00    0.003    0.003    0.000     0.05     0.00    0.003    1.6  17.6   7.4
+11:29:38.010          11   519977.0  2031.16    4096 100.00    0.003    0.003    0.000     0.05     0.00    0.003    1.6  17.5   7.3
+11:29:39.019          12   538724.0  2104.39    4096 100.00    0.003    0.003    0.000     0.07     0.00    0.003    1.6  17.5   7.4
+11:29:39.027    avg_3-12   538177.5  2102.26    4096 100.00    0.003    0.003    0.000     0.07     0.00    0.003    1.6  17.4   7.3
+11:29:39.037 *
+11:29:39.037 ****************************************************************************************
+11:29:39.037 * Warning: total amount of i/o per second per slave (538,178) greater than 100,000.    *
+11:29:39.037 * You may need to adjust your total slave count.                                       *
+11:29:39.037 *                                                                                      *
+11:29:39.037 * See 'jvms=' in documentation for raw (SD/WD) workloads).                             *
+11:29:39.038 * See 'host=' and/or 'clients=' in documentation for file system (FSD/FWD) workloads). *
+11:29:39.038 *                                                                                      *
+11:29:39.038 * rd=randread actively used 1 slaves.                                                  *
+11:29:39.039 ****************************************************************************************
+11:29:39.040 *
+11:29:39.241 Flushing all reports
+11:29:39.242 Java Heap in MB. max:  455.500; current:   61.500; used:   29.763; free:   31.737
+11:29:39.304 Ending Reporter
+11:29:39.838 Vdbench execution completed successfully. Output directory: /home/ubuntu/project3136859-386240/results/final/vdbench_v100_20260730/baseline_random_read_r3 
+
+11:29:40.843 Java Heap in MB. max:  455.500; current:   77.500; used:   17.527; free:   59.973

@@ -1,4 +1,4 @@
-* Replace @LUN@ and @SIZE@ through tests/vdbench_benchmark.sh.
-sd=sd1,lun=@LUN@,openflags=o_direct,size=@SIZE@
+* Fair buffered comparison: GPUC RAW compact headers are not O_DIRECT aligned.
+sd=sd1,lun=@LUN@,size=@SIZE@,threads=@THREADS@
 wd=randread,sd=sd1,xfersize=4k,rdpct=100,seekpct=100
-rd=randread,wd=randread,iorate=max,elapsed=@ELAPSED@,interval=1
+rd=randread,wd=randread,iorate=max,warmup=@WARMUP@,elapsed=@ELAPSED@,interval=1
