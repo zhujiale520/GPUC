@@ -347,6 +347,9 @@ typedef struct {
     uint32_t last_read_block; /* 上次读取的结束 block */
     int seq_count;            /* 连续顺序读取计数 */
     int ra_max_blocks;        /* 当前预读窗口大小 */
+    off64_t lz4_last_read_end;
+    int lz4_has_last_read;
+    int lz4_seq_count;
     /* block cache：缓存最近读取的一个 block，加速小块随机读 */
     uint32_t cache_block_id;
     uint8_t *cache_buf;
@@ -703,32 +706,75 @@ static __thread uint8_t **g_tls_batch_in_ptrs = NULL;
 static __thread uint8_t **g_tls_batch_out_ptrs = NULL;
 static __thread size_t *g_tls_batch_in_lens = NULL;
 static __thread size_t *g_tls_batch_out_lens = NULL;
+static __thread size_t g_tls_batch_capacity = 0;
+static __thread int g_tls_batch_comp_pinned = 0;
+static __thread int g_tls_batch_decomp_pinned = 0;
 
-static int ensure_batch_tls_buffers(void) {
-    if (!g_tls_batch_comp_bufs) {
-        tls_alloc(g_tls_batch_comp_bufs, TLS_BATCH_CAPACITY * GC_NCHUNKS * GC_SLOT_SIZE);
-        if (!g_tls_batch_comp_bufs) return -1;
+static uint8_t *alloc_batch_bytes(size_t size, int *pinned) {
+    uint8_t *result = NULL;
+    *pinned = 0;
+#if !defined(CPU_ONLY_BUILD) && !defined(GPUC_NO_PINNED)
+    if (gpu_tls_alloc_pinned((void **)&result, size) == 0) {
+        *pinned = 1;
+        return result;
     }
-    if (!g_tls_batch_decomp_bufs) {
-        tls_alloc(g_tls_batch_decomp_bufs, TLS_BATCH_CAPACITY * GPUC_BLOCK_SIZE);
-        if (!g_tls_batch_decomp_bufs) return -1;
+#endif
+    return (uint8_t *)malloc(size);
+}
+
+static void free_batch_bytes(uint8_t *ptr, int pinned) {
+    if (!ptr) return;
+    if (pinned) gpu_tls_free_pinned(ptr);
+    else free(ptr);
+}
+
+static int ensure_batch_tls_buffers(size_t requested_blocks) {
+    if (requested_blocks < 1) requested_blocks = 1;
+    if (requested_blocks > TLS_BATCH_CAPACITY) {
+        errno = EOVERFLOW;
+        return -1;
     }
-    if (!g_tls_batch_in_ptrs) {
-        g_tls_batch_in_ptrs = (uint8_t **)malloc(TLS_BATCH_CAPACITY * sizeof(uint8_t *));
-        if (!g_tls_batch_in_ptrs) return -1;
+    if (g_tls_batch_capacity >= requested_blocks) return 0;
+
+    size_t new_capacity = 1;
+    while (new_capacity < requested_blocks) new_capacity <<= 1;
+    if (new_capacity > TLS_BATCH_CAPACITY)
+        new_capacity = TLS_BATCH_CAPACITY;
+
+    int comp_pinned = 0, decomp_pinned = 0;
+    uint8_t *comp = alloc_batch_bytes(
+        new_capacity * GC_NCHUNKS * GC_SLOT_SIZE, &comp_pinned);
+    uint8_t *decomp = alloc_batch_bytes(
+        new_capacity * GPUC_BLOCK_SIZE, &decomp_pinned);
+    uint8_t **in_ptrs = (uint8_t **)malloc(new_capacity * sizeof(uint8_t *));
+    uint8_t **out_ptrs = (uint8_t **)malloc(new_capacity * sizeof(uint8_t *));
+    size_t *in_lens = (size_t *)malloc(new_capacity * sizeof(size_t));
+    size_t *out_lens = (size_t *)malloc(new_capacity * sizeof(size_t));
+    if (!comp || !decomp || !in_ptrs || !out_ptrs || !in_lens || !out_lens) {
+        free_batch_bytes(comp, comp_pinned);
+        free_batch_bytes(decomp, decomp_pinned);
+        free(in_ptrs);
+        free(out_ptrs);
+        free(in_lens);
+        free(out_lens);
+        return -1;
     }
-    if (!g_tls_batch_out_ptrs) {
-        g_tls_batch_out_ptrs = (uint8_t **)malloc(TLS_BATCH_CAPACITY * sizeof(uint8_t *));
-        if (!g_tls_batch_out_ptrs) return -1;
-    }
-    if (!g_tls_batch_in_lens) {
-        g_tls_batch_in_lens = (size_t *)malloc(TLS_BATCH_CAPACITY * sizeof(size_t));
-        if (!g_tls_batch_in_lens) return -1;
-    }
-    if (!g_tls_batch_out_lens) {
-        g_tls_batch_out_lens = (size_t *)malloc(TLS_BATCH_CAPACITY * sizeof(size_t));
-        if (!g_tls_batch_out_lens) return -1;
-    }
+
+    free_batch_bytes(g_tls_batch_comp_bufs, g_tls_batch_comp_pinned);
+    free_batch_bytes(g_tls_batch_decomp_bufs, g_tls_batch_decomp_pinned);
+    free(g_tls_batch_in_ptrs);
+    free(g_tls_batch_out_ptrs);
+    free(g_tls_batch_in_lens);
+    free(g_tls_batch_out_lens);
+    g_tls_batch_comp_bufs = comp;
+    g_tls_batch_decomp_bufs = decomp;
+    g_tls_batch_in_ptrs = in_ptrs;
+    g_tls_batch_out_ptrs = out_ptrs;
+    g_tls_batch_in_lens = in_lens;
+    g_tls_batch_out_lens = out_lens;
+    g_tls_batch_comp_pinned = comp_pinned;
+    g_tls_batch_decomp_pinned = decomp_pinned;
+    g_tls_batch_capacity = new_capacity;
     return 0;
 }
 
@@ -1018,7 +1064,9 @@ static ssize_t read_compressed(int fd, fd_info_t *info, void *buf, size_t count)
 #endif
     decomp_async_fn_t decomp_async = use_cpu ? cpu_decompress_batch_compact_async : g_backend_decompress_batch_compact_async;
     decomp_wait_fn_t  decomp_wait  = use_cpu ? cpu_decompress_batch_compact_wait  : g_backend_decompress_batch_compact_wait;
-    if (ensure_tls_buffers() != 0 || ensure_batch_tls_buffers() != 0 || ensure_pipe_buffers() != 0) {
+    if (ensure_tls_buffers() != 0 ||
+        ensure_batch_tls_buffers(MAX_BATCH_BLOCKS) != 0 ||
+        ensure_pipe_buffers() != 0) {
         errno = ENOMEM;
         return -1;
     }
@@ -1353,20 +1401,58 @@ static ssize_t read_compressed(int fd, fd_info_t *info, void *buf, size_t count)
  *  consecutive blocks in one call and retain the logical result as read-ahead.
  * ============================================================ */
 
+static pthread_once_t g_lz4_ra_once = PTHREAD_ONCE_INIT;
+static int g_lz4_adaptive_readahead = 1;
+
+static void configure_lz4_readahead(void) {
+    const char *value = getenv("GPUC_LZ4_ADAPTIVE_READAHEAD");
+    if (value && strcmp(value, "0") == 0)
+        g_lz4_adaptive_readahead = 0;
+}
+
+static int choose_lz4_readahead_blocks(fd_info_t *info, off64_t start,
+                                       size_t count) {
+    pthread_once(&g_lz4_ra_once, configure_lz4_readahead);
+    if (!g_lz4_adaptive_readahead) return LZ4_BATCH_BLOCKS;
+
+    uint32_t first = (uint32_t)(start / GPUC_BLOCK_SIZE);
+    uint32_t last = (uint32_t)((start + (off64_t)count - 1) /
+                               GPUC_BLOCK_SIZE);
+    int requested = (int)(last - first + 1);
+    if (info->lz4_has_last_read && start == info->lz4_last_read_end)
+        info->lz4_seq_count++;
+    else
+        info->lz4_seq_count = 0;
+
+    int window = requested;
+    if (info->lz4_seq_count >= 3 && window < LZ4_BATCH_BLOCKS)
+        window = LZ4_BATCH_BLOCKS;
+    else if (info->lz4_seq_count >= 2 && window < 16)
+        window = 16;
+    else if (info->lz4_seq_count >= 1 && window < 8)
+        window = 8;
+    if (window > LZ4_BATCH_BLOCKS) window = LZ4_BATCH_BLOCKS;
+    return window;
+}
+
 static int fill_lz4_readahead(int fd, fd_info_t *info, uint32_t first_block,
-                              int use_cpu) {
-    if (ensure_batch_tls_buffers() != 0) {
-        errno = ENOMEM;
-        return -1;
-    }
+                              int requested_blocks, int use_cpu) {
+    if (requested_blocks < 1) requested_blocks = 1;
+    if (requested_blocks > LZ4_BATCH_BLOCKS)
+        requested_blocks = LZ4_BATCH_BLOCKS;
     if (ensure_readahead_buffer(
-            info, LZ4_BATCH_BLOCKS * GPUC_BLOCK_SIZE) != 0) {
+            info, (size_t)requested_blocks * GPUC_BLOCK_SIZE) != 0) {
         errno = ENOMEM;
         return -1;
     }
 
     uint32_t remaining = info->hdr.num_blocks - first_block;
-    int nblocks = remaining < LZ4_BATCH_BLOCKS ? (int)remaining : LZ4_BATCH_BLOCKS;
+    int nblocks = remaining < (uint32_t)requested_blocks
+        ? (int)remaining : requested_blocks;
+    if (ensure_batch_tls_buffers((size_t)nblocks) != 0) {
+        errno = ENOMEM;
+        return -1;
+    }
     int ncompressed = 0;
     size_t logical_len = 0;
     const size_t input_stride = GC_NCHUNKS * GC_SLOT_SIZE;
@@ -1440,19 +1526,22 @@ static ssize_t read_compressed_at_lz4(int fd, fd_info_t *info, void *buf,
 #endif
     off64_t start = offset;
     off64_t log_size = get_logical_size(info);
+    if (count == 0) return 0;
     if (start >= log_size) return 0;
     if (start + (off64_t)count > log_size)
         count = (size_t)(log_size - start);
 
     uint8_t *out_ptr = (uint8_t *)buf;
     size_t total_read = 0;
+    int readahead_blocks = choose_lz4_readahead_blocks(info, start, count);
 
     while (count > 0) {
         off64_t ra_end = info->ra_start_offset + (off64_t)info->ra_valid_len;
         if (!info->ra_active || start < info->ra_start_offset || start >= ra_end) {
             uint32_t block_id = (uint32_t)(start / GPUC_BLOCK_SIZE);
             if (block_id >= info->hdr.num_blocks ||
-                fill_lz4_readahead(fd, info, block_id, use_cpu) != 0)
+                fill_lz4_readahead(fd, info, block_id,
+                                   readahead_blocks, use_cpu) != 0)
                 return total_read > 0 ? (ssize_t)total_read : -1;
             ra_end = info->ra_start_offset + (off64_t)info->ra_valid_len;
         }
@@ -1467,6 +1556,8 @@ static ssize_t read_compressed_at_lz4(int fd, fd_info_t *info, void *buf,
         total_read += to_copy;
     }
 
+    info->lz4_last_read_end = offset + (off64_t)total_read;
+    info->lz4_has_last_read = 1;
     return (ssize_t)total_read;
 }
 
@@ -1521,7 +1612,9 @@ static ssize_t read_compressed_at_unlocked(int fd, fd_info_t *info, void *buf,
 #endif
     decomp_async_fn_t decomp_async = use_cpu ? cpu_decompress_batch_compact_async : g_backend_decompress_batch_compact_async;
     decomp_wait_fn_t  decomp_wait  = use_cpu ? cpu_decompress_batch_compact_wait  : g_backend_decompress_batch_compact_wait;
-    if (ensure_tls_buffers() != 0 || ensure_batch_tls_buffers() != 0 || ensure_pipe_buffers() != 0) {
+    if (ensure_tls_buffers() != 0 ||
+        ensure_batch_tls_buffers(MAX_BATCH_BLOCKS) != 0 ||
+        ensure_pipe_buffers() != 0) {
         errno = ENOMEM;
         return -1;
     }

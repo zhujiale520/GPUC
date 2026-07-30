@@ -372,6 +372,26 @@ bash tests/vdbench_benchmark.sh
 读写。输出包含逐轮 Vdbench HTML、直方图、`runs.csv`、95% CI、环境和逻辑
 SHA-256。直方图 p95/p99 是桶上界。COMPRESSED 是只读对象，不运行混合写。
 
+#### LZ4 请求感知预读严格 A/B
+
+```bash
+GPUC_RESULT_DIR=results/local/lz4_adaptive_ab \
+GPUC_SIZE=256M GPUC_RUNTIME=3 GPUC_REPEATS=5 \
+GPUC_THREAD_LIST='1 4' \
+GPUC_WORKLOADS='randread:4k randread:128k read:128k' \
+bash tests/lz4_readahead_ab.sh
+```
+
+脚本只准备一个不可变 LZ4 COMPRESSED 文件，在独立 fio 进程中以
+`GPUC_LZ4_ADAPTIVE_READAHEAD=0/1` 切换旧固定 32-block 与新请求感知策略。
+输出 60 个 fio JSON、GNU time 最大 RSS、逐轮吞吐/CPU/p99 以及 mean 和 95% CI。
+正式结果见 `results/final/lz4_adaptive_readahead_v100_20260730/`。
+
+只复测 LZ4 Vdbench 时可设置
+`GPUC_READ_SCENARIOS=lz4 GPUC_READ_WORKLOADS='seq_read random_read'
+GPUC_RUN_MIXED=0`。runner 只准备被选择的格式，并显式给 daemon 设置算法，避免
+调用者遗留 `GPUC_ALGO` 污染实验。
+
 ### 4.16 Intel PCM DRAM bandwidth
 
 Intel PCM 需要 root 访问 MSR、ACPI MCFG 和服务器 uncore PCI 空间。不得把密码

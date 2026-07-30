@@ -1,0 +1,23 @@
+	Command being timed: "env GPUC_LZ4_ADAPTIVE_READAHEAD=1 LD_PRELOAD=/home/ubuntu/project3136859-386240/bin/libgpuhook.so GPUCOMPRESS_QUIET=1 fio --name=adaptive_read_128k_t4_r1 --filename=/tmp/gpuc-lz4-ra-BPpQLY/lz4/data.bin --size=256M --rw=read --bs=128k --direct=0 --invalidate=0 --ioengine=sync --iodepth=1 --thread=1 --numjobs=4 --runtime=3 --time_based --group_reporting --readonly --randrepeat=1 --norandommap=1 --percentile_list=99 --output-format=json --output=/home/ubuntu/project3136859-386240/results/local/lz4_adaptive_final_v100_20260730/json/adaptive_read_128k_t4_r1.json"
+	User time (seconds): 11.64
+	System time (seconds): 0.75
+	Percent of CPU this job got: 330%
+	Elapsed (wall clock) time (h:mm:ss or m:ss): 0:03.75
+	Average shared text size (kbytes): 0
+	Average unshared data size (kbytes): 0
+	Average stack size (kbytes): 0
+	Average total size (kbytes): 0
+	Maximum resident set size (kbytes): 583812
+	Average resident set size (kbytes): 0
+	Major (requiring I/O) page faults: 102698
+	Minor (reclaiming a frame) page faults: 25581
+	Voluntary context switches: 5560
+	Involuntary context switches: 60
+	Swaps: 0
+	File system inputs: 0
+	File system outputs: 16
+	Socket messages sent: 0
+	Socket messages received: 0
+	Signals delivered: 0
+	Page size (bytes): 4096
+	Exit status: 0

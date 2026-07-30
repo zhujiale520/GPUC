@@ -1,0 +1,14 @@
+run_id=20260730T131619Z
+git_commit=617236c27b22c82ace74bc2f1cfff7dfcf3fa7ac
+kernel=Linux 5.15.0 #1 SMP Tue May 19 16:02:33 UTC 2026 x86_64 GNU/Linux
+gpu=Tesla V100-SXM2-32GB, 570.181, 7.0
+fio=fio-3.16
+size=256M
+runtime_s=3
+repeats=5
+threads=1 4
+workloads=randread:4k randread:128k read:128k
+cache=warm buffered; physical file pre-read before each sample
+legacy=GPUC_LZ4_ADAPTIVE_READAHEAD=0, fixed 32 blocks
+adaptive=random starts at requested blocks; sequential grows 1/8/16/32
+logical_sha256=39a20f5a9007a2dca89ca6d7f19bdf78e86b4467aba8ac0b25a7deb3ccf3635b

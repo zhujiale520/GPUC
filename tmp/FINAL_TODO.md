@@ -136,6 +136,13 @@
   SGLZ/LZ4、4/16/128 KiB、1/4 线程、每组五轮，共 60/60 样本无超时、
   fio error=0、逻辑 SHA-256 一致，最大墙钟时间 3.785 s（fio runtime 3 s）。
   结果见 `results/final/fio_compressed_threads_v100_20260730/`。
+- [x] 修复 LZ4 小请求读取放大：旧路径一次 4 KiB cache miss 固定读取和解压
+  `32 × 128 KiB = 4 MiB`。新路径随机访问只处理请求覆盖 block，连续访问窗口按
+  1/8/16/32 增长，并让 TLS batch buffer 按需扩容。严格 fio A/B 共 60/60
+  样本通过；4 KiB 随机读提高 4.19–4.90 倍、p99 降低 89.5%–91.0%，顺序读
+  95% CI 重叠。Vdbench 五轮随机/顺序读提高到 2.156/65.278 MB/s。
+- [x] 修复 Vdbench runner 的场景隔离：只准备选定格式，SGLZ/LZ4 daemon
+  显式指定算法，末尾只校验已准备文件，避免环境变量污染和无关场景耗时。
 - [x] 修复 fio 混合读写触发的 RAW 长度错误：补齐 `ftruncate64`、
   `fallocate(64)`、`posix_fallocate(64)`，并禁止内部物理长度查询再次经过 Hook。
 - [x] 公开真实数据集：Project Gutenberg #2600，固定 URL、许可证、更新时间、

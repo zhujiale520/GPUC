@@ -31,6 +31,8 @@ checkpoint `035e42b02a5a2a929c14c0de8fa1f1a5e86088b8` 为起点，随后加入�
 | `stability_10m_v100_20260729/` | 256 MiB、128 KiB、持续 600 秒 | fio error=0，600 个带宽样本，前后逻辑 SHA 一致 |
 | `coverage_cpu_20260729/` | GCC/gcov CPU Hook/Daemon/SGLZ/LZ4 | Hook 行 41.38%、分支执行 50.06%；CI 最低门槛 35% |
 | `vdbench_v100_20260730/` | Vdbench 5.04.07，256 MiB，4 线程，三类 workload，各五轮 | 50/50 样本通过且 SHA 一致；共享 fd 正确性已修复，压缩随机读仍是明确短板 |
+| `lz4_adaptive_readahead_v100_20260730/` | 同一 LZ4 文件，固定 32-block 与请求感知预读严格 fio A/B，60 个样本 | 4 KiB 随机读提高 4.19–4.90 倍、p99 降低约 89.5%–91.0%；顺序读 CI 重叠 |
+| `vdbench_lz4_adaptive_v100_20260730/` | 自适应 LZ4，Vdbench 4 线程、两类只读 workload、各五轮 | 10/10 通过；随机读 2.156 ±0.038 MB/s，顺序读 65.278 ±3.795 MB/s |
 | `pcm_dram_v100_20260730/` | 第一版 16 MiB Intel PCM，各五轮 | cache-resident 方法学反例，不再作为主结论 |
 | `pcm_dram_512m_v100_20260730/` | 512 MiB 轮转工作集、稳态 PCM，各五轮 | GPU/CPU 总 DRAM 带宽 4569.51/8745.46 MB/s，GPU 低 47.75%；D2H 写回仍约 4483.11 MB/s |
 | `perf_offload_v100_20260730/` | 稳态进程及继承线程通用 perf 事件，各五轮 | GPU 相对 CPU 业务吞吐 +4.06%，instructions -2.43%，通用 cache misses -99.87% |

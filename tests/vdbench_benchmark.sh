@@ -78,6 +78,14 @@ RAW="$TEST_DIR/raw/data.bin"
 SGLZ="$TEST_DIR/sglz/data.bin"
 LZ4="$TEST_DIR/lz4/data.bin"
 
+has_read_scenario() {
+    local wanted=$1 scenario
+    for scenario in $READ_SCENARIOS; do
+        [[ "$scenario" = "$wanted" ]] && return 0
+    done
+    return 1
+}
+
 python3 - "$BASE" "$SIZE_BYTES" <<'PY'
 import sys
 
@@ -90,11 +98,19 @@ with open(path, "wb", buffering=1024 * 1024) as f:
         f.write(bytes([value]) * length)
 PY
 
-LD_PRELOAD="$HOOK" GPUCOMPRESS_QUIET=1 cp "$BASE" "$RAW"
-LD_PRELOAD="$HOOK" GPUCOMPRESS_QUIET=1 cp "$BASE" "$SGLZ"
-LD_PRELOAD="$HOOK" GPUCOMPRESS_QUIET=1 cp "$BASE" "$LZ4"
-"$DAEMON" "$TEST_DIR/sglz" > "$RESULT_DIR/daemon_sglz.log" 2>&1
-GPUC_ALGO=lz4 "$DAEMON" "$TEST_DIR/lz4" > "$RESULT_DIR/daemon_lz4.log" 2>&1
+if has_read_scenario hook_raw || [[ "$RUN_MIXED" = 1 ]]; then
+    LD_PRELOAD="$HOOK" GPUCOMPRESS_QUIET=1 cp "$BASE" "$RAW"
+fi
+if has_read_scenario sglz; then
+    LD_PRELOAD="$HOOK" GPUCOMPRESS_QUIET=1 cp "$BASE" "$SGLZ"
+    GPUC_ALGO=sglz "$DAEMON" "$TEST_DIR/sglz" \
+        > "$RESULT_DIR/daemon_sglz.log" 2>&1
+fi
+if has_read_scenario lz4; then
+    LD_PRELOAD="$HOOK" GPUCOMPRESS_QUIET=1 cp "$BASE" "$LZ4"
+    GPUC_ALGO=lz4 "$DAEMON" "$TEST_DIR/lz4" \
+        > "$RESULT_DIR/daemon_lz4.log" 2>&1
+fi
 
 state_of() {
     python3 - "$1" <<'PY'
@@ -121,16 +137,30 @@ logical_sha() {
 }
 
 BASE_SHA="$(logical_sha "$BASE" "")"
-RAW_SHA="$(logical_sha "$RAW" yes)"
-SGLZ_SHA="$(logical_sha "$SGLZ" yes)"
-LZ4_SHA="$(logical_sha "$LZ4" yes)"
-[[ "$BASE_SHA" = "$RAW_SHA" && "$BASE_SHA" = "$SGLZ_SHA" && "$BASE_SHA" = "$LZ4_SHA" ]] || {
-    echo "ERROR: setup logical checksum mismatch." >&2
-    exit 1
-}
-[[ "$(state_of "$RAW")" = RAW ]] || { echo "ERROR: RAW state invalid." >&2; exit 1; }
-[[ "$(state_of "$SGLZ")" = COMPRESSED ]] || { echo "ERROR: SGLZ state invalid." >&2; exit 1; }
-[[ "$(state_of "$LZ4")" = COMPRESSED ]] || { echo "ERROR: LZ4 state invalid." >&2; exit 1; }
+RAW_SHA="not-prepared"
+SGLZ_SHA="not-prepared"
+LZ4_SHA="not-prepared"
+if has_read_scenario hook_raw || [[ "$RUN_MIXED" = 1 ]]; then
+    RAW_SHA="$(logical_sha "$RAW" yes)"
+    [[ "$BASE_SHA" = "$RAW_SHA" && "$(state_of "$RAW")" = RAW ]] || {
+        echo "ERROR: RAW setup validation failed." >&2
+        exit 1
+    }
+fi
+if has_read_scenario sglz; then
+    SGLZ_SHA="$(logical_sha "$SGLZ" yes)"
+    [[ "$BASE_SHA" = "$SGLZ_SHA" && "$(state_of "$SGLZ")" = COMPRESSED ]] || {
+        echo "ERROR: SGLZ setup validation failed." >&2
+        exit 1
+    }
+fi
+if has_read_scenario lz4; then
+    LZ4_SHA="$(logical_sha "$LZ4" yes)"
+    [[ "$BASE_SHA" = "$LZ4_SHA" && "$(state_of "$LZ4")" = COMPRESSED ]] || {
+        echo "ERROR: LZ4 setup validation failed." >&2
+        exit 1
+    }
+fi
 
 {
     echo "run_id=$RUN_ID"
@@ -158,9 +188,9 @@ LZ4_SHA="$(logical_sha "$LZ4" yes)"
     echo "raw_sha256=$RAW_SHA"
     echo "sglz_sha256=$SGLZ_SHA"
     echo "lz4_sha256=$LZ4_SHA"
-    echo "raw_state=$(state_of "$RAW")"
-    echo "sglz_state=$(state_of "$SGLZ")"
-    echo "lz4_state=$(state_of "$LZ4")"
+    echo "raw_state=$([[ -f "$RAW" ]] && state_of "$RAW" || echo not-prepared)"
+    echo "sglz_state=$([[ -f "$SGLZ" ]] && state_of "$SGLZ" || echo not-prepared)"
+    echo "lz4_state=$([[ -f "$LZ4" ]] && state_of "$LZ4" || echo not-prepared)"
 } > "$RESULT_DIR/environment.txt"
 
 echo "scenario,workload,repeat,iops,mb_s,resp_ms,read_resp_ms,write_resp_ms,max_resp_ms,p95_bucket_ms,p99_bucket_ms,queue_depth,host_cpu_pct,host_sys_pct,state,sha256" \
@@ -320,9 +350,15 @@ done
 
 # Read-only source files must be unchanged after all Vdbench samples.
 [[ "$(logical_sha "$BASE" "")" = "$BASE_SHA" ]]
-[[ "$(logical_sha "$RAW" yes)" = "$RAW_SHA" ]]
-[[ "$(logical_sha "$SGLZ" yes)" = "$SGLZ_SHA" ]]
-[[ "$(logical_sha "$LZ4" yes)" = "$LZ4_SHA" ]]
+if has_read_scenario hook_raw || [[ "$RUN_MIXED" = 1 ]]; then
+    [[ "$(logical_sha "$RAW" yes)" = "$RAW_SHA" ]]
+fi
+if has_read_scenario sglz; then
+    [[ "$(logical_sha "$SGLZ" yes)" = "$SGLZ_SHA" ]]
+fi
+if has_read_scenario lz4; then
+    [[ "$(logical_sha "$LZ4" yes)" = "$LZ4_SHA" ]]
+fi
 
 python3 - "$RESULT_DIR/runs.csv" "$RESULT_DIR/summary.csv" <<'PY'
 import csv

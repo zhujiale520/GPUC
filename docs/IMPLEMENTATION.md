@@ -178,7 +178,12 @@ CPU-only 构建产物。
 2. 将用户请求的逻辑 offset 转换为 block_id；
 3. 检查 per-fd single-block cache，命中则直接 `memcpy` 返回；
 4. 未命中则进入 batch 解压路径：
-   - 自适应 read-ahead：检测顺序/随机访问模式，顺序时预读窗口逐步扩展至 16 blocks；
+   - SGLZ 使用既有自适应 read-ahead，检测顺序/随机访问模式；
+   - LZ4 默认使用请求感知窗口：随机访问只覆盖本次请求所需 block，连续访问按
+     `1 → 8 → 16 → 32` blocks 增长；设置
+     `GPUC_LZ4_ADAPTIVE_READAHEAD=0` 可恢复固定 32-block 行为用于消融；
+   - 每线程 LZ4 compressed/decompressed TLS batch buffer 按窗口以 2 的幂
+     增长，不再由首个 4 KiB 随机请求直接分配 32-block 容量；
    - 通过 io_uring 批量异步预读后续 block 的压缩数据；
    - 将紧凑格式数据一次性 H2D 拷贝到 GPU；
    - 启动 `sglz_decompress_compact_kernel` 同时解压最多 16×32=512 个 chunks；
