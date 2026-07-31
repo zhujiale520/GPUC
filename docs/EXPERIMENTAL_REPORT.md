@@ -1,6 +1,6 @@
 # GPUC 决赛实验报告
 
-> 更新日期：2026-07-29
+> 更新日期：2026-07-31
 > 本报告只采用 `results/final/` 中可复核的结果。此前报告中的 jobs=32
 > “99.8%”、混合缓存口径和未重复实验均已撤下；2026-07-29 已完成对齐格式，
 > 新的 O_DIRECT 结果与旧的伪 O_DIRECT 结果严格区分。
@@ -12,7 +12,7 @@ GPUC 使用 `LD_PRELOAD` 拦截一组 libc 文件接口，在 RAW 文件关闭�
 接口访问普通文件的程序，不覆盖静态链接、直接 syscall、应用自行提交的 io_uring
 或任意内核文件路径。
 
-本轮实验回答六个问题：
+本轮实验回答八个问题：
 
 1. 文件语义和并发替换是否正确；
 2. warm/cold cache 下真实吞吐如何；
@@ -20,6 +20,8 @@ GPUC 使用 `LD_PRELOAD` 拦截一组 libc 文件接口，在 RAW 文件关闭�
 4. 长期 GPU worker 是否能释放 CPU 并提高并行业务吞吐；
 5. SQLite 真实业务的 QPS 和尾延迟是否受益；
 6. 对齐压缩格式能否保留真正的 `O_DIRECT`。
+7. CPU/GPU 压缩侧在同一吞吐下是否也能降低主机 CPU；
+8. 逐块同步改成真正 nvCOMP batch 后，压缩路径改善多少。
 
 ## 2. 环境与方法
 
@@ -287,11 +289,36 @@ V100 板卡边界下，GPU 场景平均功耗约 59.97 W，空闲场景约 58.05
 按二者差值计算的增量能耗约 **0.482 J/GiB**。这不是 CPU package 或整机
 J/GiB：本机没有 RAPL、IPMI 或外部功率计，不能把板卡边界扩大解释。
 
-### 4.15 文件系统与 vdbench 前置条件
+### 4.15 文件系统压缩基线与 vdbench 前置条件
 
-仓库已增加 Btrfs/ZFS/DM 只读能力审计。本机无 root/CAP_SYS_ADMIN、无可见
-loop 节点，且没有 ZFS/zpool，因此文件系统横向基线仍只报告能力审计，
-不伪造性能结果。
+仓库已增加 Btrfs/ZFS/DM 能力审计，并将 `tests/btrfs_compare.sh` 重写为安全的
+一次性 loop 实验：只允许格式化脚本自行创建且经 backing-file 反查确认的
+`/dev/loopN`，通过 `compress-force=zstd:3` 和显式 defrag 保证尝试压缩，比较
+ext4 plain、ext4+GPUC LZ4、Btrfs zstd 的相同 SHA、空间、顺序/随机 fio、CPU
+和尾延迟。
+
+`results/final/btrfs_zstd_v100_20260731/` 使用每页带不同请求编号、但主体高度
+重复的合成日志型数据，已完成六组各五轮，30/30 个 fio 样本 `error=0` 且逻辑
+SHA-256 一致。`compsize -b` 确认全部 extent 使用 zstd，
+物理占用 8,388,608 B / 268,435,456 B，即 3.125%；`filefrag` 同时记录
+`encoded` 标志。GPUC LZ4 占用 16,867,328 B，即 6.284%。
+
+| 路径 | 128 KiB 顺序 MiB/s | 95% CI | 4 KiB 随机 MiB/s | 95% CI | 数据占用比 |
+|---|---:|---:|---:|---:|---:|
+| ext4 plain | 8256.55 | ±87.88 | 3652.34 | ±47.28 | 100.006% |
+| ext4 + GPUC LZ4 | 383.73 | ±6.95 | 2.114 | ±0.054 | 6.284% |
+| Btrfs zstd:3 | 8761.48 | ±150.49 | 3786.70 | ±24.85 | 3.125% |
+
+这组 fio 使用 `invalidate=0`，准备阶段也已把页面带入缓存，所以是
+**buffered warm-cache 应用可见路径**，不是 loop 后端或 NVMe 介质吞吐。
+普通 ext4 与 Btrfs 的计时读主要命中内核未压缩 page cache；GPUC 没有同等大小的
+完整逻辑页缓存，Hook cache miss 仍需索引、CUDA 调度、至少一个 128 KiB block
+解压、D2H 和应用拷贝。4 KiB 请求相对 128 KiB 压缩单元还有至少 32 倍粒度放大，
+因此 Btrfs/GPUC 随机读相差约 1791 倍。Btrfs 相对 plain 的顺序 +6.12%、
+随机 +3.68% 只能视为本机暖缓存波动/路径差异，不能归因于 zstd，也不能外推到
+NVMe。3.125%/6.284% 的空间比也只适用于该高度可压缩输入。当前可靠结论是
+Btrfs 压缩真实生效、该数据上的空间效率优于 GPUC LZ4，
+以及 GPUC 用户态逐请求路径仍有显著开销。ZFS/zpool 和 DM target 尚未实现。
 
 用户提供已接受 Oracle 许可的 Vdbench 5.04.07 后，项目使用私有 Temurin Java 8
 完成自检和正式实验。许可包与 Java 均位于被忽略的 `third_party/manual/`，
@@ -435,14 +462,202 @@ TLS 按需缓冲优化，不应替代上面的严格单变量 fio A/B。
 Baseline；结论仍是“GPU offload 减少主机 CPU/DRAM 竞争并提供压缩空间收益”，
 而不是“压缩文件读取已快于普通文件”。
 
+### 4.20 CPU/GPU LZ4 压缩侧公平实验
+
+审计发现 `gpu_lz4_compress_batch()` 名义上接收 32 个 block，旧实现却循环调用
+单块 API，并在每个 128 KiB block 后同步一次。当前实现增加独立的长期
+compression pool，把整批输入、指针和长度一次传入
+`nvcompBatchedLZ4CompressAsync`，只同步一次；环境变量
+`GPUC_LZ4_SERIAL_COMPRESS=1` 保留旧路径作为严格消融。Daemon 现在也会检查
+batch 返回数量，失败时终止原子转换，不再继续使用未定义输出。
+
+`results/final/lz4_compress_fair_v100_20260730/` 使用同一确定性 512 MiB
+工作集、128 KiB block、batch=32，各五轮。CPU 与 GPU batch 都限制为
+1024 MiB/s；旧 GPU serial 因达不到目标，按最大吞吐运行：
+
+| 路径 | 吞吐 MiB/s | 95% CI | 主机 CPU cores | 95% CI | 最大 RSS KiB |
+|---|---:|---:|---:|---:|---:|
+| CPU liblz4 | 1023.983 | ±0.001 | **0.276** | ±0.003 | 537233 |
+| GPU nvCOMP batch | 1023.984 | ±0.002 | 0.365 | ±0.002 | 645769 |
+| GPU 旧 serial | 55.821 | ±0.313 | 0.539 | ±0.005 | 631237 |
+
+真 batch 相对旧 serial 至少提高 **18.34 倍**，且三者压缩率均为 0.4936%，
+正确性预热逐块用 CPU LZ4 解压比对。但是同为 1024 MiB/s 时，GPU batch 的主机
+CPU 比 CPU liblz4 高约 32.0%，RSS 也更高。因此压缩侧当前只证明批量化大幅修复
+旧实现，**不支持“GPU 压缩降低主机 CPU”**；项目的主机 CPU 卸载结论只适用于
+4.7 节已经验证的解压侧。
+
+V100 板卡功耗由 `nvidia-smi` 采样，包含空闲板卡功耗。压缩侧 PCM 已使用同一
+512 MiB 工作集、128 KiB block、batch=32、约 1024 MiB/s 吞吐完成五轮，每轮
+汇总 9 个完整稳态一秒区间：
+
+| 路径 | DRAM Read MB/s | 95% CI | DRAM Write MB/s | 95% CI | DRAM Total MB/s | 95% CI |
+|---|---:|---:|---:|---:|---:|---:|
+| CPU | 1288.02 | ±4.85 | 108.83 | ±0.86 | 1396.85 | ±5.60 |
+| GPU | 1302.01 | ±31.77 | 507.38 | ±46.92 | 1809.39 | ±69.25 |
+
+GPU 总 DRAM bandwidth 高约 **29.53%**，主要因为写带宽高约 366.22%；读带宽
+只差约 1.09% 且 95% CI 重叠。相同吞吐下 GPU/CPU 主机成本为
+0.358/0.282 core，GPU 高约 26.95%，最大 RSS 高约 20.17%。因此压缩侧没有
+主机 CPU、DRAM bandwidth 或 RSS 优势；解压侧收益不能外推。PCM 是全系统 IMC
+口径。CPU package 与整机能效仍因没有 RAPL、IPMI 或外部功率计而无法测量。
+
+### 4.21 部署、真实扫描和外部参考状态
+
+`results/final/clean_deploy_gpu_v100_20260731/` 在新的临时路径中排除原
+`.git`、`bin`、历史结果、PPT、node_modules 和手工许可包，使用随仓依赖重新生成
+构建产物。check-env、CPU smoke、docs check、GPU 全量 build 和 GPU
+unit/integration 全部 PASS，总耗时约 46 秒。该结果证明随仓依赖与路径独立性，
+但不等价于在全新操作系统上从网络重新安装 CUDA/nvCOMP。
+
+`results/final/real_scan_v100_20260731/` 将本机真实 dpkg status 和 Bash ELF
+字节组成 64 MiB 可追溯 corpus，通过 Hook 生成 LZ4 压缩对象。普通文件、CPU
+LZ4、GPU LZ4 各五轮的业务 hash、4188 个 marker 和逻辑长度完全一致：
+
+| 路径 | 吞吐 MiB/s | 95% CI | 完整扫描 p99 ms | 95% CI | CPU cores |
+|---|---:|---:|---:|---:|---:|
+| 普通文件 | 718.520 | ±4.059 | 210.495 | ±1.553 | 1.000 |
+| CPU LZ4 Hook | 156.487 | ±4.476 | 662.763 | ±46.295 | 0.719 |
+| GPU LZ4 Hook | 157.252 | ±7.322 | 606.939 | ±40.831 | 0.720 |
+
+压缩对象占 36,585,472 B，为逻辑大小的约 54.52%。CPU/GPU 吞吐和 p99 的
+95% CI 均重叠，不能声称 GPU 在该扫描中更快；有效结论是半结构化与二进制真实
+内容可以通过两种压缩后端得到完全一致的应用输出，并再次确认压缩读取仍慢于普通
+文件。
+
+公开参考整理在 `docs/EXTERNAL_BASELINES.md`，内核迁移方案在
+`docs/KERNEL_INTEGRATION_DESIGN.md`。它们用于约束 nvCOMP batch、Btrfs
+128 KiB extent、DM metadata transaction 和 OpenZFS record 语义，不把不同硬件
+或数据集的官方示例数字当作本项目性能。
+
+### 4.22 吞吐与压缩率敏感性
+
+`results/final/offload_sensitivity_v100_20260731/` 将原来的单一
+4096 MiB/s、高可压缩输入扩展为 1024/2048/4096 MiB/s × 0%/50%/100%
+可压缩页。128 MiB 工作集的实际 LZ4 存储比分别为
+100.0008%/50.3259%/0.4936%，四个业务线程与解压线程同核竞争，各组五轮。
+
+| 目标 MiB/s | 可压缩页 | CPU 业务保留 | GPU 业务保留 | GPU-CPU | CPU 解压 host core | GPU 解压 host core |
+|---:|---:|---:|---:|---:|---:|---:|
+| 1024 | 0% | 93.34% | 93.47% | +0.13 pp | 0.246 | 0.117 |
+| 1024 | 50% | 95.49% | 95.97% | +0.48 pp | 0.176 | 0.164 |
+| 1024 | 100% | 96.32% | 97.09% | +0.77 pp | 0.148 | 0.117 |
+| 2048 | 0% | 87.16% | 87.27% | +0.10 pp | 0.459 | 0.205 |
+| 2048 | 50% | 91.46% | 92.75% | +1.29 pp | 0.335 | 0.286 |
+| 2048 | 100% | 93.00% | 95.34% | +2.34 pp | 0.280 | 0.192 |
+| 4096 | 100% | 87.77% | 91.27% | +3.50 pp | 0.487 | 0.353 |
+
+表中仅包含 CPU/GPU 均达到至少 99% 目标的公平组。逐轮配对差在
+1024 MiB/s、0% 输入为 +0.132±0.630 pp，2048 MiB/s、0% 输入为
++0.104±0.148 pp，均不能证明业务收益；收益随吞吐与压缩率提高而增强。
+4096 MiB/s 下，0% 输入 CPU/GPU 仅达到 2909.50/2983.18 MiB/s，50% 输入
+达到 3829.90/3108.85 MiB/s，必须作为饱和点，不能伪装成固定吞吐比较。
+
+`results/final/lz4_compress_sensitivity_v100_20260731/` 进一步测量不限速压缩
+峰值：0%/50%/100% 可压缩页下，CPU 为 4850.92/6283.75/7842.97 MiB/s，GPU
+batch 为 423.45/459.51/1300.61 MiB/s，即 CPU 的 8.7%/7.3%/16.6%。GPU 进程
+host core 较低，但同时完成的工作量远少，不能据此声称固定吞吐 CPU 卸载；结合
+4.20 节同吞吐和 PCM 结果，压缩侧负结论保持不变。
+
+敏感性矩阵把解压侧结论收窄为：GPU 能减少解压 host CPU，但并行业务是否获得
+可见收益取决于吞吐、压缩率和系统是否接近 CPU 竞争瓶颈。PCM 代表组已在4.24节
+补齐；真实 corpus 上的同类资源矩阵仍待补充。
+
+### 4.23 SQLite 直接读取压缩对象
+
+审计发现旧 `sqlite_direct_read_v100_20260731/` 和 fixed32 目录虽然设置
+`GPUC_ALGO=lz4`，却调用只生成 SGLZ 的 `cpu_compress_daemon`；文件头实际为
+`comp_algo=1`。原来的 329.86/21.79 QPS 不能标作 LZ4，两个旧目录已明确标为
+历史无效。修复后的 runner 改用支持 LZ4 的 daemon，并强制校验算法 ID 为2。
+
+有效结果使用100000行mixed payload、单worker、256行indexed range aggregate，
+每轮3秒、各五轮。严格GPU-only设置`GPUC_LZ4_SMALL_READ_CPU_BLOCKS=0`；混合
+分流在应用请求只覆盖一个128 KiB block时走CPU liblz4，较大批量仍保留GPU路径。
+
+| 路径 | QPS | 95% CI | p99 us | 95% CI | host cores |
+|---|---:|---:|---:|---:|---:|
+| 普通文件（hybrid轮转组） | 22197.22 | ±71.97 | 102.34 | ±1.71 | 1.084 |
+| CPU LZ4 | 109.34 | ±1.33 | 11865.45 | ±861.96 | 1.037 |
+| LZ4混合分流 | 108.33 | ±0.30 | 11619.09 | ±127.25 | 1.034 |
+| LZ4严格GPU-only | 55.67 | ±1.33 | 24473.48 | ±339.86 | 0.696 |
+
+混合分流相对严格GPU-only的QPS提高94.58%，p99降低52.52%，说明小请求不进入
+CUDA可显著缓解固定开销；但它与CPU LZ4基本持平，且仍比普通文件慢99%以上。
+因此应称为“CPU/GPU混合策略”，不能把提升冒充GPU加速。COMPRESSED只读语义和
+用户态128 KiB粒度仍不适合高性能数据库点查。
+
+### 4.24 PCM敏感性与Btrfs真实corpus文件级失效
+
+`results/final/pcm_dram_sensitivity_v100_20260731/` 使用512 MiB轮转工作集，
+选择1024 MiB/s+0%、2048 MiB/s+50%、4096 MiB/s+100%三个代表点。实际LZ4
+存储比分别为100.0008%、50.3637%、0.4936%，每点Baseline/CPU/GPU各五轮，
+CPU/GPU均达到约99.9%目标吞吐。
+
+| 目标与可压缩率 | CPU总DRAM | GPU总DRAM | GPU−CPU配对差 | GPU业务相对CPU | GPU RSS相对CPU |
+|---|---:|---:|---:|---:|---:|
+| 1024 MiB/s，0% | 3251.96 MB/s | 3248.40 MB/s | −3.56±1.34 MB/s（−0.11%） | −0.04% | +5.80% |
+| 2048 MiB/s，50% | 5376.37 MB/s | 5070.58 MB/s | −305.79±15.48 MB/s（−5.69%） | +1.27% | +7.19% |
+| 4096 MiB/s，100% | 8686.21 MB/s | 4567.45 MB/s | −4118.76±20.10 MB/s（−47.42%） | +4.19% | +8.92% |
+
+DRAM收益不是固定比例：不可压缩RAW块几乎没有优势，中等压缩率只有约5.7%，
+高可压缩高吞吐才达到约47%。三个点GPU RSS都更高，且中高压缩率仍有明显D2H
+写入，所以结果只支持“特定条件下降低总IMC bandwidth”，不支持降低主机内存
+容量或消除写回。
+
+`results/final/btrfs_real_cold_v100_20260731/` 使用可追溯的dpkg status+Bash ELF
+字节形成256 MiB corpus，比较ext4普通文件、ext4+GPUC LZ4和loop Btrfs zstd:3。
+fio对每个文件使用`invalidate=1`，顺序128 KiB/随机4 KiB各五轮，30/30
+`error=0`且逻辑SHA一致。
+
+| 路径 | 空间占用 | 顺序128 KiB | 随机4 KiB |
+|---|---:|---:|---:|
+| ext4普通文件 | 100.01% | 354.22±3.58 MiB/s | 21.65±1.93 MiB/s |
+| ext4+GPUC LZ4 | 54.61% | 89.41±5.81 MiB/s | 0.541±0.003 MiB/s |
+| Btrfs zstd:3 | 36.36% | 1906.51±61.23 MiB/s | 11.37±0.79 MiB/s |
+
+Btrfs真实corpus空间效率优于GPUC，GPUC两种读取仍明显落后。`invalidate=1`只做
+文件页缓存失效，未写全系统`drop_caches`、未刷新设备缓存，Btrfs还位于loop
+backing file上；因此1906 MiB/s不是磁盘或NVMe吞吐。
+
+### 4.25 H2D合并与小请求分流优化
+
+LZ4解压原先为每个压缩block提交一次H2D DMA。当前先把同一batch的压缩payload
+打包到pinned host buffer，再用一次H2D提交；`GPUC_H2D_COALESCE=0`保留旧路径。
+512 MiB工作集、128 blocks/batch、每组五轮的严格消融为：
+
+| 模式 | 吞吐 MiB/s | 95% CI | H2D ms/batch | 95% CI |
+|---|---:|---:|---:|---:|
+| 逐block H2D | 4805.13 | ±137.14 | 0.2713 | ±0.0149 |
+| 合并H2D | 5275.91 | ±451.14 | 0.0393 | ±0.0028 |
+
+吞吐提高9.80%，H2D阶段降低85.51%。独立128-block高可压缩微基准的GPU中位数
+由关闭合并时的6010.76提高到开启时的7634.04 MiB/s，但CPU仍为11479.76
+MiB/s，绝对速度差距由约47.7%收窄到约33.5%，没有反转。
+
+Vdbench 128 MiB真实LZ4、4线程4 KiB随机读也完成相同fixture的五轮A/B：
+
+| 策略 | MB/s | 95% CI | 平均响应 ms | p99桶上界均值 |
+|---|---:|---:|---:|---:|
+| 严格GPU-only | 2.076 | ±0.136 | 6.947 | 92 ms |
+| 单block CPU分流 | 12.239 | ±0.263 | 0.819 | 2 ms |
+
+混合策略吞吐提高5.89倍、平均响应降低88.21%。该数据证明按粒度选择设备是必要的，
+但12.2 MB/s仍远低于普通文件，不能改写总体负结论。GPU worker同时支持将已经排队
+的多调用合成一次batch；4连接短诊断只观察到约1.6%吞吐差，样本不足且收益不明确，
+因此不把跨调用合批列为已证明的性能收益，只保留并发正确性通过的工程能力。
+
 ## 5. 决赛可陈述的结论
 
 可以陈述：
 
 - 已完成文件语义、损坏格式和 daemon 原子替换的系统性修复；
-- 固定 4 GiB/s 下，GPU 路径较 CPU 路径减少约 28.8% 的额外主机 CPU 成本；
-- CPU 争用场景中 GPU 保留 97.17% 业务吞吐，CPU 为 89.85%；
+- 原 16 MiB 高可压缩工作集固定 4 GiB/s 下，GPU 路径较 CPU 路径减少约
+  28.8% 的额外主机 CPU 成本；128 MiB 敏感性复测为 27.5%；
+- 业务收益随吞吐和压缩率增强：128 MiB 工作集从 1 GiB/s、不可压缩输入的
+  +0.13±0.63 pp，增长到 4 GiB/s、高可压缩输入的 +3.50±0.08 pp；
 - SQLite 并行场景中 GPU 相对 CPU 路径 QPS 高约 7.3%、p99 低约 50.5%；
+- SQLite 数据库直接位于真实LZ4对象时，两种后端都能正确查询；单block CPU分流
+  相对严格GPU-only QPS提高94.58%、p99降低52.52%，但仍比普通文件慢99%以上；
 - 新版对齐压缩格式已通过真正 `O_DIRECT` 的标志、正确性和 fio 验证；
 - SGLZ 在 1→16 线程有约 2 倍扩展，但 32 线程饱和；
 - batch/read-ahead 各带来约 11% 单线程提升，最优批大小约 4；
@@ -462,11 +677,25 @@ Baseline；结论仍是“GPU offload 减少主机 CPU/DRAM 竞争并提供压�
   60/60 样本无超时、无 fio 错误且 SHA 一致。
 - Vdbench 5.04.07 三类 workload、4 线程、五轮共 50/50 样本通过，且修复了
   共享 fd 压缩读状态竞争；其压缩随机读结果也明确显示当前架构的性能短板。
-- 自适应 LZ4 Vdbench 复测 10/10 样本通过，随机/顺序读达到
-  2.156 ±0.038/65.278 ±3.795 MB/s；仍不宣称超过普通文件。
-- 512 MiB 稳态 Intel PCM 五轮显示同为约 4094 MiB/s 解压时，GPU/CPU 总
-  DRAM 带宽约为 4569.51/8745.46 MB/s，GPU 低约 47.75%；但 GPU D2H 写带宽
-  仍约 4483.11 MB/s，且最大 RSS 高约 8.94%。
+- 自适应 LZ4 Vdbench 复测10/10样本通过；进一步的同fixture小请求分流A/B中，
+  4 KiB随机读由严格GPU-only的2.076±0.136提高到12.239±0.263 MB/s，仍不
+  宣称超过普通文件。
+- LZ4合并H2D使512 MiB稳态吞吐提高9.80%，H2D阶段降低85.51%；128-block
+  微基准GPU中位数约7.63 GiB/s，仍低于CPU约11.48 GiB/s。
+- 512 MiB稳态PCM代表组显示GPU/CPU总DRAM差随吞吐/可压缩率从−0.11%扩大到
+  −47.42%；高压缩率收益不能外推到不可压缩数据，且GPU RSS高5.80%–8.92%；
+- 真正 nvCOMP 批量压缩相对旧逐块同步至少提高 18.34 倍；但同为
+  1024 MiB/s 时 GPU/CPU 主机成本为 0.365/0.276 core，压缩侧不能主张 CPU
+  卸载收益；压缩侧 PCM 进一步显示 GPU 总 DRAM bandwidth 高约 29.53%。
+- 不限速压缩峰值梯度中，GPU batch 仅为单核 CPU liblz4 吞吐的
+  7.3%–16.6%；较低 GPU host CPU 伴随明显更低的处理量，不构成公平卸载收益。
+- Btrfs zstd:3 的 extent 压缩已由 `compsize`/`filefrag` 验证，当前数据占用
+  3.125%，GPUC LZ4 为 6.284%；暖页缓存性能不能解释为介质或 NVMe 性能。
+- 真实dpkg status+Bash ELF corpus文件级失效口径下，Btrfs/GPUC空间占用为
+  36.36%/54.61%；GPUC顺序/随机读仍明显落后，loop结果仍不是介质性能；
+- 真实 dpkg status + Bash ELF 扫描中 CPU/GPU 业务输出完全一致、压缩占用
+  54.52%；两者吞吐 CI 重叠，均明显慢于普通文件。
+- 全新临时路径中的 CPU smoke、GPU build/test 和文档检查全部 PASS。
 
 不能陈述：
 
@@ -475,15 +704,20 @@ Baseline；结论仍是“GPU offload 减少主机 CPU/DRAM 竞争并提供压�
 - GPU 减少了主机 DRAM 容量，或消除了主机 DRAM 写回；
 - 已测得精确型号化 LLC-load-misses；当前只有通用 cache-misses；
 - 已完成 NVMe 性能验证；
+- GPU 压缩侧已经降低主机 CPU；当前公平实验得到相反结果；
+- GPU 解压在所有吞吐和压缩率下都会提高并行业务吞吐；低压缩率低吞吐组差异
+  与零重叠，部分 4 GiB/s 组还未达到目标；
+- SQLite/数据库细粒度点查已被 GPUC 加速；直接读取实验得到相反结果；
+- 已完成 ZFS 或 DM 性能验证，或Btrfs loop文件级失效等同于真实NVMe冷缓存；
 - mmap 每次只解压一个 4 KiB 页，或完整扫描成本已经消失；
 - 对任意应用完全透明，或已达到生产级。
 
 ## 6. 下一步
 
-1. 在可挂载的独占 NVMe 上复跑 direct I/O，补队列深度、IOPS 与 p99；
-2. 在支持型号化 LLC 事件的环境补精确 LLC-load-misses；通用 perf 计数已完成；
-3. D2H 连续区间合并和 512 MiB 稳态 PCM 已完成；继续减少 D2H 写回及 RSS；
-4. 优化 userfaultfd handler 的并发调度与首次 CUDA fault 延迟；
-5. 在公开数据库备份等二进制数据上继续扩展已完成的 Gutenberg workload；
-6. 在独立 btrfs 压缩卷验证 zstd 生效，并继续补 ZFS/DM 横向对比；
-7. 供应商无关后端接口按当前赛程安排暂缓。
+1. PCM代表组已完成；下一步只需在真实corpus复核CPU/DRAM卸载敏感性；
+2. 在可挂载的独占 NVMe 上复跑 direct I/O，补队列深度、IOPS 与 p99；
+3. 在支持型号化 LLC 事件的环境补精确 LLC-load-misses；通用 perf 计数已完成；
+4. 继续减少解压 D2H 写回、RSS，以及压缩侧 host orchestration CPU；
+5. 优化 userfaultfd handler 的并发调度与首次 CUDA fault 延迟；
+6. 在鲲鹏 920 和赛题指定 RTX 平台复跑核心实验；
+7. ZFS/DM 实现和供应商无关后端按当前赛程安排暂缓。

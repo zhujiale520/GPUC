@@ -1,0 +1,9 @@
+run_id=20260731T120641Z
+git_commit=e462537b656ba2ff549f12e9b0e3a6e4fa5c1a06
+groups=1024:0 2048:50 4096:100
+runtime_s=10
+repeats=5
+workset_mib=512
+batch_blocks=128
+method=each point includes its own rotated baseline/cpu/gpu five-round PCM run
+scope=whole-system IMC bandwidth; only complete steady-state 1s intervals

@@ -1,0 +1,104 @@
+make: Entering directory '/home/ubuntu/project3136859-386240/.clean-deploy-pZBlBR/repository'
+nvcc -shared -Xcompiler -fPIC -arch=sm_70 -O3 -I./include -I/home/ubuntu/project3136859-386240/.clean-deploy-pZBlBR/repository/third_party/nvcomp/usr/include/nvcomp_12 -Xcompiler -Wno-maybe-uninitialized -Wno-deprecated-gpu-targets  src/hook.c src/gpu_compress.cu src/cpu_compress.c src/cpu_lz4.c src/gpu_lz4.cu -o bin/libgpuhook.so -ldl -L/home/ubuntu/project3136859-386240/.clean-deploy-pZBlBR/repository/third_party/nvcomp/usr/lib/x86_64-linux-gnu/nvcomp/12 -lnvcomp -Xlinker -rpath -Xlinker /home/ubuntu/project3136859-386240/.clean-deploy-pZBlBR/repository/third_party/nvcomp/usr/lib/x86_64-linux-gnu/nvcomp/12 -lpthread -L/home/ubuntu/project3136859-386240/.clean-deploy-pZBlBR/repository/third_party/lz4 -llz4 -Xlinker -rpath -Xlinker /home/ubuntu/project3136859-386240/.clean-deploy-pZBlBR/repository/third_party/lz4
+gcc -shared -fPIC -O3 -DCPU_ONLY_BUILD -I./include src/hook.c src/cpu_compress.c src/cpu_lz4.c -o bin/libcpuhook.so -ldl -lpthread -L/home/ubuntu/project3136859-386240/.clean-deploy-pZBlBR/repository/third_party/lz4 -llz4 -Xlinker -rpath -Xlinker /home/ubuntu/project3136859-386240/.clean-deploy-pZBlBR/repository/third_party/lz4
+nvcc -arch=sm_70 -O3 -I./include -I/home/ubuntu/project3136859-386240/.clean-deploy-pZBlBR/repository/third_party/nvcomp/usr/include/nvcomp_12 -Xcompiler -Wno-maybe-uninitialized -Wno-deprecated-gpu-targets  src/daemon.c src/gpu_compress.cu src/gpu_lz4.cu -o bin/gpu_compress_daemon -L/home/ubuntu/project3136859-386240/.clean-deploy-pZBlBR/repository/third_party/nvcomp/usr/lib/x86_64-linux-gnu/nvcomp/12 -lnvcomp -Xlinker -rpath -Xlinker /home/ubuntu/project3136859-386240/.clean-deploy-pZBlBR/repository/third_party/nvcomp/usr/lib/x86_64-linux-gnu/nvcomp/12 -lpthread -L/home/ubuntu/project3136859-386240/.clean-deploy-pZBlBR/repository/third_party/lz4 -llz4 -Xlinker -rpath -Xlinker /home/ubuntu/project3136859-386240/.clean-deploy-pZBlBR/repository/third_party/lz4
+gcc -O3 -I./include src/cpu_daemon.c src/cpu_compress.c src/cpu_lz4.c -o bin/cpu_compress_daemon -lpthread -L/home/ubuntu/project3136859-386240/.clean-deploy-pZBlBR/repository/third_party/lz4 -llz4 -Xlinker -rpath -Xlinker /home/ubuntu/project3136859-386240/.clean-deploy-pZBlBR/repository/third_party/lz4
+nvcc -arch=sm_70 -O3 -I./include -I/home/ubuntu/project3136859-386240/.clean-deploy-pZBlBR/repository/third_party/nvcomp/usr/include/nvcomp_12 -Xcompiler -Wno-maybe-uninitialized -Wno-deprecated-gpu-targets  src/test_cpu_vs_gpu.c src/gpu_compress.cu src/cpu_compress.c src/cpu_lz4.c src/gpu_lz4.cu -o bin/test_cpu_vs_gpu -L/home/ubuntu/project3136859-386240/.clean-deploy-pZBlBR/repository/third_party/nvcomp/usr/lib/x86_64-linux-gnu/nvcomp/12 -lnvcomp -Xlinker -rpath -Xlinker /home/ubuntu/project3136859-386240/.clean-deploy-pZBlBR/repository/third_party/nvcomp/usr/lib/x86_64-linux-gnu/nvcomp/12 -lpthread -L/home/ubuntu/project3136859-386240/.clean-deploy-pZBlBR/repository/third_party/lz4 -llz4 -Xlinker -rpath -Xlinker /home/ubuntu/project3136859-386240/.clean-deploy-pZBlBR/repository/third_party/lz4
+nvcc -arch=sm_70 -O3 -I./include -I/home/ubuntu/project3136859-386240/.clean-deploy-pZBlBR/repository/third_party/nvcomp/usr/include/nvcomp_12 -Xcompiler -Wno-maybe-uninitialized -Wno-deprecated-gpu-targets  tests/test_lz4_cpu_gpu.c src/cpu_lz4.c src/gpu_lz4.cu -o bin/test_lz4_cpu_gpu -L/home/ubuntu/project3136859-386240/.clean-deploy-pZBlBR/repository/third_party/nvcomp/usr/lib/x86_64-linux-gnu/nvcomp/12 -lnvcomp -Xlinker -rpath -Xlinker /home/ubuntu/project3136859-386240/.clean-deploy-pZBlBR/repository/third_party/nvcomp/usr/lib/x86_64-linux-gnu/nvcomp/12 -lpthread -L/home/ubuntu/project3136859-386240/.clean-deploy-pZBlBR/repository/third_party/lz4 -llz4 -Xlinker -rpath -Xlinker /home/ubuntu/project3136859-386240/.clean-deploy-pZBlBR/repository/third_party/lz4
+nvcc -arch=sm_70 -O3 -I./include -I/home/ubuntu/project3136859-386240/.clean-deploy-pZBlBR/repository/third_party/nvcomp/usr/include/nvcomp_12 -Xcompiler -Wno-maybe-uninitialized -Wno-deprecated-gpu-targets  tests/test_cpu_offload.cpp src/cpu_lz4.c src/gpu_lz4.cu -o bin/test_cpu_offload -L/home/ubuntu/project3136859-386240/.clean-deploy-pZBlBR/repository/third_party/nvcomp/usr/lib/x86_64-linux-gnu/nvcomp/12 -lnvcomp -Xlinker -rpath -Xlinker /home/ubuntu/project3136859-386240/.clean-deploy-pZBlBR/repository/third_party/nvcomp/usr/lib/x86_64-linux-gnu/nvcomp/12 -lpthread -L/home/ubuntu/project3136859-386240/.clean-deploy-pZBlBR/repository/third_party/lz4 -llz4 -Xlinker -rpath -Xlinker /home/ubuntu/project3136859-386240/.clean-deploy-pZBlBR/repository/third_party/lz4
+nvcc -arch=sm_70 -O3 -I./include -I/home/ubuntu/project3136859-386240/.clean-deploy-pZBlBR/repository/third_party/nvcomp/usr/include/nvcomp_12 -Xcompiler -Wno-maybe-uninitialized -Wno-deprecated-gpu-targets  tests/benchmark_lz4_compress.cpp src/cpu_lz4.c src/gpu_lz4.cu -o bin/benchmark_lz4_compress -L/home/ubuntu/project3136859-386240/.clean-deploy-pZBlBR/repository/third_party/nvcomp/usr/lib/x86_64-linux-gnu/nvcomp/12 -lnvcomp -Xlinker -rpath -Xlinker /home/ubuntu/project3136859-386240/.clean-deploy-pZBlBR/repository/third_party/nvcomp/usr/lib/x86_64-linux-gnu/nvcomp/12 -lpthread -L/home/ubuntu/project3136859-386240/.clean-deploy-pZBlBR/repository/third_party/lz4 -llz4 -Xlinker -rpath -Xlinker /home/ubuntu/project3136859-386240/.clean-deploy-pZBlBR/repository/third_party/lz4
+gcc -O3 -Wall -Wextra tests/scan_workload.c -o bin/scan_workload -lm
+nvcc -arch=sm_70 -O3 -I./include -I/home/ubuntu/project3136859-386240/.clean-deploy-pZBlBR/repository/third_party/nvcomp/usr/include/nvcomp_12 -Xcompiler -Wno-maybe-uninitialized -Wno-deprecated-gpu-targets  src/test_compress.c src/gpu_compress.cu src/gpu_lz4.cu -o bin/test_compress -L/home/ubuntu/project3136859-386240/.clean-deploy-pZBlBR/repository/third_party/nvcomp/usr/lib/x86_64-linux-gnu/nvcomp/12 -lnvcomp -Xlinker -rpath -Xlinker /home/ubuntu/project3136859-386240/.clean-deploy-pZBlBR/repository/third_party/nvcomp/usr/lib/x86_64-linux-gnu/nvcomp/12 -lpthread -L/home/ubuntu/project3136859-386240/.clean-deploy-pZBlBR/repository/third_party/lz4 -llz4 -Xlinker -rpath -Xlinker /home/ubuntu/project3136859-386240/.clean-deploy-pZBlBR/repository/third_party/lz4
+gcc -Iinclude src/test_hook.c -o bin/test_hook
+gcc -O3 tests/test_cold_read.c -o bin/test_cold_read
+gcc -O3 tests/test_odirect_compressed.c -o bin/test_odirect_compressed
+========================================
+  Build complete! GPU arch: sm_70
+  Run 'make test' to verify.
+========================================
+=== Running unit tests ===
+bin/test_compress
+=== GPU Compress Unit Tests ===
+[TEST] Compressing repetitive data...
+[TEST] Compressed: 131072 -> 11424 bytes (8.7%)
+[TEST] PASS: repetitive data OK
+[TEST] Compressing random data...
+[TEST] Random data: 131072 -> 0 bytes (0.0%)
+[TEST] PASS: random data fallback OK
+[TEST] Compressing all-zero data...
+[TEST] Zero data: 131072 -> 2912 bytes (2.2%)
+[TEST] PASS: zero data OK
+=== ALL TESTS PASSED ===
+gcc -O2 -Wall -Wextra -pthread tests/test_shared_pread.c -o bin/test_shared_pread
+=== Running integration tests ===
+bash tests/test_integration.sh
+=== GPU Compress Integration Test ===
+Test directory: /tmp/gpuc_test_304009
+[1/7] Compiling test program...
+[2/7] Writing test file with LD_PRELOAD...
+[test_hook] Wrote 262144 bytes to /tmp/gpuc_test_304009/test.bin
+[3/7] Checking physical file header...
+OK: Magic=GPUC, Version=1, State=RAW
+[4/7] Reading test file with LD_PRELOAD (RAW state)...
+[test_hook] Read 262144 bytes, data verified OK
+[5/7] Running compression daemon...
+[daemon] Compressing: /tmp/gpuc_test_304009/test.bin (262144 bytes, 2 blocks)
+[daemon] Done: /tmp/gpuc_test_304009/test.bin
+[6/7] Checking compressed file header...
+OK: State=COMPRESSED, orig_size=262144, num_blocks=2
+[7/7] Reading test file with LD_PRELOAD (COMPRESSED state)...
+[test_hook] Read 262144 bytes, data verified OK
+[8/9] Testing cp on compressed file...
+OK: cp output has valid GPUC header
+[9/9] Testing dd on compressed file...
+OK: dd output has valid GPUC header
+
+=== ALL INTEGRATION TESTS PASSED ===
+bash tests/test_mixed_compressibility.sh
+=== Mixed Compressibility Integration Test ===
+Test directory: /tmp/gpuc_mixed_test_304046
+[1/6] Compiling test program...
+[2/6] Writing mixed compressibility file...
+[test_hook] Wrote 262144 bytes (mixed compressible) to /tmp/gpuc_mixed_test_304046/test.bin
+[3/6] Checking RAW header...
+OK: RAW header valid
+[4/6] Reading RAW state file...
+[test_hook] Read 262144 bytes (mixed), data verified OK
+[5/6] Running compression daemon...
+[daemon] Compressing: /tmp/gpuc_mixed_test_304046/test.bin (262144 bytes, 2 blocks)
+[daemon] Done: /tmp/gpuc_mixed_test_304046/test.bin
+[6/6] Verifying mixed compression result...
+OK: State=COMPRESSED, num_blocks=2, header_size=4096
+  Block 0: orig_len=131072, comp_len=3104, offset=4096, crc32=36d6dea0 [COMPRESSED]
+  Block 1: orig_len=131072, comp_len=131072, offset=135168, crc32=6a8afb57 [RAW]
+OK: Found at least one uncompressed block (comp_len == orig_len)
+[7/7] Reading COMPRESSED state file with mixed blocks...
+[test_hook] Read 262144 bytes (mixed), data verified OK
+
+=== ALL MIXED COMPRESSIBILITY TESTS PASSED ===
+bash tests/test_inline.sh
+=== Inline Small File Integration Test ===
+Test directory: /tmp/gpuc_inline_test_lWmJG6
+[2/6] Writing small file (512 bytes)...
+[test_hook] Wrote 512 bytes to /tmp/gpuc_inline_test_lWmJG6/test_small.bin
+[3/6] Checking RAW header...
+OK: RAW header valid
+[4/6] Reading RAW state file...
+[test_hook] Read 512 bytes, data verified OK
+[5/6] Running compression daemon on small file...
+[daemon] Inline: /tmp/gpuc_inline_test_lWmJG6/test_small.bin (512 bytes)
+[6/6] Verifying INLINE state and reading back...
+OK: INLINE header valid, orig_size=512, header_size=568, data verified
+[7/7] Reading INLINE state file with LD_PRELOAD...
+[test_hook] Read 512 bytes, data verified OK
+[8/8] Testing cp on inline file...
+OK: cp output has valid GPUC header
+
+=== ALL INLINE TESTS PASSED ===
+bash tests/test_shared_pread.sh
+PASS: four threads shared one fd for concurrent compressed pread
+PASS: four threads shared one fd for concurrent compressed pread
+PASS: shared-fd compressed pread regression
+bash tests/test_empty_readonly_passthrough.sh
+PASS: empty read-only procfs file is passed through
+make: Leaving directory '/home/ubuntu/project3136859-386240/.clean-deploy-pZBlBR/repository'

@@ -1,0 +1,6 @@
+step,status,elapsed_s
+check_env,PASS,0
+cpu_smoke,PASS,3
+docs_check,PASS,0
+gpu_build,SKIP_NO_VISIBLE_GPU,0
+gpu_test,SKIP_NO_VISIBLE_GPU,0

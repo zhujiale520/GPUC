@@ -1,0 +1,21 @@
+run_id=20260731T121625Z
+git_commit=e462537b656ba2ff549f12e9b0e3a6e4fa5c1a06
+kernel=Linux 5.15.0 #1 SMP Tue May 19 16:02:33 UTC 2026 x86_64 GNU/Linux
+cpu=Intel(R) Xeon(R) 6505P
+gpu=Tesla V100-SXM2-32GB, 570.181, 7.0
+btrfs=mkfs.btrfs, part of btrfs-progs v5.4.1 
+fio=fio-3.16
+source_mib=256
+source_sha256=e33e50df6a7ac0cd78be08924b59d4853a656f294b4cda9d8fded7706afa6724
+runtime_s=5
+repeats=5
+data_mode=real
+real_sources=/var/lib/dpkg/status /usr/bin/bash
+cache_mode=cold
+fio_invalidate=1
+cache_scope=file-level fio invalidate; no global drop_caches and no device-cache flush
+btrfs_mount_options=compress-force=zstd:3
+btrfs_data_disk_bytes=97607680
+btrfs_zstd_disk_bytes=97607680
+btrfs_space_source=compsize -b (extent-level physical data, excludes filesystem metadata)
+safety=formatted only validated loop device backed by /tmp/gpuc-btrfs-ZpGCZD/btrfs.img

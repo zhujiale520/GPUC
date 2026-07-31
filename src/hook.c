@@ -1403,11 +1403,25 @@ static ssize_t read_compressed(int fd, fd_info_t *info, void *buf, size_t count)
 
 static pthread_once_t g_lz4_ra_once = PTHREAD_ONCE_INIT;
 static int g_lz4_adaptive_readahead = 1;
+static int g_lz4_small_read_cpu_blocks = 1;
 
 static void configure_lz4_readahead(void) {
     const char *value = getenv("GPUC_LZ4_ADAPTIVE_READAHEAD");
     if (value && strcmp(value, "0") == 0)
         g_lz4_adaptive_readahead = 0;
+
+    /* A one-block random lookup cannot amortize CUDA queue/H2D/kernel/D2H
+     * overhead. Keep these latency-sensitive misses on liblz4 while retaining
+     * GPU offload for sequential/read-ahead batches. Set to 0 for a strict
+     * GPU-only experiment, or raise it after profiling another platform. */
+    value = getenv("GPUC_LZ4_SMALL_READ_CPU_BLOCKS");
+    if (value && *value) {
+        char *end = NULL;
+        long parsed = strtol(value, &end, 10);
+        if (end != value && *end == '\0' && parsed >= 0 &&
+            parsed <= LZ4_BATCH_BLOCKS)
+            g_lz4_small_read_cpu_blocks = (int)parsed;
+    }
 }
 
 static int choose_lz4_readahead_blocks(fd_info_t *info, off64_t start,
@@ -1534,6 +1548,26 @@ static ssize_t read_compressed_at_lz4(int fd, fd_info_t *info, void *buf,
     uint8_t *out_ptr = (uint8_t *)buf;
     size_t total_read = 0;
     int readahead_blocks = choose_lz4_readahead_blocks(info, start, count);
+    uint32_t request_first_block = (uint32_t)(start / GPUC_BLOCK_SIZE);
+    uint32_t request_last_block = (uint32_t)(
+        (start + (off64_t)count - 1) / GPUC_BLOCK_SIZE);
+    int application_blocks = (int)(request_last_block - request_first_block + 1);
+    int backend_forces_cpu = strcmp(g_backend_name, "cpu") == 0 ||
+                             strcmp(g_backend_name, "cpu-fallback") == 0;
+    int request_use_cpu = use_cpu || backend_forces_cpu ||
+        (g_lz4_small_read_cpu_blocks > 0 &&
+         application_blocks <= g_lz4_small_read_cpu_blocks);
+    if (getenv("GPUC_DEBUG_LZ4_POLICY")) {
+        static unsigned int debug_policy_count = 0;
+        unsigned int sample = __sync_fetch_and_add(&debug_policy_count, 1);
+        if (sample < 16)
+            fprintf(stderr,
+                    "[HOOK] LZ4 policy count=%zu app_blocks=%d ra_blocks=%d "
+                    "threshold=%d backend=%s selected=%s\n",
+                    count, application_blocks, readahead_blocks,
+                    g_lz4_small_read_cpu_blocks, g_backend_name,
+                    request_use_cpu ? "cpu" : "gpu");
+    }
 
     while (count > 0) {
         off64_t ra_end = info->ra_start_offset + (off64_t)info->ra_valid_len;
@@ -1541,7 +1575,7 @@ static ssize_t read_compressed_at_lz4(int fd, fd_info_t *info, void *buf,
             uint32_t block_id = (uint32_t)(start / GPUC_BLOCK_SIZE);
             if (block_id >= info->hdr.num_blocks ||
                 fill_lz4_readahead(fd, info, block_id,
-                                   readahead_blocks, use_cpu) != 0)
+                                   readahead_blocks, request_use_cpu) != 0)
                 return total_read > 0 ? (ssize_t)total_read : -1;
             ra_end = info->ra_start_offset + (off64_t)info->ra_valid_len;
         }

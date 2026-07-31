@@ -1,0 +1,52 @@
+<title>Vdbench lz4_random_read_r1/flatfile.html</title><pre>
+*
+* 'flatfile.html' contains Vdbench generated information in a column by column ASCII format. 
+* The first line in the file contains a one word 'column header name'; the rest of the file 
+* contains data that belongs to each column. The objective of this file format is to allow 
+* easy transfer of information to a spreadsheet and therefore the creation of performance 
+* charts different from the performance charts that can be created by Sun StorageTek Workload 
+* Analysis Tool (Swat) available for download from Sun.
+* See also 'Selective flatfile parsing' in the documentation. 
+*
+* Run             : Name of run from RD=
+* Interval        : Reporting interval number
+* reqrate         : Requested i/o rate
+* rate            : Observed i/o rate
+* MB/sec          : Megabytes per second (MB=1024*1024)
+* bytes/io        : Average data transfersize
+* read%           : Observed read percentage
+* resp            : Observed response time
+* read_resp       : Observed read response time
+* write_resp      : Observed write response time
+* resp_max        : Observed maximum response time
+* read_max        : Observed maximum read response time
+* write_max       : Observed maximum write response time
+* resp_std        : Standard deviation response time
+* read_std        : Standard deviation reads
+* write_std       : Standard deviation writes
+* xfersize        : data transfer size requested
+* threads         : number of threads requested
+* rdpct           : read% requested
+* rhpct           : readhit% requested
+* whpct           : writehit% requested
+* seekpct         : seek% requested
+* lunsize         : Total amount of Gigabytes of all luns (GB= 1024*1024*1024)
+* version         : Vdbench version identifier
+* compratio       : Requested compression ratio
+* dedupratio      : Requested dedup ratio
+* queue_depth     : Vdbench calculated average i/o queue depth
+* cpu_used        : kstat: cpu% user+sys
+* cpu_user        : kstat: cpu% user
+* cpu_kernel      : kstat: cpu% sys 
+* cpu_wait        : kstat: cpu% wait
+* cpu_idle        : kstat: cpu% idle
+* 'n/a'           : Data not available, or conflicting data. eg. multiple different xfersize parameters used.
+* 
+         tod               timestamp Run Interval reqrate rate MB/sec bytes/io read% resp read_resp write_resp resp_max read_max write_max resp_std read_std write_std xfersize threads rdpct rhpct whpct seekpct lunsize version compratio dedupratio queue_depth cpu_used cpu_user cpu_kernel cpu_wait cpu_idle 
+13:32:40.113 07/31/2026-13:32:40-UTC randread 1 9999988 393 1.5352 4096 100 6.3552 6.3552 0 772.406 772.406 0 55.3251 55.3251 0 4096 4 100 0 0 100 0.125 n/a 1 n/a 3.5302 4.8869 4.0116 0.8753 0 0 
+13:32:41.019 07/31/2026-13:32:41-UTC randread 2 9999988 538 2.1016 4096 100 4.8116 4.8116 0 915.083 915.083 0 42.0559 42.0559 0 4096 4 100 0 0 100 0.125 n/a 1 n/a 3.8488 6.0345 5.2587 0.7759 0 0 
+13:32:42.016 07/31/2026-13:32:42-UTC randread 3 9999988 526 2.0547 4096 100 9.0561 9.0561 0 1116.241 1116.241 0 78.3567 78.3567 0 4096 4 100 0 0 100 0.125 n/a 1 n/a 3.9908 5.2126 4.4203 0.7924 0 0 
+13:32:43.014 07/31/2026-13:32:43-UTC randread 4 9999988 516 2.0156 4096 100 8.7303 8.7303 0 993.644 993.644 0 66.7713 66.7713 0 4096 4 100 0 0 100 0.125 n/a 1 n/a 3.9899 5.3862 4.7599 0.6263 0 0 
+13:32:44.017 07/31/2026-13:32:44-UTC randread 5 9999988 500 1.9531 4096 100 9.3715 9.3715 0 800.178 800.178 0 53.0063 53.0063 0 4096 4 100 0 0 100 0.125 n/a 1 n/a 3.9891 4.7559 4.1719 0.584 0 0 
+13:32:45.019 07/31/2026-13:32:45-UTC randread 6 9999988 511 1.9961 4096 100 4.9792 4.9792 0 551.337 551.337 0 35.9689 35.9689 0 4096 4 100 0 0 100 0.125 n/a 1 n/a 3.9905 5.2851 4.1615 1.1236 0 0 
+13:32:45.036 07/31/2026-13:32:45-UTC randread  avg_2-6 9999988 518.2 2.0242 4096 100 7.3667 7.3667 0 1116.241 1116.241 0 57.4288 57.4288 0 4096 4 100 0 0 100 0.125 n/a 1 n/a 3.9618 5.3303 4.5497 0.7807 0 0 

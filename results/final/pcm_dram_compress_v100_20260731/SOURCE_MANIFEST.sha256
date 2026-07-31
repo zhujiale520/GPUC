@@ -1,0 +1,3 @@
+047558770e405a88c440a30860790af8fa4f8fbfcfd3e9cd9435aa147fe8eff7  tests/benchmark_lz4_compress.cpp
+539366f28c73eb8fb6001ccd668ef15a5c03149eb84f8baee3ce046c09aa6423  tests/pcm_dram_compress.sh
+aa8cc683d69ca08607e21d2891d6a48750deea843017423d54f2c801cdd2cd1c  src/gpu_lz4.cu

@@ -1,0 +1,12 @@
+run_id=20260730T142945Z
+source_git_commit=e462537b656ba2ff549f12e9b0e3a6e4fa5c1a06
+source_git_dirty=12
+kernel=Linux 5.15.0 #1 SMP Tue May 19 16:02:33 UTC 2026 x86_64 GNU/Linux
+cpu=Intel(R) Xeon(R) 6505P
+fresh_path=/home/ubuntu/project3136859-386240/.clean-deploy-XXXXXX/repository (temporary, removed after PASS)
+excluded=.git,bin,results/local,slides,node_modules,third_party/manual
+dependency_model=bundled repository third_party exposed through read-only-equivalent hardlinks; build outputs are fresh
+copy_seconds=1
+total_seconds=4
+gpu_validation=0
+result=PASS

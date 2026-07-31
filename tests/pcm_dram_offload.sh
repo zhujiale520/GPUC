@@ -16,6 +16,7 @@ DECOMP_CPU="${GPUC_DECOMP_CPU:-0}"
 TARGET_MIB_S="${GPUC_TARGET_MIB_S:-4096}"
 WORKSET_MIB="${GPUC_WORKSET_MIB:-512}"
 BATCH_BLOCKS="${GPUC_BATCH_BLOCKS:-128}"
+COMPRESSIBLE_PCT="${GPUC_COMPRESSIBLE_PCT:-100}"
 export GPUC_WORKER_CPU="${GPUC_WORKER_CPU:-$DECOMP_CPU}"
 
 if [[ "$EUID" -ne 0 ]]; then
@@ -30,6 +31,10 @@ fi
 }
 [[ "$DURATION" =~ ^[1-9][0-9]*$ && "$REPEATS" =~ ^[1-9][0-9]*$ ]] || {
     echo "ERROR: GPUC_RUNTIME and GPUC_REPEATS must be positive integers." >&2
+    exit 2
+}
+[[ "$COMPRESSIBLE_PCT" =~ ^[0-9]+$ ]] && (( COMPRESSIBLE_PCT <= 100 )) || {
+    echo "ERROR: GPUC_COMPRESSIBLE_PCT must be an integer from 0 to 100." >&2
     exit 2
 }
 
@@ -57,21 +62,24 @@ trap restore_owner EXIT
     echo "gpu_worker_cpu=$GPUC_WORKER_CPU"
     echo "workset_mib=$WORKSET_MIB"
     echo "batch_blocks=$BATCH_BLOCKS"
+    echo "requested_compressible_pct=$COMPRESSIBLE_PCT"
+    echo "data=deterministic 4 KiB repeated-byte/pseudo-random page mixture"
     echo "scope=whole-system IMC bandwidth; only complete steady-state 1s intervals"
     echo "unit=PCM MB/s"
 } > "$RESULT_DIR/environment.txt"
 
-echo "scenario,repeat,dram_read_mb_s,dram_write_mb_s,dram_total_mb_s,elapsed_s,business_ops_s,decomp_mib_s,user_cpu_s,sys_cpu_s,worker_user_s,worker_sys_s,maxrss_kib" \
+echo "scenario,requested_compressible_pct,actual_stored_ratio,repeat,dram_read_mb_s,dram_write_mb_s,dram_total_mb_s,elapsed_s,business_ops_s,decomp_mib_s,user_cpu_s,sys_cpu_s,worker_user_s,worker_sys_s,maxrss_kib" \
     > "$RESULT_DIR/runs.csv"
 
 parse_sample() {
-    local scenario=$1 repeat=$2 pcm_csv=$3 app_output=$4 phase_file=$5
-    python3 - "$scenario" "$repeat" "$pcm_csv" "$app_output" "$phase_file" "$RESULT_DIR/runs.csv" <<'PY'
+    local scenario=$1 repeat=$2 pcm_csv=$3 app_output=$4 phase_file=$5 data_info=$6
+    python3 - "$scenario" "$repeat" "$pcm_csv" "$app_output" "$phase_file" \
+        "$data_info" "$RESULT_DIR/runs.csv" <<'PY'
 import csv
 import datetime
 import sys
 
-scenario, repeat, pcm_path, app_path, phase_path, output = sys.argv[1:]
+scenario, repeat, pcm_path, app_path, phase_path, info_path, output = sys.argv[1:]
 
 rows = [row for row in csv.reader(open(pcm_path, errors="replace")) if row]
 phase = {}
@@ -111,9 +119,12 @@ names = [
     "d2h_ms", "unpack_ms", "total_ms", "worker_user", "worker_system", "pinned",
 ]
 record = dict(zip(names, app))
+info = next(csv.DictReader(open(info_path)))
 with open(output, "a", newline="") as f:
     csv.writer(f, lineterminator="\n").writerow([
         scenario,
+        info["requested_compressible_pct"],
+        info["stored_ratio"],
         repeat,
         *[f"{value:.6f}" for value in pcm_values],
         record["elapsed"],
@@ -143,6 +154,7 @@ for repeat in $(seq 1 "$REPEATS"); do
         app_output="$RESULT_DIR/raw/${tag}_app.txt"
         diagnostics="$RESULT_DIR/raw/${tag}_pcm.stderr"
         phase_file="$RESULT_DIR/raw/${tag}_phase.csv"
+        data_info="$RESULT_DIR/raw/${tag}_data.csv"
         ready_file="$RESULT_DIR/raw/${tag}.ready"
         start_file="$RESULT_DIR/raw/${tag}.start"
 
@@ -151,6 +163,8 @@ for repeat in $(seq 1 "$REPEATS"); do
             /usr/bin/env \
             GPUC_WORKSET_MIB="$WORKSET_MIB" \
             GPUC_BATCH_BLOCKS="$BATCH_BLOCKS" \
+            GPUC_COMPRESSIBLE_PCT="$COMPRESSIBLE_PCT" \
+            GPUC_DATA_INFO_FILE="$data_info" \
             GPUC_READY_FILE="$ready_file" \
             GPUC_START_FILE="$start_file" \
             GPUC_PHASE_FILE="$phase_file" \
@@ -173,7 +187,7 @@ for repeat in $(seq 1 "$REPEATS"); do
         : > "$start_file"
         wait "$pcm_pid"
 
-        parse_sample "$scenario" "$repeat" "$pcm_csv" "$app_output" "$phase_file"
+        parse_sample "$scenario" "$repeat" "$pcm_csv" "$app_output" "$phase_file" "$data_info"
     done
 done
 
@@ -202,13 +216,15 @@ metrics = [
 ]
 with open(sys.argv[2], "w", newline="") as f:
     writer = csv.writer(f, lineterminator="\n")
-    header = ["scenario", "n"]
+    header = ["scenario", "requested_compressible_pct", "actual_stored_ratio", "n"]
     for metric in metrics:
         header += [f"{metric}_mean", f"{metric}_ci95"]
     writer.writerow(header)
     for scenario in ("baseline", "cpu", "gpu"):
         items = groups.get(scenario, [])
-        row = [scenario, len(items)]
+        requested = items[0]["requested_compressible_pct"] if items else ""
+        actual = statistics.mean(float(item["actual_stored_ratio"]) for item in items)
+        row = [scenario, requested, f"{actual:.6f}", len(items)]
         for metric in metrics:
             values = [float(item[metric]) for item in items]
             mean = statistics.mean(values)
@@ -219,5 +235,10 @@ with open(sys.argv[2], "w", newline="") as f:
             row += [f"{mean:.6f}", f"{ci95:.6f}"]
         writer.writerow(row)
 PY
+
+sha256sum "$PROJECT_DIR/tests/test_cpu_offload.cpp" \
+    "$PROJECT_DIR/tests/pcm_dram_offload.sh" \
+    "$PROJECT_DIR/src/gpu_lz4.cu" "$PROJECT_DIR/src/cpu_lz4.c" \
+    > "$RESULT_DIR/SOURCE_MANIFEST.sha256"
 
 echo "[OK] PCM DRAM experiment complete: $RESULT_DIR"

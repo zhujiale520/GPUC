@@ -1,0 +1,2 @@
+aa8cc683d69ca08607e21d2891d6a48750deea843017423d54f2c801cdd2cd1c  src/gpu_lz4.cu
+20e0817b11a5d3ff4fe01b665a895515ed1d0c60d9ab0bf6c9b839e1661cf9db  tests/benchmark_lz4_compress.cpp

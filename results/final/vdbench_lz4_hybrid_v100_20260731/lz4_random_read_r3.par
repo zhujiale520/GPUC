@@ -1,0 +1,4 @@
+* Fair buffered comparison: GPUC RAW compact headers are not O_DIRECT aligned.
+sd=sd1,lun=/tmp/gpuc-vdbench-X5Stnt/lz4/data.bin,size=128m,threads=4
+wd=randread,sd=sd1,xfersize=4k,rdpct=100,seekpct=100
+rd=randread,wd=randread,iorate=max,warmup=1,elapsed=5,interval=1

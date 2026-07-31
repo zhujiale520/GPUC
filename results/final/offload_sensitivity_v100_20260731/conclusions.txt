@@ -1,0 +1,10 @@
+Baseline business throughput: 1773926662.169 ops/s
+target=1024 pct=0 actual_ratio=1.000008 cpu_business=93.34% gpu_business=93.47% cpu_decomp_host=0.246 gpu_decomp_host=0.117 cpu_attain=99.76% gpu_attain=99.72%
+target=1024 pct=50 actual_ratio=0.503259 cpu_business=95.49% gpu_business=95.97% cpu_decomp_host=0.176 gpu_decomp_host=0.164 cpu_attain=99.72% gpu_attain=99.71%
+target=1024 pct=100 actual_ratio=0.004936 cpu_business=96.32% gpu_business=97.09% cpu_decomp_host=0.148 gpu_decomp_host=0.117 cpu_attain=99.69% gpu_attain=99.71%
+target=2048 pct=0 actual_ratio=1.000008 cpu_business=87.16% gpu_business=87.27% cpu_decomp_host=0.459 gpu_decomp_host=0.205 cpu_attain=99.71% gpu_attain=99.77%
+target=2048 pct=50 actual_ratio=0.503259 cpu_business=91.46% gpu_business=92.75% cpu_decomp_host=0.335 gpu_decomp_host=0.286 cpu_attain=99.74% gpu_attain=99.74%
+target=2048 pct=100 actual_ratio=0.004936 cpu_business=93.00% gpu_business=95.34% cpu_decomp_host=0.280 gpu_decomp_host=0.192 cpu_attain=99.71% gpu_attain=99.74%
+target=4096 pct=0 actual_ratio=1.000008 cpu_business=86.91% gpu_business=86.86% cpu_decomp_host=0.499 gpu_decomp_host=0.132 cpu_attain=71.03% gpu_attain=72.83%
+target=4096 pct=50 actual_ratio=0.503259 cpu_business=87.44% gpu_business=89.20% cpu_decomp_host=0.499 gpu_decomp_host=0.424 cpu_attain=93.50% gpu_attain=75.90%
+target=4096 pct=100 actual_ratio=0.004936 cpu_business=87.77% gpu_business=91.27% cpu_decomp_host=0.487 gpu_decomp_host=0.353 cpu_attain=99.72% gpu_attain=99.73%

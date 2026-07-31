@@ -1,0 +1,3 @@
+mode=real; source bytes repeated only to create a stable timed corpus
+source=/var/lib/dpkg/status
+source=/usr/bin/bash

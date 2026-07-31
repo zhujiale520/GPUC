@@ -1,0 +1,4 @@
+make: Entering directory '/home/ubuntu/project3136859-386240/.clean-deploy-pZBlBR/repository'
+python3 scripts/check_docs_links.py
+PASS: local Markdown links resolve
+make: Leaving directory '/home/ubuntu/project3136859-386240/.clean-deploy-pZBlBR/repository'

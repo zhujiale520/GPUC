@@ -43,6 +43,31 @@ static size_t g_max_out_chunk = 0;
 static pthread_mutex_t g_lz4_init_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_once_t g_cuda_flags_once = PTHREAD_ONCE_INIT;
 
+typedef struct lz4_comp_pool {
+    cudaStream_t stream;
+    uint8_t *h_in;
+    uint8_t *h_out;
+    void **h_in_ptrs;
+    void **h_out_ptrs;
+    size_t *h_in_lens;
+    size_t *h_comp_lens;
+    uint8_t *d_in;
+    uint8_t *d_out;
+    void **d_in_ptrs;
+    void **d_out_ptrs;
+    size_t *d_in_lens;
+    size_t *d_comp_lens;
+    void *d_temp;
+    size_t batch_cap;
+    size_t input_cap;
+    size_t output_cap;
+    size_t temp_cap;
+    int initialized;
+} lz4_comp_pool_t;
+
+static pthread_mutex_t g_comp_lock = PTHREAD_MUTEX_INITIALIZER;
+static lz4_comp_pool_t g_comp_pool;
+
 typedef struct lz4_request {
     int n;
     const uint8_t **in_bufs;
@@ -69,6 +94,7 @@ typedef struct lz4_decomp_pool {
     size_t *h_out_lens;
     size_t *h_actual;
     nvcompStatus_t *h_status;
+    uint8_t *h_in;
     int *indices;
     void *d_in;
     void *d_out;
@@ -80,6 +106,7 @@ typedef struct lz4_decomp_pool {
     size_t *d_actual;
     nvcompStatus_t *d_status;
     size_t in_cap;
+    size_t h_in_cap;
     size_t out_cap;
     size_t temp_cap;
     size_t batch_cap;
@@ -95,6 +122,19 @@ static lz4_request_t *g_worker_head = NULL;
 static lz4_request_t *g_worker_tail = NULL;
 static __thread gpu_lz4_profile_t g_last_profile;
 
+#define LZ4_WORKER_MAX_REQUESTS 128
+#define LZ4_WORKER_DEFAULT_BATCH_BLOCKS 128
+
+static int worker_batch_block_limit(void) {
+    const char *value = getenv("GPUC_LZ4_WORKER_BATCH_BLOCKS");
+    if (!value || !*value) return LZ4_WORKER_DEFAULT_BATCH_BLOCKS;
+    char *end = NULL;
+    long parsed = strtol(value, &end, 10);
+    if (end == value || *end != '\0' || parsed < 1 || parsed > 4096)
+        return LZ4_WORKER_DEFAULT_BATCH_BLOCKS;
+    return (int)parsed;
+}
+
 static double elapsed_ms(const struct timespec *a, const struct timespec *b) {
     return (double)(b->tv_sec - a->tv_sec) * 1000.0 +
            (double)(b->tv_nsec - a->tv_nsec) / 1000000.0;
@@ -108,6 +148,75 @@ static size_t grow_capacity(size_t value) {
     size_t cap = 1;
     while (cap < value && cap <= SIZE_MAX / 2) cap <<= 1;
     return cap < value ? value : cap;
+}
+
+static void comp_pool_release(lz4_comp_pool_t *p) {
+    if (p->h_in) cudaFreeHost(p->h_in);
+    if (p->h_out) cudaFreeHost(p->h_out);
+    if (p->h_in_ptrs) cudaFreeHost(p->h_in_ptrs);
+    if (p->h_out_ptrs) cudaFreeHost(p->h_out_ptrs);
+    if (p->h_in_lens) cudaFreeHost(p->h_in_lens);
+    if (p->h_comp_lens) cudaFreeHost(p->h_comp_lens);
+    if (p->d_in) cudaFree(p->d_in);
+    if (p->d_out) cudaFree(p->d_out);
+    if (p->d_in_ptrs) cudaFree(p->d_in_ptrs);
+    if (p->d_out_ptrs) cudaFree(p->d_out_ptrs);
+    if (p->d_in_lens) cudaFree(p->d_in_lens);
+    if (p->d_comp_lens) cudaFree(p->d_comp_lens);
+    if (p->d_temp) cudaFree(p->d_temp);
+    if (p->stream) cudaStreamDestroy(p->stream);
+    memset(p, 0, sizeof(*p));
+}
+
+static int comp_pool_reserve(lz4_comp_pool_t *p, size_t n,
+                             size_t input_bytes, size_t output_bytes,
+                             size_t temp_bytes) {
+    if (p->initialized && n <= p->batch_cap &&
+        input_bytes <= p->input_cap && output_bytes <= p->output_cap &&
+        temp_bytes <= p->temp_cap)
+        return 0;
+
+    size_t new_n = grow_capacity(n);
+    size_t new_input = grow_capacity(input_bytes ? input_bytes : 1);
+    size_t new_output = grow_capacity(output_bytes ? output_bytes : 1);
+    size_t new_temp = grow_capacity(temp_bytes ? temp_bytes : 1);
+    lz4_comp_pool_t next = {};
+    size_t ptr_bytes = new_n * sizeof(void *);
+    size_t size_bytes = new_n * sizeof(size_t);
+
+    if (cudaStreamCreateWithFlags(&next.stream, cudaStreamNonBlocking) !=
+            cudaSuccess ||
+        cudaHostAlloc(&next.h_in, new_input, cudaHostAllocDefault) !=
+            cudaSuccess ||
+        cudaHostAlloc(&next.h_out, new_output, cudaHostAllocDefault) !=
+            cudaSuccess ||
+        cudaHostAlloc(&next.h_in_ptrs, ptr_bytes, cudaHostAllocDefault) !=
+            cudaSuccess ||
+        cudaHostAlloc(&next.h_out_ptrs, ptr_bytes, cudaHostAllocDefault) !=
+            cudaSuccess ||
+        cudaHostAlloc(&next.h_in_lens, size_bytes, cudaHostAllocDefault) !=
+            cudaSuccess ||
+        cudaHostAlloc(&next.h_comp_lens, size_bytes, cudaHostAllocDefault) !=
+            cudaSuccess ||
+        cudaMalloc(&next.d_in, new_input) != cudaSuccess ||
+        cudaMalloc(&next.d_out, new_output) != cudaSuccess ||
+        cudaMalloc(&next.d_in_ptrs, ptr_bytes) != cudaSuccess ||
+        cudaMalloc(&next.d_out_ptrs, ptr_bytes) != cudaSuccess ||
+        cudaMalloc(&next.d_in_lens, size_bytes) != cudaSuccess ||
+        cudaMalloc(&next.d_comp_lens, size_bytes) != cudaSuccess ||
+        cudaMalloc(&next.d_temp, new_temp) != cudaSuccess) {
+        comp_pool_release(&next);
+        return -1;
+    }
+
+    next.batch_cap = new_n;
+    next.input_cap = new_input;
+    next.output_cap = new_output;
+    next.temp_cap = new_temp;
+    next.initialized = 1;
+    comp_pool_release(p);
+    *p = next;
+    return 0;
 }
 
 static void configure_cuda_wait_policy(void) {
@@ -155,6 +264,7 @@ static int gpu_lz4_ensure_buffers(size_t in_len, size_t out_cap, size_t temp_byt
 }
 
 static void decomp_pool_release(lz4_decomp_pool_t *p) {
+    if (p->h_in) cudaFreeHost(p->h_in);
     if (p->d_in) cudaFree(p->d_in);
     if (p->d_out) cudaFree(p->d_out);
     if (p->d_temp) cudaFree(p->d_temp);
@@ -209,6 +319,15 @@ static int decomp_pool_reserve(lz4_decomp_pool_t *p, size_t n,
         if (cudaMalloc(&p->d_in, new_in) != cudaSuccess)
             return -1;
         p->in_cap = new_in;
+    }
+    if (new_in > p->h_in_cap) {
+        if (p->h_in) cudaFreeHost(p->h_in);
+        p->h_in = NULL;
+        p->h_in_cap = 0;
+        if (cudaHostAlloc(&p->h_in, new_in, cudaHostAllocDefault) !=
+            cudaSuccess)
+            return -1;
+        p->h_in_cap = new_in;
     }
     if (new_out > p->out_cap) {
         if (p->d_out) cudaFree(p->d_out);
@@ -436,10 +555,108 @@ int gpu_lz4_compress_batch(int n,
                            uint8_t **out_bufs, const size_t *out_caps,
                            size_t *out_lens) {
     if (n <= 0) return 0;
-    for (int i = 0; i < n; i++) {
-        if (gpu_lz4_compress_one(in_bufs[i], in_lens[i], out_bufs[i], out_caps[i], &out_lens[i]) != 0)
-            return -1;
+    if (!in_bufs || !in_lens || !out_bufs || !out_caps || !out_lens)
+        return -1;
+    const char *serial = getenv("GPUC_LZ4_SERIAL_COMPRESS");
+    if (serial && strcmp(serial, "1") == 0) {
+        for (int i = 0; i < n; ++i) {
+            if (gpu_lz4_compress_one(
+                    in_bufs[i], in_lens[i], out_bufs[i], out_caps[i],
+                    &out_lens[i]) != 0)
+                return -1;
+        }
+        return n;
     }
+    if (gpu_lz4_init() != 0) return -1;
+
+    size_t max_input = 0;
+    for (int i = 0; i < n; i++) {
+        if (!in_bufs[i] || !out_bufs[i] || in_lens[i] == 0 ||
+            in_lens[i] > LZ4_BLOCK_SIZE || out_caps[i] < in_lens[i] + 1)
+            return -1;
+        if (in_lens[i] > max_input) max_input = in_lens[i];
+    }
+
+    nvcompBatchedLZ4Opts_t opts = nvcompBatchedLZ4DefaultOpts;
+    size_t max_output = 0, temp_bytes = 0;
+    if (nvcompBatchedLZ4CompressGetMaxOutputChunkSize(
+            max_input, opts, &max_output) != nvcompSuccess ||
+        nvcompBatchedLZ4CompressGetTempSize(
+            (size_t)n, max_input, opts, &temp_bytes) != nvcompSuccess)
+        return -1;
+    for (int i = 0; i < n; i++) {
+        if (out_caps[i] < max_output + 1) return -1;
+    }
+
+    size_t input_bytes = (size_t)n * max_input;
+    size_t output_bytes = (size_t)n * max_output;
+    pthread_mutex_lock(&g_comp_lock);
+    lz4_comp_pool_t *p = &g_comp_pool;
+    if (comp_pool_reserve(p, (size_t)n, input_bytes, output_bytes,
+                          temp_bytes) != 0) {
+        pthread_mutex_unlock(&g_comp_lock);
+        return -1;
+    }
+
+    for (int i = 0; i < n; i++) {
+        size_t input_offset = (size_t)i * max_input;
+        size_t output_offset = (size_t)i * max_output;
+        memcpy(p->h_in + input_offset, in_bufs[i], in_lens[i]);
+        p->h_in_lens[i] = in_lens[i];
+        p->h_in_ptrs[i] = p->d_in + input_offset;
+        p->h_out_ptrs[i] = p->d_out + output_offset;
+    }
+
+    size_t ptr_bytes = (size_t)n * sizeof(void *);
+    size_t size_bytes = (size_t)n * sizeof(size_t);
+    cudaError_t err = cudaMemcpyAsync(
+        p->d_in, p->h_in, input_bytes, cudaMemcpyHostToDevice, p->stream);
+    if (err == cudaSuccess)
+        err = cudaMemcpyAsync(p->d_in_ptrs, p->h_in_ptrs, ptr_bytes,
+                              cudaMemcpyHostToDevice, p->stream);
+    if (err == cudaSuccess)
+        err = cudaMemcpyAsync(p->d_out_ptrs, p->h_out_ptrs, ptr_bytes,
+                              cudaMemcpyHostToDevice, p->stream);
+    if (err == cudaSuccess)
+        err = cudaMemcpyAsync(p->d_in_lens, p->h_in_lens, size_bytes,
+                              cudaMemcpyHostToDevice, p->stream);
+    if (err != cudaSuccess) {
+        pthread_mutex_unlock(&g_comp_lock);
+        return -1;
+    }
+
+    nvcompStatus_t status = nvcompBatchedLZ4CompressAsync(
+        (const void *const *)p->d_in_ptrs, p->d_in_lens, max_input,
+        (size_t)n, p->d_temp, temp_bytes, p->d_out_ptrs, p->d_comp_lens,
+        opts, p->stream);
+    if (status != nvcompSuccess ||
+        cudaMemcpyAsync(p->h_comp_lens, p->d_comp_lens, size_bytes,
+                        cudaMemcpyDeviceToHost, p->stream) != cudaSuccess ||
+        cudaMemcpyAsync(p->h_out, p->d_out, output_bytes,
+                        cudaMemcpyDeviceToHost, p->stream) != cudaSuccess ||
+        cudaStreamSynchronize(p->stream) != cudaSuccess) {
+        pthread_mutex_unlock(&g_comp_lock);
+        return -1;
+    }
+
+    for (int i = 0; i < n; i++) {
+        size_t comp_len = p->h_comp_lens[i];
+        if (comp_len > max_output) {
+            pthread_mutex_unlock(&g_comp_lock);
+            return -1;
+        }
+        if (comp_len < in_lens[i]) {
+            out_bufs[i][0] = 1;
+            memcpy(out_bufs[i] + 1, p->h_out + (size_t)i * max_output,
+                   comp_len);
+            out_lens[i] = comp_len + 1;
+        } else {
+            out_bufs[i][0] = 0;
+            memcpy(out_bufs[i] + 1, in_bufs[i], in_lens[i]);
+            out_lens[i] = in_lens[i] + 1;
+        }
+    }
+    pthread_mutex_unlock(&g_comp_lock);
     return n;
 }
 
@@ -503,13 +720,26 @@ static int process_lz4_request(lz4_decomp_pool_t *p, lz4_request_t *r) {
     if (cudaEventRecord(p->h2d_start, p->stream) != cudaSuccess)
         return -1;
     in_off = 0;
-    for (int j = 0; j < m; j++) {
-        int i = p->indices[j];
-        if (cudaMemcpyAsync((uint8_t *)p->d_in + in_off,
-                            r->in_bufs[i] + 1, r->in_lens[i] - 1,
+    const char *disable_h2d_coalesce = getenv("GPUC_H2D_COALESCE");
+    if (disable_h2d_coalesce && strcmp(disable_h2d_coalesce, "0") == 0) {
+        for (int j = 0; j < m; j++) {
+            int i = p->indices[j];
+            if (cudaMemcpyAsync((uint8_t *)p->d_in + in_off,
+                                r->in_bufs[i] + 1, r->in_lens[i] - 1,
+                                cudaMemcpyHostToDevice, p->stream) != cudaSuccess)
+                return -1;
+            in_off += r->in_lens[i] - 1;
+        }
+    } else {
+        for (int j = 0; j < m; j++) {
+            int i = p->indices[j];
+            size_t comp_len = r->in_lens[i] - 1;
+            memcpy(p->h_in + in_off, r->in_bufs[i] + 1, comp_len);
+            in_off += comp_len;
+        }
+        if (cudaMemcpyAsync(p->d_in, p->h_in, in_bytes,
                             cudaMemcpyHostToDevice, p->stream) != cudaSuccess)
             return -1;
-        in_off += r->in_lens[i] - 1;
     }
     if (cudaMemcpyAsync(p->d_in_ptrs, p->h_in_ptrs, ptr_bytes,
                         cudaMemcpyHostToDevice, p->stream) != cudaSuccess ||
@@ -617,6 +847,7 @@ static void *gpu_lz4_worker_main(void *unused) {
     }
     lz4_decomp_pool_t pool;
     memset(&pool, 0, sizeof(pool));
+    const int block_limit = worker_batch_block_limit();
     for (;;) {
         pthread_mutex_lock(&g_worker_lock);
         while (!g_worker_head && !g_worker_stop)
@@ -625,25 +856,85 @@ static void *gpu_lz4_worker_main(void *unused) {
             pthread_mutex_unlock(&g_worker_lock);
             break;
         }
-        lz4_request_t *r = g_worker_head;
-        g_worker_head = r->next;
-        if (!g_worker_head) g_worker_tail = NULL;
+        lz4_request_t *requests[LZ4_WORKER_MAX_REQUESTS];
+        int request_count = 0;
+        int total_blocks = 0;
+        while (g_worker_head && request_count < LZ4_WORKER_MAX_REQUESTS) {
+            lz4_request_t *candidate = g_worker_head;
+            if (request_count > 0 && total_blocks + candidate->n > block_limit)
+                break;
+            g_worker_head = candidate->next;
+            if (!g_worker_head) g_worker_tail = NULL;
+            candidate->next = NULL;
+            requests[request_count++] = candidate;
+            total_blocks += candidate->n;
+            if (total_blocks >= block_limit) break;
+        }
         pthread_mutex_unlock(&g_worker_lock);
 
         struct rusage cpu_before, cpu_after;
         memset(&cpu_before, 0, sizeof(cpu_before));
         memset(&cpu_after, 0, sizeof(cpu_after));
         (void)getrusage(RUSAGE_THREAD, &cpu_before);
-        int result = process_lz4_request(&pool, r);
+        const uint8_t **in_bufs = NULL;
+        size_t *in_lens = NULL;
+        uint8_t **out_bufs = NULL;
+        size_t *out_lens = NULL;
+        int aggregate_result = -1;
+        gpu_lz4_profile_t aggregate_profile;
+        memset(&aggregate_profile, 0, sizeof(aggregate_profile));
+        if (request_count == 1) {
+            aggregate_result = process_lz4_request(&pool, requests[0]);
+            aggregate_profile = requests[0]->profile;
+        } else {
+            in_bufs = (const uint8_t **)malloc(
+                (size_t)total_blocks * sizeof(*in_bufs));
+            in_lens = (size_t *)malloc(
+                (size_t)total_blocks * sizeof(*in_lens));
+            out_bufs = (uint8_t **)malloc(
+                (size_t)total_blocks * sizeof(*out_bufs));
+            out_lens = (size_t *)malloc(
+                (size_t)total_blocks * sizeof(*out_lens));
+        }
+        if (request_count > 1 && in_bufs && in_lens && out_bufs && out_lens) {
+            int cursor = 0;
+            for (int q = 0; q < request_count; q++) {
+                lz4_request_t *r = requests[q];
+                for (int i = 0; i < r->n; i++, cursor++) {
+                    in_bufs[cursor] = r->in_bufs[i];
+                    in_lens[cursor] = r->in_lens[i];
+                    out_bufs[cursor] = r->out_bufs[i];
+                    out_lens[cursor] = r->out_lens[i];
+                }
+            }
+            lz4_request_t aggregate;
+            memset(&aggregate, 0, sizeof(aggregate));
+            aggregate.n = total_blocks;
+            aggregate.in_bufs = in_bufs;
+            aggregate.in_lens = in_lens;
+            aggregate.out_bufs = out_bufs;
+            aggregate.out_lens = out_lens;
+            aggregate.queued_at = requests[0]->queued_at;
+            aggregate_result = process_lz4_request(&pool, &aggregate);
+            aggregate_profile = aggregate.profile;
+        }
         (void)getrusage(RUSAGE_THREAD, &cpu_after);
-        r->profile.worker_user_ms =
+        aggregate_profile.worker_user_ms =
             timeval_ms(&cpu_after.ru_utime) - timeval_ms(&cpu_before.ru_utime);
-        r->profile.worker_sys_ms =
+        aggregate_profile.worker_sys_ms =
             timeval_ms(&cpu_after.ru_stime) - timeval_ms(&cpu_before.ru_stime);
+        free(in_bufs);
+        free(in_lens);
+        free(out_bufs);
+        free(out_lens);
         pthread_mutex_lock(&g_worker_lock);
-        r->result = result;
-        r->done = 1;
-        pthread_cond_signal(&r->done_cv);
+        for (int q = 0; q < request_count; q++) {
+            lz4_request_t *r = requests[q];
+            r->result = aggregate_result < 0 ? -1 : r->n;
+            r->profile = aggregate_profile;
+            r->done = 1;
+            pthread_cond_signal(&r->done_cv);
+        }
         pthread_mutex_unlock(&g_worker_lock);
     }
     decomp_pool_release(&pool);
@@ -727,6 +1018,9 @@ void gpu_lz4_fini(void) {
     g_worker_head = g_worker_tail = NULL;
     pthread_mutex_unlock(&g_worker_lock);
 
+    pthread_mutex_lock(&g_comp_lock);
+    comp_pool_release(&g_comp_pool);
+    pthread_mutex_unlock(&g_comp_lock);
     pthread_mutex_lock(&g_lz4_init_lock);
     gpu_lz4_release_single_pool();
     pthread_mutex_unlock(&g_lz4_init_lock);

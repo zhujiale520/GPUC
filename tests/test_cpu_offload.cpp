@@ -25,6 +25,28 @@ static constexpr size_t BLOCK = 128u * 1024u;
 static constexpr int DEFAULT_BATCH_BLOCKS = 128;
 static constexpr size_t CAP = BLOCK + BLOCK / 255u + 32u;
 
+static void fill_workset(uint8_t *data, size_t bytes,
+                         unsigned compressible_pct) {
+    const size_t pages = bytes / 4096;
+    for (size_t page = 0; page < pages; page++) {
+        uint8_t *dst = data + page * 4096;
+        if (page % 100 < compressible_pct) {
+            std::memset(dst, 1 + (page * 37) % 251, 4096);
+            continue;
+        }
+        uint64_t state = 0x9e3779b97f4a7c15ULL ^
+                         (static_cast<uint64_t>(page) *
+                          0xd1b54a32d192ed03ULL);
+        for (size_t offset = 0; offset < 4096; offset += sizeof(state)) {
+            state ^= state >> 12;
+            state ^= state << 25;
+            state ^= state >> 27;
+            uint64_t value = state * 0x2545f4914f6cdd1dULL;
+            std::memcpy(dst + offset, &value, sizeof(value));
+        }
+    }
+}
+
 struct PerfCounter {
     const char *name;
     uint64_t config;
@@ -262,16 +284,21 @@ int main(int argc, char **argv) {
 
     size_t workset_mib = 16;
     size_t batch_blocks = DEFAULT_BATCH_BLOCKS;
+    unsigned compressible_pct = 100;
     if (const char *value = std::getenv("GPUC_WORKSET_MIB"))
         workset_mib = std::strtoull(value, nullptr, 10);
     if (const char *value = std::getenv("GPUC_BATCH_BLOCKS"))
         batch_blocks = std::strtoull(value, nullptr, 10);
+    if (const char *value = std::getenv("GPUC_COMPRESSIBLE_PCT"))
+        compressible_pct = std::strtoul(value, nullptr, 10);
     size_t workset_bytes = workset_mib * 1024u * 1024u;
     size_t workset_blocks = workset_bytes / BLOCK;
     if (workset_mib == 0 || workset_bytes % BLOCK != 0 ||
         batch_blocks == 0 || batch_blocks > workset_blocks ||
-        batch_blocks > (size_t)INT32_MAX) {
-        std::fprintf(stderr, "invalid GPUC_WORKSET_MIB/GPUC_BATCH_BLOCKS\n");
+        batch_blocks > (size_t)INT32_MAX || compressible_pct > 100) {
+        std::fprintf(stderr,
+                     "invalid GPUC_WORKSET_MIB/GPUC_BATCH_BLOCKS/"
+                     "GPUC_COMPRESSIBLE_PCT\n");
         return 2;
     }
 
@@ -290,8 +317,7 @@ int main(int argc, char **argv) {
         decoded = (uint8_t *)aligned_alloc(4096, workset_bytes);
     }
     if (!src || !decoded) return 1;
-    for (size_t p = 0; p < workset_bytes / 4096; p++)
-        std::memset(src + p * 4096, 1 + (p * 37) % 251, 4096);
+    fill_workset(src, workset_bytes, compressible_pct);
 
     Context ctx;
     ctx.scenario = scenario;
@@ -314,6 +340,7 @@ int main(int argc, char **argv) {
         comp[i] = comp_arena + i * CAP;
     std::vector<size_t> caps(batch_blocks, CAP), plain_lens(batch_blocks, BLOCK);
     std::vector<const uint8_t *> plain(batch_blocks);
+    uint64_t compressed_bytes = 0;
     for (size_t first = 0; first < workset_blocks; first += batch_blocks) {
         size_t count = std::min(batch_blocks, workset_blocks - first);
         std::vector<uint8_t *> chunk_out(count);
@@ -328,7 +355,25 @@ int main(int argc, char **argv) {
                                    chunk_plain_lens.data(), chunk_out.data(),
                                    chunk_caps.data(), chunk_lens.data()) < 0)
             return 1;
-        for (size_t i = 0; i < count; i++) comp_lens[first + i] = chunk_lens[i];
+        for (size_t i = 0; i < count; i++) {
+            comp_lens[first + i] = chunk_lens[i];
+            compressed_bytes += chunk_lens[i];
+        }
+    }
+    if (const char *path = std::getenv("GPUC_DATA_INFO_FILE")) {
+        FILE *info = std::fopen(path, "w");
+        if (!info) {
+            std::fprintf(stderr, "cannot write GPUC_DATA_INFO_FILE: %s\n",
+                         std::strerror(errno));
+            return 1;
+        }
+        std::fprintf(info,
+                     "workset_mib,requested_compressible_pct,logical_bytes,"
+                     "stored_bytes,stored_ratio\n%zu,%u,%zu,%llu,%.9f\n",
+                     workset_mib, compressible_pct, workset_bytes,
+                     static_cast<unsigned long long>(compressed_bytes),
+                     static_cast<double>(compressed_bytes) / workset_bytes);
+        std::fclose(info);
     }
     for (size_t i = 0; i < batch_blocks; i++) {
         ctx.in[i] = comp[i];

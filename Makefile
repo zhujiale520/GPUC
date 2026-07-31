@@ -49,6 +49,7 @@ BINDIR     = bin
 TARGETS    = $(BINDIR)/libgpuhook.so $(BINDIR)/libcpuhook.so \
              $(BINDIR)/gpu_compress_daemon $(BINDIR)/cpu_compress_daemon \
              $(BINDIR)/test_cpu_vs_gpu $(BINDIR)/test_lz4_cpu_gpu $(BINDIR)/test_cpu_offload \
+             $(BINDIR)/benchmark_lz4_compress $(BINDIR)/scan_workload \
              $(BINDIR)/test_compress $(BINDIR)/test_hook $(BINDIR)/test_cold_read \
              $(BINDIR)/test_odirect_compressed
 
@@ -78,13 +79,15 @@ check-gpu-deps:
 		exit 1; \
 	}
 
-cpu-only: dirs $(BINDIR)/libcpuhook.so $(BINDIR)/cpu_compress_daemon $(BINDIR)/test_hook
+cpu-only: dirs $(BINDIR)/libcpuhook.so $(BINDIR)/cpu_compress_daemon \
+	$(BINDIR)/test_hook $(BINDIR)/scan_workload
 	@echo "CPU-only build complete."
 
 smoke-test: cpu-only
 	bash tests/test_posix_semantics.sh
 	bash tests/test_corrupt_headers.sh
 	bash tests/test_header_fuzz.sh
+	bash tests/test_scan_workload.sh
 
 sanitizer-test:
 	bash tests/sanitizer_cpu.sh
@@ -154,6 +157,12 @@ $(BINDIR)/test_lz4_cpu_gpu: check-gpu-deps dirs tests/test_lz4_cpu_gpu.c $(SRCDI
 
 $(BINDIR)/test_cpu_offload: check-gpu-deps dirs tests/test_cpu_offload.cpp $(SRCDIR)/cpu_lz4.c $(SRCDIR)/gpu_lz4.cu
 	$(NVCC) $(NVCCFLAGS) $(filter-out dirs check-gpu-deps,$^) -o $@ $(NVCOMP_LINK) $(LDFLAGS)
+
+$(BINDIR)/benchmark_lz4_compress: check-gpu-deps dirs tests/benchmark_lz4_compress.cpp $(SRCDIR)/cpu_lz4.c $(SRCDIR)/gpu_lz4.cu
+	$(NVCC) $(NVCCFLAGS) $(filter-out dirs check-gpu-deps,$^) -o $@ $(NVCOMP_LINK) $(LDFLAGS)
+
+$(BINDIR)/scan_workload: dirs tests/scan_workload.c
+	$(GCC) -O3 -Wall -Wextra $(filter-out dirs,$^) -o $@ -lm
 
 # ----------------------------------------------------------
 # Hook 集成测试程序

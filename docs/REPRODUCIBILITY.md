@@ -409,7 +409,22 @@ sudo env \
 测试程序完成初始化后写 ready 文件；PCM 以 1 秒间隔采样，脚本再启动稳态阶段，
 只汇总完全落在 start/end 时间戳内的采样。输出 `runs.csv`、`summary.csv` 及
 每轮原始 PCM CSV/诊断日志。该指标是全系统 IMC 带宽，运行时应停止无关内存
-密集任务。
+密集任务。单点可用 `GPUC_COMPRESSIBLE_PCT=0..100` 改变确定性可压缩页占比，
+runner 同时保存实际 LZ4 存储比。
+
+代表性的 PCM 敏感性矩阵可一次运行：
+
+```bash
+sudo env \
+  GPUC_RESULT_DIR="$PWD/results/local/pcm_dram_sensitivity" \
+  GPUC_RUNTIME=10 GPUC_REPEATS=5 GPUC_WORKSET_MIB=512 \
+  GPUC_PCM_GROUPS='1024:0 2048:50 4096:100' \
+  GPUC_DECOMP_CPU=0 GPUC_WORKER_CPU=0 \
+  bash tests/pcm_dram_sensitivity.sh
+```
+
+每个点都重新运行旋转顺序的 Baseline/CPU/GPU 五轮，避免把相隔约十分钟的全系统
+空闲流量当成同一个基准；`4096:100` 也用于与已有 512 MiB 正式结果交叉核验。
 
 ### 4.17 进程级 perf 通用硬件事件
 
@@ -438,6 +453,149 @@ bash tests/nvme_formal.sh
 入口会用 `findmnt` 和 `lsblk` 拒绝非 NVMe 路径，检查可写性和至少 2 GiB 空闲
 空间，然后才把 fio 临时文件限制在 `GPUC_NVME_DIR` 下。
 
+### 4.19 CPU/GPU LZ4 压缩公平实验
+
+```bash
+GPUC_RESULT_DIR=results/local/lz4_compress_fair \
+GPUC_RUNTIME=5 GPUC_REPEATS=5 GPUC_WORKSET_MIB=512 \
+GPUC_BATCH_BLOCKS=32 GPUC_TARGET_MIB_S=1024 \
+bash tests/lz4_compress_fair.sh
+```
+
+runner 比较 CPU liblz4、真正 nvCOMP batch 和
+`GPUC_LZ4_SERIAL_COMPRESS=1` 旧逐块同步路径。CPU/GPU batch 使用相同逻辑
+吞吐；serial 达不到目标时按最大吞吐运行。输出吞吐、压缩率、CPU、RSS、
+GPU utilization/power、95% CI，并做 CPU LZ4 回读校验。
+
+压缩侧 PCM 需要管理员访问 MSR/uncore：
+
+```bash
+sudo env GPUC_RESULT_DIR="$PWD/results/local/pcm_dram_compress" \
+GPUC_RUNTIME=10 GPUC_REPEATS=5 GPUC_TARGET_MIB_S=1024 \
+GPUC_WORKSET_MIB=512 GPUC_BATCH_BLOCKS=32 \
+bash tests/pcm_dram_compress.sh
+```
+
+### 4.20 真实日志与 ELF 扫描
+
+```bash
+GPUC_RESULT_DIR=results/local/real_scan \
+GPUC_RUNTIME=5 GPUC_REPEATS=5 GPUC_CORPUS_MIB=64 \
+bash tests/real_scan_workload.sh
+```
+
+runner 记录真实 dpkg status/log 和 Bash ELF 的源 SHA-256，重复源字节只为形成稳定
+计时 corpus。普通文件、CPU LZ4 Hook、GPU LZ4 Hook 必须输出相同 hash、marker
+count 和逻辑长度，随后才汇总吞吐、完整扫描 p99、CPU 和 CI。
+
+### 4.21 Btrfs zstd 安全 loop 基线
+
+先安装 extent 级空间核验工具，或通过 `GPUC_COMPSIZE` 指向私有二进制：
+
+```bash
+sudo apt-get install btrfs-compsize
+```
+
+```bash
+sudo env GPUC_RESULT_DIR="$PWD/results/local/btrfs_zstd" \
+GPUC_SIZE_MIB=256 GPUC_RUNTIME=5 GPUC_REPEATS=5 \
+bash tests/btrfs_compare.sh
+```
+
+脚本只格式化自己在 `mktemp` 目录创建的 1 GiB image，并在 `mkfs.btrfs` 前用
+`losetup -O BACK-FILE` 反查确认 loop backing file。它不读取、挂载或写入
+`nvme0n1`。异常退出由 trap 卸载并 detach loop。输出 ext4 plain、
+ext4+GPUC LZ4、Btrfs zstd:3 的 SHA、allocated bytes、顺序/随机 fio、CPU 和
+尾延迟。
+
+真实 corpus 与文件级冷缓存口径使用：
+
+```bash
+sudo env \
+  GPUC_RESULT_DIR="$PWD/results/local/btrfs_real_cold" \
+  GPUC_SIZE_MIB=256 GPUC_RUNTIME=5 GPUC_REPEATS=5 \
+  GPUC_DATA_MODE=real GPUC_CACHE_MODE=cold \
+  GPUC_REAL_SOURCES='/var/lib/dpkg/status /usr/bin/bash' \
+  bash tests/btrfs_compare.sh
+```
+
+`cold` 使用 fio 的每文件 `invalidate=1`，不写全系统 `drop_caches`，也不刷新设备
+内部缓存；因此应称为“文件页缓存失效口径”，不能写成裸盘或 NVMe 冷缓存成绩。
+runner 保存真实源文件 SHA-256，重复源字节只用于形成固定大小的计时 corpus。
+
+### 4.22 吞吐与压缩率敏感性
+
+解压资源卸载矩阵：
+
+```bash
+GPUC_RESULT_DIR=results/local/offload_sensitivity \
+GPUC_RUNTIME=5 GPUC_REPEATS=5 GPUC_WORKSET_MIB=128 \
+GPUC_TARGETS_MIB_S='1024 2048 4096' \
+GPUC_COMPRESSIBLE_PCTS='0 50 100' \
+GPUC_DECOMP_CPU=0 GPUC_WORKER_CPU=0 \
+bash tests/offload_sensitivity.sh
+```
+
+`GPUC_COMPRESSIBLE_PCTS` 控制 4 KiB 可压缩页占比；其余页由确定性伪随机数据
+组成。runner 保存请求比例及实际 LZ4 存储比，并在每轮中交换 CPU/GPU 顺序。
+只有 CPU、GPU 都达到至少 99% 目标吞吐的组才能解释为固定吞吐资源对比；未达标
+组保留为饱和边界，不能直接比较业务保留率。
+
+不限速压缩峰值矩阵：
+
+```bash
+GPUC_RESULT_DIR=results/local/lz4_compress_sensitivity \
+GPUC_RUNTIME=5 GPUC_REPEATS=5 GPUC_WORKSET_MIB=512 \
+GPUC_BATCH_BLOCKS=32 GPUC_COMPRESSIBLE_PCTS='0 50 100' \
+bash tests/lz4_compress_sensitivity.sh
+```
+
+该 runner 比较单核 CPU liblz4 与 GPU nvCOMP batch 的峰值，不设置固定吞吐。
+较低的进程 CPU 只有结合已完成吞吐一起解释才有意义；如果 GPU 完成的数据量远少，
+不能把较低 CPU 直接写成同工作量的卸载收益。
+
+### 4.23 SQLite 直接读取 GPUC 压缩对象
+
+```bash
+GPUC_RESULT_DIR=results/local/sqlite_direct_read \
+GPUC_RUNTIME=5 GPUC_REPEATS=5 GPUC_SQLITE_ROWS=100000 \
+GPUC_SQLITE_SPAN=256 GPUC_SQLITE_WORKERS=1 \
+GPUC_SQLITE_PAYLOAD_MODE=mixed \
+bash tests/sqlite_direct_read.sh
+```
+
+脚本先生成确定性 mixed-payload SQLite 数据库，再用支持LZ4的GPU daemon离线
+生成COMPRESSED对象，并强制校验文件头`comp_algo=2`。普通文件、CPU解压和GPU
+解压路径轮转五轮，SQLite自身
+以只读模式直接执行 indexed range aggregate；每次查询都验证返回长度，并在实验前
+校验完整逻辑 SHA-256。每个 worker 执行一次不计时预热查询，正式阶段逐次采样
+延迟，避免低吞吐 GPU 路径因 128 次抽样间隔得到伪 0 p99。
+
+该实验测的是细粒度 SQLite 点查的 warm 应用/OS 路径；它不支持可写数据库，也不
+等同于 SQLite 与独立解压任务竞争 CPU 的 4.12 节实验。
+
+严格GPU-only对照增加`GPUC_LZ4_SMALL_READ_CPU_BLOCKS=0`；默认值1表示应用请求
+只覆盖一个128 KiB block时使用CPU liblz4，批量请求仍走GPU。报告中必须明确标为
+混合分流，不得将其性能提升写成GPU加速。
+
+H2D合并消融：
+
+```bash
+GPUC_RESULT_DIR=results/local/h2d_coalesce \
+GPUC_RUNTIME=2 GPUC_REPEATS=5 GPUC_WORKSET_MIB=512 \
+GPUC_BATCH_BLOCKS=128 bash tests/h2d_coalesce_ab.sh
+```
+
+### 4.24 干净路径部署验收
+
+```bash
+GPUC_VALIDATE_GPU=1 bash tests/clean_deploy_validation.sh
+```
+
+脚本在新的临时路径中排除旧 `.git`、`bin`、本地结果和手工许可包，重新运行
+check-env、CPU smoke、docs check、GPU build/test，并保存各阶段 stdout/stderr
+和耗时。
+
 ---
 
 ## 5. 关键环境变量
@@ -457,7 +615,17 @@ bash tests/nvme_formal.sh
 | `GPUC_CUDA_SPIN_WAIT` | `1` 使用 CUDA busy-spin；默认 blocking sync 节省主机 CPU | `0` |
 | `GPUC_WORKSET_MIB` | CPU/GPU 资源实验的轮转工作集大小 | `512`（正式 runner） |
 | `GPUC_BATCH_BLOCKS` | 每次 LZ4 batch 的 128 KiB block 数 | `128` |
+| `GPUC_COMPRESSIBLE_PCT` | 单次实验中确定性可压缩 4 KiB 页占比，范围 0–100 | `100` |
+| `GPUC_COMPRESSIBLE_PCTS` | 敏感性 runner 的可压缩页占比列表 | `0 50 100` |
+| `GPUC_TARGETS_MIB_S` | 解压敏感性 runner 的逻辑吞吐目标列表 | `1024 2048 4096` |
+| `GPUC_PCM_GROUPS` | PCM 代表组，格式为 `目标MiB/s:可压缩页百分比` | `1024:0 2048:50 4096:100` |
 | `GPUC_D2H_COALESCE` | `0` 关闭连续 D2H 合并，仅用于 A/B | `1` |
+| `GPUC_H2D_COALESCE` | `0` 关闭pinned staging与单次H2D合并，仅用于A/B | `1` |
+| `GPUC_LZ4_SMALL_READ_CPU_BLOCKS` | 应用请求覆盖不超过该block数时走CPU；`0`为严格GPU-only | `1` |
+| `GPUC_LZ4_WORKER_BATCH_BLOCKS` | 长期worker跨调用合批的最大总block数 | `128` |
+| `GPUC_DEBUG_LZ4_POLICY` | 输出前16次LZ4 CPU/GPU分流决策，仅用于诊断 | 未设置 |
+| `GPUC_LZ4_SERIAL_COMPRESS` | `1` 恢复逐块提交/同步，仅用于压缩消融 | `0` |
+| `GPUC_TARGET_MIB_S` | 公平资源实验的逻辑吞吐上限 | runner 指定 |
 
 ---
 

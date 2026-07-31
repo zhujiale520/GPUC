@@ -1,0 +1,21 @@
+btrfs-progs v5.4.1 
+See http://btrfs.wiki.kernel.org for more information.
+
+Detected a SSD, turning off metadata duplication.  Mkfs with -m dup if you want to force metadata duplication.
+Label:              gpuc-disposable
+UUID:               6464e0a3-15ef-491a-81b1-2e789614367f
+Node size:          16384
+Sector size:        4096
+Filesystem size:    1.00GiB
+Block group profiles:
+  Data:             single            8.00MiB
+  Metadata:         single            8.00MiB
+  System:           single            4.00MiB
+SSD detected:       yes
+Incompat features:  extref, skinny-metadata
+Checksum:           crc32c
+Number of devices:  1
+Devices:
+   ID        SIZE  PATH
+    1     1.00GiB  /dev/loop9
+

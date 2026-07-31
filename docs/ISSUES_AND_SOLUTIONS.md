@@ -1,6 +1,6 @@
 # GPUC 关键问题与解决方法
 
-本文只记录已由源码和 2026-07-29 回归验证的问题。性能数值以
+本文只记录已由源码和截至 2026-07-31 的回归验证问题。性能数值以
 [`EXPERIMENTAL_REPORT.md`](EXPERIMENTAL_REPORT.md) 和 `results/final/` 为准。
 
 ## 1. 旧并发成绩失真
@@ -67,11 +67,19 @@ Hook 的 SGLZ 默认 batch 已改为 4；GPU 后端仍保留 32 块容量，供�
 问题：Hook 原本每个 128 KiB block 调一次 nvCOMP LZ4，同步开销使文本样例只有
 29.4 MiB/s。
 
-修复：顺序读取使用 4 块 batch 和逻辑 read-ahead，SHA-256/零数据回归通过，
-吞吐提高到 81.0 MiB/s。继续扩大到 32 块时，由于 batch API 内每次仍执行
-`cudaMalloc/cudaFree`，诊断轮出现严重退化，因此回退为 4。
+第一阶段修复：顺序读取使用 batch 和逻辑 read-ahead，并在解压侧建立长期 worker
+与持久 device/pinned-host pool。
 
-后续正确方案是持久化 nvCOMP device/host pool，而不是盲目扩大 batch。
+第二阶段审计发现 Daemon 的 `gpu_lz4_compress_batch()` 虽接收 32 个 block，
+内部仍循环调用单块 API，每块都 H2D/kernel/D2H/synchronize，并非真正 batch。
+当前新增独立持久 compression pool，把输入、device pointer array、长度和输出
+一次提交给 `nvcompBatchedLZ4CompressAsync`，整批只同步一次；
+`GPUC_LZ4_SERIAL_COMPRESS=1` 保留旧路径作为消融。
+
+512 MiB 工作集五轮中，旧 serial 为 55.821±0.313 MiB/s，真正 batch 在
+1024 MiB/s 限速下稳定达到 1023.984 MiB/s，至少提高 18.34 倍，压缩率与逐块
+CPU 解压校验一致。但同为 1024 MiB/s 时 GPU/CPU 主机 CPU 为
+0.365/0.276 core，因此这项修复是吞吐优化，不能包装成压缩侧 CPU 卸载收益。
 
 ## 6. daemon 原子替换与元数据
 
@@ -161,3 +169,65 @@ GPU 绝对吞吐高于 CPU、DRAM 容量下降或压缩文件读取快于 Baseli
 结果中 Hook/CPU Daemon/CPU SGLZ/CPU LZ4 行覆盖率分别为
 41.38%/62.15%/85.52%/70.83%，CI 要求 Hook 不低于 35%。CUDA kernel 继续由
 功能、CRC/SHA 和集成测试覆盖，不把 CPU gcov 数字外推到 GPU 代码。
+
+## 13. 单一高压缩率、高吞吐点不能代表适用边界
+
+问题：早期资源卸载实验只使用高可压缩输入和约 4096 MiB/s 固定吞吐。它能够
+证明一个工作点，却不能回答低压缩率、低吞吐是否仍有业务收益，也无法区分“达到
+固定处理量”与“已经饱和但仍拿业务数据比较”。
+
+修复：新增确定性的 0%/50%/100% 可压缩页生成器，以及
+`tests/offload_sensitivity.sh`。实验覆盖 1024/2048/4096 MiB/s × 三档压缩率 ×
+CPU/GPU 各五轮，并记录实际存储比、目标达成率、业务保留率和 submit/worker
+线程 CPU。基准五轮加 90 个 CPU/GPU 样本共 95 条记录。
+
+结果边界：
+
+- 七个 CPU/GPU 均达到至少 99% 目标的公平组中，GPU 解压 host CPU 降低
+  7.0%–55.4%；
+- 业务差从 1024 MiB/s、不可压缩输入的 +0.132±0.630 pp，增长到
+  4096 MiB/s、高可压缩输入的 +3.503±0.084 pp；前者以及 2048 MiB/s、
+  不可压缩输入与零重叠，不能声称稳定业务收益；
+- 4096 MiB/s 的不可压缩和 50% 可压缩组至少一条路径未达到 99% 目标，只能
+  报告为饱和边界，不能作固定吞吐比较。
+
+随后补充的512 MiB whole-system PCM代表组均达到约99.9%目标吞吐。GPU相对CPU
+总DRAM差在1024 MiB/s不可压缩、2048 MiB/s+50%、4096 MiB/s高可压缩输入下
+分别为−0.11%、−5.69%、−47.42%，同时GPU RSS高5.80%–8.92%。这进一步证明
+DRAM收益随压缩率和吞吐变化，最高档数字不能外推，也不能改写为内存容量下降。
+
+压缩侧另用 `tests/lz4_compress_sensitivity.sh` 测量不限速峰值。0%/50%/100%
+可压缩页下，GPU batch 只有单核 CPU liblz4 吞吐的 8.7%/7.3%/16.6%。因此当前
+GPU 压缩实现的较低 host CPU 伴随明显更低处理量，不能作为公平卸载收益；压缩侧
+仍是需要优化的负结果。
+
+## 14. SQLite 并行业务收益不等于数据库自身加速
+
+问题：SQLite 与固定吞吐解压任务并行时，GPU 相对 CPU 路径 QPS 高 7.3%、p99
+低 50.5%。该实验回答的是 CPU 资源竞争，不能证明 SQLite 数据库放入压缩对象后
+查询会更快。
+
+审计修复：旧runner设置了LZ4环境变量，却调用只生成SGLZ的CPU daemon，文件头
+算法ID为1。旧329.86/21.79 QPS及fixed32结果已标为历史无效。新runner改用支持
+LZ4的daemon，并在正式实验前强制校验`comp_algo=2`，防止标签再次漂移。
+
+优化：新增`GPUC_LZ4_SMALL_READ_CPU_BLOCKS`。默认应用请求只覆盖一个128 KiB
+block时走CPU liblz4，批量请求继续GPU卸载；设置0可恢复严格GPU-only。真实LZ4
+五轮中，严格GPU-only为55.67 QPS、p99 24.47 ms，混合策略为108.33 QPS、
+p99 11.62 ms，即QPS提高94.58%、p99降低52.52%。但普通文件仍为22197.22 QPS，
+因此只证明显著缓解小请求CUDA固定开销。
+
+结论：当前128 KiB block与用户态Hook不适合高性能SQLite点查；混合分流是明确的
+CPU/GPU策略，不能冒充GPU加速。可写数据库仍需要文件系统/DM层集成。
+
+## 15. LZ4 每block H2D提交开销
+
+问题：D2H已经合并，但解压输入仍对batch中的每个压缩block单独调用
+`cudaMemcpyAsync`，大量小DMA提交消耗host orchestration时间。
+
+修复：长期decompression pool增加pinned input staging buffer；同一batch先在host
+连续打包，再一次H2D。`GPUC_H2D_COALESCE=0`保留旧路径用于消融。
+
+验证：512 MiB工作集、128 blocks/batch五轮中，吞吐4805.13→5275.91 MiB/s
+（+9.80%），H2D 0.2713→0.0393 ms（-85.51%）；GPU微基准约6.01→7.63
+GiB/s。CPU仍约11.48 GiB/s，所以该修复收窄但没有反转绝对吞吐差距。

@@ -1,0 +1,2 @@
+scenario,workload,n,iops_mean,iops_ci95,mb_s_mean,mb_s_ci95,resp_ms_mean,resp_ms_ci95,p95_bucket_ms_mean,p95_bucket_ms_ci95,p99_bucket_ms_mean,p99_bucket_ms_ci95
+lz4,random_read,5,531.560000,34.685112,2.076420,0.135503,6.947440,0.377428,6.000000,2.479226,92.000000,56.262584

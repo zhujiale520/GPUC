@@ -1,0 +1,1 @@
+{"database": "/tmp/gpuc-sqlite-direct-2z2iNE/source.db", "database_bytes": 58671104, "elapsed_sec": 5.023566524963826, "latency_mean_us": 42.4198674990313, "latency_p50_us": 41.914, "latency_p95_us": 47.003, "latency_p99_us": 72.151, "latency_samples": 116135, "operations": 116135, "payload_mode": "mixed", "qps": 23118.03763777892, "range_span": 256, "rows": 100000, "workers": 1}

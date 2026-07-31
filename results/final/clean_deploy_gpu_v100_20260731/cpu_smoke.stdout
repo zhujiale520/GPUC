@@ -1,0 +1,23 @@
+make: Entering directory '/home/ubuntu/project3136859-386240/.clean-deploy-pZBlBR/repository'
+gcc -shared -fPIC -O3 -DCPU_ONLY_BUILD -I./include src/hook.c src/cpu_compress.c src/cpu_lz4.c -o bin/libcpuhook.so -ldl -lpthread -L/home/ubuntu/project3136859-386240/.clean-deploy-pZBlBR/repository/third_party/lz4 -llz4 -Xlinker -rpath -Xlinker /home/ubuntu/project3136859-386240/.clean-deploy-pZBlBR/repository/third_party/lz4
+gcc -O3 -I./include src/cpu_daemon.c src/cpu_compress.c src/cpu_lz4.c -o bin/cpu_compress_daemon -lpthread -L/home/ubuntu/project3136859-386240/.clean-deploy-pZBlBR/repository/third_party/lz4 -llz4 -Xlinker -rpath -Xlinker /home/ubuntu/project3136859-386240/.clean-deploy-pZBlBR/repository/third_party/lz4
+gcc -Iinclude src/test_hook.c -o bin/test_hook
+gcc -O3 -Wall -Wextra tests/scan_workload.c -o bin/scan_workload -lm
+CPU-only build complete.
+bash tests/test_posix_semantics.sh
+PASS: RAW writev/pwrite/O_APPEND/truncate/fallocate/dup semantics
+[test_hook] Wrote 262144 bytes to /tmp/gpuc-posix-IUk9gk/compressed.bin
+[daemon] Compressing: /tmp/gpuc-posix-IUk9gk/raw.bin (5 bytes, 1 blocks)
+[daemon] Done: /tmp/gpuc-posix-IUk9gk/raw.bin
+[daemon] Compressing: /tmp/gpuc-posix-IUk9gk/compressed.bin (262144 bytes, 2 blocks)
+[daemon] Done: /tmp/gpuc-posix-IUk9gk/compressed.bin
+PASS: COMPRESSED mutation is rejected with EROFS
+PASS: whitelist rename is atomic and preserves mode/mtime/xattr
+PASS: POSIX semantics smoke test
+bash tests/test_corrupt_headers.sh
+PASS: corrupt GPUC headers/block tables rejected
+bash tests/test_header_fuzz.sh
+PASS: 2000 deterministic malformed-format cases opened without crash
+bash tests/test_scan_workload.sh
+PASS: real scan workload builds and reports valid content metrics
+make: Leaving directory '/home/ubuntu/project3136859-386240/.clean-deploy-pZBlBR/repository'

@@ -429,7 +429,24 @@ static int compress_one_file(const char *path) {
                                        (const uint8_t **)batch_in, batch_in_lens,
                                        batch_out, batch_out_caps, batch_out_lens);
         }
-        (void)sret;
+        /*
+         * LZ4 returns the number of completed blocks and handles its own RAW
+         * fallback, so every block must complete. SGLZ returns only the number
+         * of blocks that compressed smaller; zero is valid and the loop below
+         * stores those blocks as RAW.
+         */
+        if ((g_use_lz4 && sret != (int)batch_count) ||
+            (!g_use_lz4 && sret < 0)) {
+            fprintf(stderr, "[daemon] compression batch failed at block %u "
+                            "(expected=%u, completed=%d)\n",
+                    i, batch_count, sret);
+            for (uint32_t b = 0; b < BATCH_SIZE; b++) {
+                free(batch_in[b]); free(batch_out[b]);
+            }
+            free(batch_in); free(batch_out);
+            free(batch_in_lens); free(batch_out_caps); free(batch_out_lens);
+            goto fail;
+        }
 
         /* 逐个处理输出 */
         for (uint32_t bi = 0; bi < batch_count; bi++) {

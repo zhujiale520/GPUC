@@ -1,0 +1,24 @@
+
+
+Copyright (c) 2000, 2018, Oracle and/or its affiliates. All rights reserved.
+Vdbench distribution: vdbench50407 Tue June 05  9:49:29 MDT 2018
+For documentation, see 'vdbench.pdf'.
+
+13:33:04.960 Created output directory '/home/ubuntu/project3136859-386240/results/final/vdbench_lz4_gpu_only_v100_20260731/lz4_random_read_r3'
+13:33:04.978 input argument scanned: '-f/home/ubuntu/project3136859-386240/results/final/vdbench_lz4_gpu_only_v100_20260731/lz4_random_read_r3.par'
+13:33:04.978 input argument scanned: '-o/home/ubuntu/project3136859-386240/results/final/vdbench_lz4_gpu_only_v100_20260731/lz4_random_read_r3'
+13:33:05.139 Starting slave: /home/ubuntu/project3136859-386240/third_party/manual/vdbench50407/vdbench SlaveJvm -m localhost -n localhost-10-260731-13.33.04.941 -l localhost-0 -p 5570   
+13:33:05.490 All slaves are now connected
+13:33:07.002 Starting RD=randread; I/O rate: Uncontrolled MAX; elapsed=5 warmup=1; For loops: None
+
+Jul 31, 2026    interval        i/o   MB/sec   bytes   read     resp     read    write     read    write     resp  queue  cpu%  cpu%
+                               rate  1024**2     i/o    pct     time     resp     resp      max      max   stddev  depth sys+u   sys
+13:33:08.098           1      221.0     0.86    4096 100.00    8.328    8.328    0.000   547.40     0.00   45.428    2.3   4.0   0.8
+13:33:09.018           2      468.0     1.83    4096 100.00    6.721    6.721    0.000   453.98     0.00   31.319    3.9   6.2   0.9
+13:33:10.012           3      490.0     1.91    4096 100.00    9.307    9.307    0.000  1498.96     0.00   85.311    4.0   5.0   0.5
+13:33:11.011           4      497.0     1.94    4096 100.00    4.232    4.232    0.000   677.68     0.00   34.135    4.0   4.6   0.6
+13:33:12.012           5      488.0     1.91    4096 100.00    7.848    7.848    0.000  1154.81     0.00   75.484    4.0   5.0   0.5
+13:33:13.018           6      491.0     1.92    4096 100.00    8.554    8.554    0.000  1432.97     0.00   81.475    4.0   5.0   0.9
+13:33:13.027     avg_2-6      486.8     1.90    4096 100.00    7.329    7.329    0.000  1498.96     0.00   66.100    4.0   5.2   0.7
+13:33:13.733 Vdbench execution completed successfully. Output directory: /home/ubuntu/project3136859-386240/results/final/vdbench_lz4_gpu_only_v100_20260731/lz4_random_read_r3 
+

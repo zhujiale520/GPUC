@@ -9,6 +9,9 @@ REPEATS="${GPUC_REPEATS:-5}"
 WORKERS="${GPUC_BUSINESS_WORKERS:-4}"
 DECOMP_CPU="${GPUC_DECOMP_CPU:-0}"
 TARGET_MIB_S="${GPUC_TARGET_MIB_S:-0}"
+WORKSET_MIB="${GPUC_WORKSET_MIB:-16}"
+COMPRESSIBLE_PCT="${GPUC_COMPRESSIBLE_PCT:-100}"
+BATCH_BLOCKS="${GPUC_BATCH_BLOCKS:-128}"
 export GPUC_WORKER_CPU="${GPUC_WORKER_CPU:-$DECOMP_CPU}"
 mkdir -p "$RESULT_DIR"
 
@@ -23,9 +26,12 @@ duration=$DURATION
 repeats=$REPEATS
 business_workers=$WORKERS
 target_decomp_mib_s=$TARGET_MIB_S
+workset_mib=$WORKSET_MIB
+compressible_pct=$COMPRESSIBLE_PCT
+batch_blocks=$BATCH_BLOCKS
 gpu_worker_cpu=$GPUC_WORKER_CPU
 affinity=business workers pinned to cores 0..N-1; submit/decompressor pinned to core $DECOMP_CPU
-data=16 MiB deterministic page pattern; identical CPU-generated LZ4 blocks
+data=deterministic page pattern; requested compressible pages recorded above; identical CPU-generated LZ4 blocks
 EOF
 echo "scenario,repeat,elapsed_sec,business_ops_s,decomp_mib_s,user_cpu_sec,sys_cpu_sec,submit_user_sec,submit_sys_sec,maxrss_kib,minflt,majflt,nvcsw,nivcsw,decomp_calls,queue_ms,pack_ms,h2d_ms,kernel_ms,d2h_ms,unpack_ms,total_ms,worker_user_sec,worker_sys_sec,pinned_host,gpu_util_avg_pct,power_avg_w,gpu_board_joules,decomp_gib,gpu_board_j_per_gib" > "$RESULT_DIR/runs.csv"
 

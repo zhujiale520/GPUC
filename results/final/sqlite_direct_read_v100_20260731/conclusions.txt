@@ -1,0 +1,3 @@
+cpu qps=329.864 vs_baseline=-98.60% p99_us=3614.485 cpu_cores=1.022
+gpu qps=21.790 vs_baseline=-99.91% p99_us=49743.176 cpu_cores=0.325
+gpu_vs_cpu_qps=-93.39%

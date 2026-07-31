@@ -1,0 +1,15 @@
+run_id=20260731T070504Z
+git_commit=e462537b656ba2ff549f12e9b0e3a6e4fa5c1a06
+kernel=Linux 5.15.0 #1 SMP Tue May 19 16:02:33 UTC 2026 x86_64 GNU/Linux
+cpu=Intel(R) Xeon(R) 6505P
+gpu=Tesla V100-SXM2-32GB, 570.181, 7.0
+log_source=/var/lib/dpkg/status
+log_sha256=0ee933171b7039ead41db92df0b9aa3ce2d843c7dbf2b65558677b8a4629eae9
+elf_source=/usr/bin/bash
+elf_sha256=025cf78cd9d276019e916b97b0decd10cacb14902db8eb9f28233019babfb331
+corpus_mib=64
+corpus_sha256=831d018eb7c613ecf0c54d0140b380b24a46bad894806123d4ba7ab54fd56e92
+corpus_construction=real source bytes repeated deterministically for stable timing
+runtime_s=5
+repeats=5
+compressed_allocated_bytes=36585472

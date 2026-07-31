@@ -9,7 +9,10 @@ LINK = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
 errors = []
 
 for doc in ROOT.rglob("*.md"):
-    if any(part in {".git", "node_modules"} for part in doc.parts):
+    # Vendored packages keep their upstream documentation verbatim and may
+    # intentionally omit website/build-only assets. Validate project-owned
+    # documentation, not third-party distribution internals.
+    if any(part in {".git", "node_modules", "third_party"} for part in doc.parts):
         continue
     text = doc.read_text(encoding="utf-8", errors="replace")
     for line_no, line in enumerate(text.splitlines(), 1):
