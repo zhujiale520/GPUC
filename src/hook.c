@@ -677,6 +677,12 @@ static off64_t get_logical_size(fd_info_t *info) {
     return info->phys_size - (off64_t)info->hdr.header_size;
 }
 
+static void gpuc_adjust_fd_stat_size(int fd, off_t *size) {
+    fd_info_t *info = get_fd_info(fd);
+    if (info && info->has_header)
+        *size = (off_t)get_logical_size(info);
+}
+
 /* ============================================================
  *  线程局部存储：压缩读重用缓冲区（避免每块 malloc/free）
  * ============================================================ */
@@ -3065,6 +3071,26 @@ int openat64(int dirfd, const char *pathname, int flags, ...) {
     }
     set_fd_info(fd, info);
     return fd;
+}
+
+/* Newer glibc versions may implement the public fstat symbols without
+ * routing through __fxstat.  Export both public entry points so managed files
+ * keep their logical size on those systems as well. */
+int fstat(int fd, struct stat *buf) {
+    int ret = gpuc_raw_fstat(fd, buf);
+    if (ret == 0 && !g_hooks_disabled)
+        gpuc_adjust_fd_stat_size(fd, &buf->st_size);
+    return ret;
+}
+
+int fstat64(int fd, struct stat64 *buf) {
+    int ret = gpuc_raw_fstat(fd, (struct stat *)buf);
+    if (ret == 0 && !g_hooks_disabled) {
+        fd_info_t *info = get_fd_info(fd);
+        if (info && info->has_header)
+            buf->st_size = (off64_t)get_logical_size(info);
+    }
+    return ret;
 }
 
 /* glibc _FORTIFY_SOURCE redirects open calls without O_CREAT to these names. */
