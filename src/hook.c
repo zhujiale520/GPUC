@@ -175,6 +175,20 @@ static int (*real_msync)(void *, size_t, int);
 static pthread_once_t g_backend_init_once = PTHREAD_ONCE_INIT;
 static int g_hooks_disabled = 1;  /* 默认禁用，hook_init 完成后启用 */
 
+/* Refresh physical size through the Linux kernel ABI.  The glibc-private
+ * __fxstat interface requires _STAT_VER, which newer development headers do
+ * not expose consistently across distributions. */
+static int gpuc_raw_fstat(int fd, struct stat *st) {
+#ifdef SYS_fstat
+    return (int)syscall(SYS_fstat, fd, st);
+#else
+    (void)fd;
+    (void)st;
+    errno = ENOSYS;
+    return -1;
+#endif
+}
+
 /* -------- Backend 函数指针（支持 CPU/GPU 运行时切换）-------- */
 static int  (*g_backend_compress_init)(void);
 static void (*g_backend_compress_fini)(void);
@@ -2486,7 +2500,7 @@ int fallocate(int fd, int mode, off_t offset, off_t length) {
                             offset + (off_t)info->hdr.header_size, length);
     if (ret == 0) {
         struct stat st;
-        if (real_fxstat(_STAT_VER, fd, &st) == 0) info->phys_size = st.st_size;
+        if (gpuc_raw_fstat(fd, &st) == 0) info->phys_size = st.st_size;
     }
     return ret;
 }
@@ -2512,7 +2526,7 @@ int fallocate64(int fd, int mode, off64_t offset, off64_t length) {
                               offset + (off64_t)info->hdr.header_size, length);
     if (ret == 0) {
         struct stat st;
-        if (real_fxstat(_STAT_VER, fd, &st) == 0) info->phys_size = st.st_size;
+        if (gpuc_raw_fstat(fd, &st) == 0) info->phys_size = st.st_size;
     }
     return ret;
 }
@@ -2531,7 +2545,7 @@ int posix_fallocate(int fd, off_t offset, off_t length) {
                                   offset + (off_t)info->hdr.header_size, length);
     if (ret == 0) {
         struct stat st;
-        if (real_fxstat(_STAT_VER, fd, &st) == 0) info->phys_size = st.st_size;
+        if (gpuc_raw_fstat(fd, &st) == 0) info->phys_size = st.st_size;
     }
     return ret;
 }
@@ -2551,7 +2565,7 @@ int posix_fallocate64(int fd, off64_t offset, off64_t length) {
         fd, offset + (off64_t)info->hdr.header_size, length);
     if (ret == 0) {
         struct stat st;
-        if (real_fxstat(_STAT_VER, fd, &st) == 0) info->phys_size = st.st_size;
+        if (gpuc_raw_fstat(fd, &st) == 0) info->phys_size = st.st_size;
     }
     return ret;
 }
