@@ -9,8 +9,14 @@ REPEATS="${GPUC_REPEATS:-5}"
 WORKSET_MIB="${GPUC_WORKSET_MIB:-512}"
 BATCH_BLOCKS="${GPUC_BATCH_BLOCKS:-128}"
 TARGET_MIB_S="${GPUC_TARGET_MIB_S:-0}"
+PIN_WORKSET="${GPUC_PIN_WORKSET:-0}"
 mkdir -p "$RESULT_DIR/raw"
 make -C "$PROJECT_DIR" bin/test_cpu_offload >/dev/null
+
+[[ "$PIN_WORKSET" == 0 || "$PIN_WORKSET" == 1 ]] || {
+    echo "ERROR: GPUC_PIN_WORKSET must be 0 or 1." >&2
+    exit 2
+}
 
 {
     echo "run_id=$RUN_ID"
@@ -23,6 +29,7 @@ make -C "$PROJECT_DIR" bin/test_cpu_offload >/dev/null
     echo "workset_mib=$WORKSET_MIB"
     echo "batch_blocks=$BATCH_BLOCKS"
     echo "target_mib_s=$TARGET_MIB_S"
+    echo "pin_workset_requested=$PIN_WORKSET (GPU scenario only)"
     echo "d2h_coalesce=enabled in both modes"
 } > "$RESULT_DIR/environment.txt"
 
@@ -34,7 +41,7 @@ for repeat in $(seq 1 "$REPEATS"); do
         [[ "$mode" == legacy ]] && coalesce=0
         output="$RESULT_DIR/raw/${mode}_r${repeat}.txt"
         GPUC_WORKSET_MIB="$WORKSET_MIB" GPUC_BATCH_BLOCKS="$BATCH_BLOCKS" \
-        GPUC_H2D_COALESCE="$coalesce" GPUC_D2H_COALESCE=1 \
+        GPUC_PIN_WORKSET="$PIN_WORKSET" GPUC_H2D_COALESCE="$coalesce" GPUC_D2H_COALESCE=1 \
             "$PROJECT_DIR/bin/test_cpu_offload" gpu "$DURATION" 0 0 \
             "$TARGET_MIB_S" > "$output"
         python3 - "$mode" "$repeat" "$output" "$RESULT_DIR/runs.csv" <<'PY'

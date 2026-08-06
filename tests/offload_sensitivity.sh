@@ -17,6 +17,7 @@ WORKERS="${GPUC_BUSINESS_WORKERS:-4}"
 DECOMP_CPU="${GPUC_DECOMP_CPU:-0}"
 TARGETS="${GPUC_TARGETS_MIB_S:-1024 2048 4096}"
 PCTS="${GPUC_COMPRESSIBLE_PCTS:-0 50 100}"
+PIN_WORKSET="${GPUC_PIN_WORKSET:-0}"
 export GPUC_WORKER_CPU="${GPUC_WORKER_CPU:-$DECOMP_CPU}"
 
 for value in "$DURATION" "$REPEATS" "$WORKSET_MIB" "$BATCH_BLOCKS" "$WORKERS"; do
@@ -25,6 +26,10 @@ for value in "$DURATION" "$REPEATS" "$WORKSET_MIB" "$BATCH_BLOCKS" "$WORKERS"; d
         exit 2
     }
 done
+[[ "$PIN_WORKSET" == 0 || "$PIN_WORKSET" == 1 ]] || {
+    echo "ERROR: GPUC_PIN_WORKSET must be 0 or 1" >&2
+    exit 2
+}
 for value in $TARGETS; do
     [[ "$value" =~ ^[1-9][0-9]*$ ]] || { echo "ERROR: invalid target: $value" >&2; exit 2; }
 done
@@ -50,6 +55,7 @@ mkdir -p "$RESULT_DIR/raw"
     echo "business_workers=$WORKERS"
     echo "decomp_cpu=$DECOMP_CPU"
     echo "gpu_worker_cpu=$GPUC_WORKER_CPU"
+    echo "pin_workset_requested=$PIN_WORKSET (GPU scenario only)"
     echo "targets_mib_s=$TARGETS"
     echo "requested_compressible_pcts=$PCTS"
     echo "data=deterministic 4 KiB pages; requested percentage uses repeated-byte pages and the remainder deterministic pseudo-random pages"
@@ -80,7 +86,7 @@ run_one() {
         --format=csv,noheader,nounits --loop-ms=200 > "$gpu" 2>/dev/null &
     sampler_pid=$!
     GPUC_WORKSET_MIB="$WORKSET_MIB" GPUC_BATCH_BLOCKS="$BATCH_BLOCKS" \
-        GPUC_COMPRESSIBLE_PCT="$pct" GPUC_DATA_INFO_FILE="$info" \
+        GPUC_PIN_WORKSET="$PIN_WORKSET" GPUC_COMPRESSIBLE_PCT="$pct" GPUC_DATA_INFO_FILE="$info" \
         "$BENCH" "$scenario" "$DURATION" "$WORKERS" "$DECOMP_CPU" "$target" > "$app"
     cleanup_sampler
 

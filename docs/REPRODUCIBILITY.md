@@ -614,6 +614,7 @@ check-env、CPU smoke、docs check、GPU build/test，并保存各阶段 stdout/
 | `GPUC_WORKER_CPU` | 固定长期 LZ4 GPU worker 的 CPU affinity | 不固定 |
 | `GPUC_CUDA_SPIN_WAIT` | `1` 使用 CUDA busy-spin；默认 blocking sync 节省主机 CPU | `0` |
 | `GPUC_WORKSET_MIB` | CPU/GPU 资源实验的轮转工作集大小 | `512`（正式 runner） |
+| `GPUC_PIN_WORKSET` | 为 GPU 场景将完整资源实验工作集页锁定；CPU 对照保持普通主机内存 | `0`；大工作集 DMA/D2H 诊断可设为 `1`，并须报告 pinned RSS 成本 |
 | `GPUC_BATCH_BLOCKS` | 每次 LZ4 batch 的 128 KiB block 数 | `128` |
 | `GPUC_COMPRESSIBLE_PCT` | 单次实验中确定性可压缩 4 KiB 页占比，范围 0–100 | `100` |
 | `GPUC_COMPRESSIBLE_PCTS` | 敏感性 runner 的可压缩页占比列表 | `0 50 100` |

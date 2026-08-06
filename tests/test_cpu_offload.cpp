@@ -304,9 +304,14 @@ int main(int argc, char **argv) {
 
     uint8_t *src = nullptr;
     uint8_t *decoded = nullptr;
-    bool request_pinned = workset_mib <= 64;
+    /* The full workset is only a GPU DMA buffer.  Pinning it for the CPU
+     * comparator neither helps CPU LZ4 nor fairly represents the GPU path's
+     * host-memory cost.  GPUC_PIN_WORKSET=1 explicitly enables it for large
+     * GPU worksets; the conservative <=64 MiB default remains unchanged. */
+    bool request_pinned = std::strcmp(scenario, "gpu") == 0 && workset_mib <= 64;
     if (const char *value = std::getenv("GPUC_PIN_WORKSET"))
-        request_pinned = std::strcmp(value, "1") == 0;
+        request_pinned = std::strcmp(scenario, "gpu") == 0 &&
+                         std::strcmp(value, "1") == 0;
     bool pinned = request_pinned &&
                   gpu_lz4_host_alloc((void **)&src, workset_bytes) == 0 &&
                   gpu_lz4_host_alloc((void **)&decoded, workset_bytes) == 0;
