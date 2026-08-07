@@ -1,0 +1,9 @@
+run_id=20260807T144840Z
+git_commit=84a882564a3fae24a028547730cf987d7a20e2e6
+kernel=Linux 6.8.0-124-generic #124~22.04.1-Ubuntu SMP PREEMPT_DYNAMIC Tue May 26 21:05:19 UTC  x86_64 GNU/Linux
+gpu=NVIDIA GeForce RTX 4090, 565.57.01, 8.9
+size=256M
+repeats=5
+cache_mode=single logical pass after POSIX_FADV_DONTNEED on the underlying inode
+direct=0
+sha256=39a20f5a9007a2dca89ca6d7f19bdf78e86b4467aba8ac0b25a7deb3ccf3635b

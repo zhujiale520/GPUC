@@ -1,0 +1,14 @@
+run_id=20260806T151154Z
+git_commit=84a882564a3fae24a028547730cf987d7a20e2e6
+kernel=Linux 6.8.0-124-generic #124~22.04.1-Ubuntu SMP PREEMPT_DYNAMIC Tue May 26 21:05:19 UTC  x86_64 GNU/Linux
+fio=fio-3.28
+gpu=NVIDIA GeForce RTX 4090, 565.57.01, 8.9
+size=64M
+runtime_s=3
+repeats=5
+block_sizes=4k 16k 128k
+fio_thread_jobs=1 4
+sample_timeout_s=33
+ioengine=sync
+cache=warm buffered I/O
+logical_sha256=84147cf0f6d7ce2b3a5d1e5c6188ebcbdd45dc84c3e6ec96227e3fce172c2512

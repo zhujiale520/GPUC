@@ -1,0 +1,46 @@
+<title>Vdbench baseline_mixed_rw_r4/localhost-0.stdout.html</title><pre>
+stdout/stderr for slave=localhost-0
+
+22:27:20.179 /bin/bash: /home/dell/anaconda3/lib/libtinfo.so.6: no version information available (required by /bin/bash)
+22:27:20.182 /bin/bash: /home/dell/anaconda3/lib/libtinfo.so.6: no version information available (required by /bin/bash)
+22:27:20.292 22:27:20.291 SlaveJvm execution parameter:  '-m localhost'
+22:27:20.292 22:27:20.292 SlaveJvm execution parameter:  '-n localhost-10-260807-22.27.20.032'
+22:27:20.292 22:27:20.292 SlaveJvm execution parameter:  '-l localhost-0'
+22:27:20.293 22:27:20.292 SlaveJvm execution parameter:  '-p 5570'
+22:27:20.293 22:27:20.292 SlaveJvm positional parameter: 'SlaveJvm'
+22:27:20.383 22:27:20.382 successfully connected to master localhost
+22:27:20.383 22:27:20.383 Connection to localhost using port 5570 successful
+22:27:20.507 22:27:20.506 ticks_per_second: 100
+22:27:20.515 22:27:20.515 Configuration interpretation took 0.01 seconds
+
+Link to Run Definitions:         <A HREF="#_1407343478">mixed For loops: None</A>
+
+22:27:20.764 22:27:20.763 Beginning of run setup
+22:27:20.764 22:27:20.763 File '/var/log/messages' does not exist. Monitoring bypassed
+22:27:20.764 22:27:20.764 **********************
+22:27:20.764 
+22:27:20.765 
+22:27:20.765 22:27:20.764 File '/var/log/messages.1' does not exist. Monitoring bypassed
+22:27:20.855 22:27:20.855 Opening sd=sd1,lun=/tmp/gpuc-vdbench-e8BDdy/mixed_baseline.bin; write: true; flags: OpenFlags: 0x00000000 OtherFlags: 0x00000000
+22:27:20.870 22:27:20.870 Started 1 Workload Generator threads.
+22:27:20.912 22:27:20.912 Started  4 i/o threads for sd1
+22:27:20.912 22:27:20.912 Started a total of  4 i/o threads.
+22:27:20.912 22:27:20.912 Waiting for task synchronization
+22:27:20.913 22:27:20.912 task_wait_start_complete: IO_task /tmp/gpuc-vdbench-e8BDdy/mixed_baseline.bin 1
+22:27:21.113 22:27:21.112 Requesting full garbage collection
+22:27:21.114 22:27:21.114 GcTracker: cum:   0 intv:  0 ms:       0 mss:  0.00% Heap_MB max:   911 curr:   252 used:   159 free:    93 
+22:27:21.162 22:27:21.161 GcTracker: cum:   2 intv:  2 ms:      46 mss:  0.00% Heap_MB max:   911 curr:   252 used:    17 free:   235 
+22:27:21.162 22:27:21.162 task_wait_start_complete() end
+
+<a name="_1407343478"></a><i><b>22:27:22.002 Starting RD=mixed; I/O rate: Uncontrolled MAX; elapsed=10 warmup=2; For loops: None</b></i>
+
+22:27:22.005 22:27:22.004 task_run_all(): 5 tasks
+22:27:34.156 22:27:34.155 Sent 4 interrupts to 4 waiting IO_task threads
+22:27:34.157 22:27:34.157 Java Heap in MB. max:  910.500; current:  253.000; used:   37.801; free:  215.199
+22:27:34.157 22:27:34.157 Maximum native memory allocation:       32,768; Current allocation:            0
+22:27:34.158 22:27:34.158 End of run
+22:27:34.158 22:27:34.158 **********
+22:27:34.158 
+22:27:34.158 
+22:27:34.677 22:27:34.677 Master is requesting slave shutdown
+22:27:34.678 22:27:34.678 Java Heap in MB. max:  910.500; current:  253.000; used:   37.806; free:  215.194

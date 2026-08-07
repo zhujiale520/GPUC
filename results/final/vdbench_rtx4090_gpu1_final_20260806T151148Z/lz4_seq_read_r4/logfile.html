@@ -1,0 +1,57 @@
+<title>Vdbench lz4_seq_read_r4/logfile.html</title><pre>
+Copyright (c) 2000, 2018, Oracle and/or its affiliates. All rights reserved.
+Vdbench distribution: vdbench50407
+
+22:25:41.712 input argument scanned: '-f/home/dell/zhujiale/project3136859-386240/results/local/vdbench_rtx4090_gpu1_final_20260806T151148Z/lz4_seq_read_r4.par'
+22:25:41.712 input argument scanned: '-o/home/dell/zhujiale/project3136859-386240/results/local/vdbench_rtx4090_gpu1_final_20260806T151148Z/lz4_seq_read_r4'
+22:25:41.712 java.vendor                   Private Build
+22:25:41.712 java.home                     /usr/lib/jvm/java-8-openjdk-amd64/jre
+22:25:41.712 java.vm.specification.version 1.8
+22:25:41.712 java.vm.version               25.492-b09
+22:25:41.712 java.vm.vendor                Private Build
+22:25:41.713 java.specification.version    1.8
+22:25:41.713 java.class.version            52.0
+22:25:41.713 user.name                     dell
+22:25:41.713 user.dir                      /home/dell/zhujiale/project3136859-386240
+22:25:41.713 java.io.tmpdir                /tmp
+22:25:41.713 java.class.path               /home/dell/zhujiale/project3136859-386240/third_party/manual/vdbench50407/:/home/dell/zhujiale/project3136859-386240/third_party/manual/vdbench50407/classes:/home/dell/zhujiale/project3136859-386240/third_party/manual/vdbench50407/vdbench.jar
+22:25:41.713 os.name                       Linux
+22:25:41.713 os.arch                       amd64
+22:25:41.713 os.version                    6.8.0-124-generic
+22:25:41.713 sun.arch.data.model           64
+22:25:41.715 Flushing all reports
+22:25:41.838 Starting slave: /home/dell/zhujiale/project3136859-386240/third_party/manual/vdbench50407/vdbench SlaveJvm -m localhost -n localhost-10-260807-22.25.41.681 -l localhost-0 -p 5570   
+22:25:42.101 Slave localhost-0 (pid 3955152) connected to master 3955059
+22:25:42.151 All slaves are now connected
+22:25:42.219 sd=sd1,lun=/tmp/gpuc-vdbench-e8BDdy/lz4/data.bin lun size: 268,488,704 bytes; 0.2500 GB (1024**3); 0.2685 GB (1000**3)
+
+Link to Run Definitions:         <A HREF="#_1407343478">seqread For loops: None</A>
+
+22:25:42.455 Flushing all reports
+22:25:42.492 Waiting for synchronization of all slaves
+22:25:42.993 Synchronization of all slaves complete
+
+<a name="_1407343478"></a><i><b>22:25:43.003 Starting RD=seqread; I/O rate: Uncontrolled MAX; elapsed=10 warmup=2; For loops: None</b></i>
+
+
+Aug 07, 2026    interval        i/o   MB/sec   bytes   read     resp     read    write     read    write     resp  queue  cpu%  cpu%
+                               rate  1024**2     i/o    pct     time     resp     resp      max      max   stddev  depth sys+u   sys
+22:25:44.096           1      335.0    41.88  131072 100.00    9.642    9.642    0.000   178.17     0.00   21.663    3.4   3.0   0.7
+22:25:45.014           2     1139.0   142.38  131072 100.00    3.418    3.418    0.000   232.77     0.00   15.198    3.9   2.0   0.3
+22:25:46.013           3     1099.0   137.38  131072 100.00    3.569    3.569    0.000   257.50     0.00   16.205    4.0   2.2   0.6
+22:25:47.012           4      974.0   121.75  131072 100.00    4.262    4.262    0.000   236.49     0.00   16.392    4.0   1.9   0.3
+22:25:48.012           5      629.0    78.63  131072 100.00    6.244    6.244    0.000   137.70     0.00   15.426    4.0   3.1   0.5
+22:25:49.012           6      913.0   114.13  131072 100.00    4.444    4.444    0.000   180.52     0.00   14.347    4.0   2.5   0.5
+22:25:50.009           7     1205.0   150.63  131072 100.00    3.173    3.173    0.000   236.04     0.00   15.014    4.0   3.0   0.6
+22:25:51.008           8     1125.0   140.63  131072 100.00    3.453    3.453    0.000   497.88     0.00   20.348    4.0   2.1   0.4
+22:25:52.009           9     1388.0   173.50  131072 100.00    3.043    3.043    0.000   368.33     0.00   20.374    4.0   2.0   0.4
+22:25:53.027          10      867.0   108.38  131072 100.00    4.414    4.414    0.000   310.57     0.00   17.678    4.0   2.3   0.6
+22:25:54.009          11     1096.0   137.00  131072 100.00    3.407    3.407    0.000   382.47     0.00   20.233    4.0   2.5   0.5
+22:25:55.018          12      955.0   119.38  131072 100.00    4.510    4.510    0.000   516.71     0.00   28.614    4.0   2.0   0.4
+22:25:55.026    avg_3-12     1025.1   128.14  131072 100.00    3.888    3.888    0.000   516.71     0.00   19.015    4.0   2.4   0.5
+22:25:55.238 Flushing all reports
+22:25:55.238 Java Heap in MB. max:  455.500; current:   77.500; used:   19.142; free:   58.358
+22:25:55.290 Ending Reporter
+22:25:55.557 Vdbench execution completed successfully. Output directory: /home/dell/zhujiale/project3136859-386240/results/local/vdbench_rtx4090_gpu1_final_20260806T151148Z/lz4_seq_read_r4 
+
+22:25:56.661 Java Heap in MB. max:  455.500; current:   77.500; used:   15.999; free:   61.501

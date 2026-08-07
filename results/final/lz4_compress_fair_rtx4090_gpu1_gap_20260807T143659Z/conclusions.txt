@@ -1,0 +1,6 @@
+At the common target, CPU host cost: 0.450 cores
+At the common target, GPU host cost: 0.316 cores
+GPU host CPU reduction: 29.8%
+GPU batch vs serial throughput speedup: 8.20x (batch is target-limited)
+Compression ratio equality delta: 0.000000000
+Board energy includes idle GPU board power; CPU package/whole-system energy is not measured.

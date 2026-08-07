@@ -1,0 +1,42 @@
+/bin/bash: /home/dell/anaconda3/lib/libtinfo.so.6: no version information available (required by /bin/bash)
+
+
+Copyright (c) 2000, 2018, Oracle and/or its affiliates. All rights reserved.
+Vdbench distribution: vdbench50407 Tue June 05  9:49:29 MDT 2018
+For documentation, see 'vdbench.pdf'.
+
+22:27:20.047 Created output directory '/home/dell/zhujiale/project3136859-386240/results/local/vdbench_rtx4090_gpu1_final_20260806T151148Z/baseline_mixed_rw_r4'
+22:27:20.062 input argument scanned: '-f/home/dell/zhujiale/project3136859-386240/results/local/vdbench_rtx4090_gpu1_final_20260806T151148Z/baseline_mixed_rw_r4.par'
+22:27:20.063 input argument scanned: '-o/home/dell/zhujiale/project3136859-386240/results/local/vdbench_rtx4090_gpu1_final_20260806T151148Z/baseline_mixed_rw_r4'
+22:27:20.176 Starting slave: /home/dell/zhujiale/project3136859-386240/third_party/manual/vdbench50407/vdbench SlaveJvm -m localhost -n localhost-10-260807-22.27.20.032 -l localhost-0 -p 5570   
+22:27:20.458 All slaves are now connected
+22:27:22.002 Starting RD=mixed; I/O rate: Uncontrolled MAX; elapsed=10 warmup=2; For loops: None
+
+Aug 07, 2026    interval        i/o   MB/sec   bytes   read     resp     read    write     read    write     resp  queue  cpu%  cpu%
+                               rate  1024**2     i/o    pct     time     resp     resp      max      max   stddev  depth sys+u   sys
+22:27:23.078           1   312136.0  1219.28    4096  69.92    0.003    0.003    0.004     0.05     0.05    0.002    1.0   3.3   1.0
+22:27:24.023           2   539446.0  2107.21    4096  69.93    0.003    0.003    0.004     0.56     0.57    0.003    1.8   6.1   2.5
+22:27:25.013           3   553171.0  2160.82    4096  70.05    0.003    0.003    0.004     1.15     0.99    0.004    1.8   6.1   2.4
+22:27:26.013           4   554218.0  2164.91    4096  70.11    0.003    0.003    0.004     0.05     0.05    0.002    1.8   6.4   2.3
+22:27:27.011           5   554539.0  2166.17    4096  69.99    0.003    0.003    0.004     0.05     0.05    0.002    1.8   6.1   2.3
+22:27:28.028           6   307800.0  1202.34    4096  70.09    0.009    0.003    0.021     0.08    37.82    0.266    2.7   4.8   2.0
+22:27:29.009           7   416454.0  1626.77    4096  70.00    0.006    0.003    0.012    10.58    22.86    0.165    2.3   6.4   2.6
+22:27:30.008           8   539394.0  2107.01    4096  70.02    0.004    0.003    0.005     0.04     0.18    0.003    1.9   6.3   3.0
+22:27:31.009           9   532523.0  2080.17    4096  70.06    0.004    0.003    0.005     0.05     0.22    0.003    1.9   6.5   3.1
+22:27:32.009          10   533639.0  2084.53    4096  69.94    0.004    0.003    0.005     0.05     0.45    0.003    1.9   6.4   3.0
+22:27:33.010          11   536235.0  2094.67    4096  69.95    0.004    0.003    0.005     1.00     1.00    0.004    1.9   6.7   3.2
+22:27:34.019          12   552765.0  2159.24    4096  69.94    0.004    0.003    0.006     0.27     0.28    0.003    2.0   6.9   3.6
+22:27:34.038    avg_3-12   508073.8  1984.66    4096  70.01    0.004    0.003    0.006    10.58    37.82    0.081    2.0   6.3   2.8
+22:27:34.052 *
+22:27:34.052 ****************************************************************************************
+22:27:34.052 * Warning: total amount of i/o per second per slave (508,074) greater than 100,000.    *
+22:27:34.052 * You may need to adjust your total slave count.                                       *
+22:27:34.052 *                                                                                      *
+22:27:34.052 * See 'jvms=' in documentation for raw (SD/WD) workloads).                             *
+22:27:34.052 * See 'host=' and/or 'clients=' in documentation for file system (FSD/FWD) workloads). *
+22:27:34.052 *                                                                                      *
+22:27:34.052 * rd=mixed actively used 1 slaves.                                                     *
+22:27:34.053 ****************************************************************************************
+22:27:34.053 *
+22:27:34.777 Vdbench execution completed successfully. Output directory: /home/dell/zhujiale/project3136859-386240/results/local/vdbench_rtx4090_gpu1_final_20260806T151148Z/baseline_mixed_rw_r4 
+

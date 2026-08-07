@@ -1,14 +1,37 @@
-# V100 决赛实验结果索引
+# V100 与 RTX 4090 决赛实验结果索引
 
 本目录只收录完成正确性校验、具有环境记录和原始 CSV/JSON 的结果。P0 新实验以
 checkpoint `035e42b02a5a2a929c14c0de8fa1f1a5e86088b8` 为起点，随后加入对齐格式与
 文档收口；未提交工作区的关键源码与脚本 SHA-256 见
 `SOURCE_MANIFEST.sha256`。
 
-硬件为 Tesla V100-SXM2-32GB（compute capability 7.0），驱动 570.181，
-内核 5.15.0，fio 3.16。每个子目录的 `environment.txt` 是该实验的权威环境记录。
+V100 原始平台为 Tesla V100-SXM2-32GB（compute capability 7.0），驱动
+570.181，内核 5.15.0，fio 3.16。RTX 4090 复测平台使用物理 GPU 1，
+compute capability 8.9，驱动 565.57.01。每个子目录的 `environment.txt`
+是该实验的权威环境记录；跨机器比较同时包含 CPU、内存、PCIe/SXM 和存储路径
+差异，不能解释为只替换 GPU 的同机 A/B。
 
-## 有效结果
+## RTX 4090 有效结果
+
+完整缺口、配置优劣和 V100/4090 对比见
+[`RTX4090_GAP_ANALYSIS_20260807.md`](RTX4090_GAP_ANALYSIS_20260807.md)。
+
+| 目录 | 口径 | 主要结论 |
+|---|---|---|
+| `clean_deploy_rtx4090_gpu1_20260806T140003Z/` | 环境、CPU smoke、文档、GPU build/test | 五阶段全部 PASS |
+| `offload_sensitivity_rtx4090_gpu1_20260806T140003Z/`、`offload_sensitivity_rtx4090_gpu1_pinned_20260806T144543Z/` | 1/2/4 GiB/s × 0/50/100%，pageable/pinned | pinned 的 4 GiB/s、100% 可压缩场景接近目标吞吐并显著降低业务争用 |
+| `resource_rtx4090_gpu1_final_20260806T145935Z/` | 4 GiB/s、五轮资源画像 | GPU 比 CPU 多保留 13.05% 业务吞吐，解压路径 CPU 时间降低 96.4% |
+| `h2d_*_rtx4090_gpu1_20260806T140003Z/` | H2D 合并、batch、workset、pageable/pinned 和设备映射 | pinned+coalesced 的 128 MiB workset 达 10674.3 MiB/s |
+| `d2h_coalesce_rtx4090_gpu1_gap_20260807T143659Z/` | D2H 合并严格 A/B，各五轮 | 合并吞吐提高 41.4%，D2H 延迟降低 28.0% |
+| `lz4_compress_sensitivity_rtx4090_gpu1_20260806T140003Z/`、`lz4_compress_fair_rtx4090_gpu1_gap_20260807T143659Z/` | 三档压缩率峰值与 CPU/GPU 公平压缩 | GPU batch 比 GPU serial 快 8.20 倍；同吞吐主机 CPU 比 CPU 路径低 29.8% |
+| `fio_threads_rtx4090_gpu1_final_20260806T151148Z/`、`high_concurrency_rtx4090_gpu1_gap_20260807T143659Z/` | fio 正确性、退出稳定性和 1/4/8/16/32 jobs | 60/60 正确；128 KiB GPU Compressed 最佳为 16 jobs、584.8±43.4 MiB/s |
+| `cold_cache_rtx4090_gpu1_gap_20260807T143659Z/`、`real_scan_rtx4090_gpu1_gap_20260807T143659Z/` | cold-cache 与真实日志/ELF 扫描 | GPU Compressed cold 读和真实扫描均无性能优势，作为适用边界保留 |
+| `fault_recovery_rtx4090_gpu1_gap_20260807T143659Z/` | ENOSPC、SIGKILL、重启、fallback、`/dev/full` | 五项全部 PASS |
+| `stability_1h_rtx4090_gpu1_final_20260806T151148Z/` | 512 MiB、128 KiB、4 jobs、持续一小时 | fio error=0，前后逻辑 SHA 一致 |
+| `vdbench_rtx4090_gpu1_final_20260806T151148Z/` | Vdbench 5.04.07、4 线程、三类 workload、五轮 | 50/50 样本通过且逻辑 SHA 一致 |
+| `batch_size_rtx4090_gpu1_gap_20260807T143659Z/`、`ablation_rtx4090_gpu1_gap_20260807T143659Z/` | batch=1/2/4/8/16/32 与七变体消融 | batch≥4 进入平台区；单独关闭 batch/readahead 分别下降 34.2%/30.9% |
+
+## V100 有效结果
 
 | 目录 | 口径 | 主要结论 |
 |---|---|---|
@@ -79,5 +102,5 @@ COMPRESSED 读取都慢于对应 Baseline，因此即使离线压缩成本按 0 
 - `results/final/high_concurrency_v100_20260725/` 是保留的历史无效结果，
   其 README 已说明错误原因，不得用于决赛图表。
 - 所有数值都是该单机软件栈的工程观测，不外推为生产级保证。
-- 长稳脚本默认 1 小时，但当前正式目录实际执行 10 分钟；真实 GPU reset、掉电和
-  数小时压力仍需要隔离且具有管理员权限的机器。
+- V100 正式长稳目录实际执行 10 分钟；RTX 4090 已完成一小时持续读取。真实 GPU
+  reset、掉电和更长时间压力仍需要隔离且具有管理员权限的机器。

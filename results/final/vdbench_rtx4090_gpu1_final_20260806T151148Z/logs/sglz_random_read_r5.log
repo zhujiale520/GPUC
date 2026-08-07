@@ -1,0 +1,31 @@
+/bin/bash: /home/dell/anaconda3/lib/libtinfo.so.6: no version information available (required by /bin/bash)
+
+
+Copyright (c) 2000, 2018, Oracle and/or its affiliates. All rights reserved.
+Vdbench distribution: vdbench50407 Tue June 05  9:49:29 MDT 2018
+For documentation, see 'vdbench.pdf'.
+
+22:29:57.416 Created output directory '/home/dell/zhujiale/project3136859-386240/results/local/vdbench_rtx4090_gpu1_final_20260806T151148Z/sglz_random_read_r5'
+22:29:57.446 input argument scanned: '-f/home/dell/zhujiale/project3136859-386240/results/local/vdbench_rtx4090_gpu1_final_20260806T151148Z/sglz_random_read_r5.par'
+22:29:57.446 input argument scanned: '-o/home/dell/zhujiale/project3136859-386240/results/local/vdbench_rtx4090_gpu1_final_20260806T151148Z/sglz_random_read_r5'
+22:29:57.597 Starting slave: /home/dell/zhujiale/project3136859-386240/third_party/manual/vdbench50407/vdbench SlaveJvm -m localhost -n localhost-10-260807-22.29.57.387 -l localhost-0 -p 5570   
+22:29:57.904 All slaves are now connected
+22:29:59.002 Starting RD=randread; I/O rate: Uncontrolled MAX; elapsed=10 warmup=2; For loops: None
+
+Aug 07, 2026    interval        i/o   MB/sec   bytes   read     resp     read    write     read    write     resp  queue  cpu%  cpu%
+                               rate  1024**2     i/o    pct     time     resp     resp      max      max   stddev  depth sys+u   sys
+22:30:00.099           1      254.0     0.99    4096 100.00    9.178    9.178    0.000   198.97     0.00   22.544    2.3   2.6   0.7
+22:30:01.015           2      694.0     2.71    4096 100.00    5.090    5.090    0.000   139.71     0.00   12.243    3.9   2.1   0.5
+22:30:02.015           3      728.0     2.84    4096 100.00    5.934    5.934    0.000   199.94     0.00   17.179    4.0   2.2   0.7
+22:30:03.012           4      655.0     2.56    4096 100.00    6.123    6.123    0.000    51.49     0.00    5.616    4.0   2.5   0.5
+22:30:04.012           5      651.0     2.54    4096 100.00    6.141    6.141    0.000   146.56     0.00    7.823    4.0   1.8   0.4
+22:30:05.010           6      652.0     2.55    4096 100.00    6.110    6.110    0.000    21.31     0.00    3.589    4.0   2.1   0.5
+22:30:06.008           7      653.0     2.55    4096 100.00    6.124    6.124    0.000    82.89     0.00    6.299    4.0   1.6   0.4
+22:30:07.011           8      642.0     2.51    4096 100.00    6.220    6.220    0.000    48.22     0.00    6.036    4.0   2.1   0.6
+22:30:08.008           9      650.0     2.54    4096 100.00    6.092    6.092    0.000    87.80     0.00    6.518    4.0   1.7   0.4
+22:30:09.027          10      670.0     2.62    4096 100.00    5.958    5.958    0.000    52.97     0.00    7.780    4.0   2.0   0.5
+22:30:10.008          11      692.0     2.70    4096 100.00    5.751    5.751    0.000   119.61     0.00    9.937    4.0   2.5   0.5
+22:30:11.017          12      754.0     2.95    4096 100.00    4.894    4.894    0.000   315.15     0.00   21.096    4.0   1.8   0.4
+22:30:11.024    avg_3-12      674.7     2.64    4096 100.00    5.917    5.917    0.000   315.15     0.00   10.924    4.0   2.0   0.5
+22:30:12.307 Vdbench execution completed successfully. Output directory: /home/dell/zhujiale/project3136859-386240/results/local/vdbench_rtx4090_gpu1_final_20260806T151148Z/sglz_random_read_r5 
+

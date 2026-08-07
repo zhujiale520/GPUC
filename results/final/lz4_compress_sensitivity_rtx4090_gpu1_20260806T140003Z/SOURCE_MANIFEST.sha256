@@ -1,0 +1,4 @@
+f48ede4ee5549b43d91624e17fa6ae261dc0d0fbe2aa77072906416bd51cca6d  /home/dell/zhujiale/project3136859-386240/tests/benchmark_lz4_compress.cpp
+ba5a0b0d901ba6a63cd261103688a8da2c30dc79ac841eb07800acceb5b3ec06  /home/dell/zhujiale/project3136859-386240/tests/lz4_compress_sensitivity.sh
+a83129906c91a8d96ba7533a40c7529be6f907d0298424a651f24649743efb20  /home/dell/zhujiale/project3136859-386240/src/gpu_lz4.cu
+6fceee930931c6f87636cc8ef4ee0cf303ef86a0eda73283ba2547d0fd3e3f78  /home/dell/zhujiale/project3136859-386240/src/cpu_lz4.c

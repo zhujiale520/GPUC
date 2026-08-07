@@ -1,0 +1,15 @@
+run_id=20260807T144922Z
+git_commit=84a882564a3fae24a028547730cf987d7a20e2e6
+kernel=Linux 6.8.0-124-generic #124~22.04.1-Ubuntu SMP PREEMPT_DYNAMIC Tue May 26 21:05:19 UTC  x86_64 GNU/Linux
+cpu=Intel(R) Xeon(R) Gold 6238 CPU @ 2.10GHz
+gpu=NVIDIA GeForce RTX 4090, 565.57.01, 8.9
+log_source=/var/log/dpkg.log
+log_sha256=ad528fb31ee2fe90e7e314051b9e0d902497fc07bb6a9313443bdb789e78ffb7
+elf_source=/usr/bin/bash
+elf_sha256=59474588a312b6b6e73e5a42a59bf71e62b55416b6c9d5e4a6e1c630c2a9ecd4
+corpus_mib=64
+corpus_sha256=3dbc9f706c8ce4ea108c41ad12ad9279fdbeac59b18bf569c2476c3063e7c060
+corpus_construction=real source bytes repeated deterministically for stable timing
+runtime_s=5
+repeats=5
+compressed_allocated_bytes=48537600

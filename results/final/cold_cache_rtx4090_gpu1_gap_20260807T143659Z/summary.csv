@@ -1,0 +1,4 @@
+scenario,n,mean_mib_s,stddev_mib_s,ci95_mib_s
+baseline,5,518.379,2.739,2.401
+hook_raw,5,512.015,19.691,17.260
+gpu_compressed,5,144.920,27.976,24.522

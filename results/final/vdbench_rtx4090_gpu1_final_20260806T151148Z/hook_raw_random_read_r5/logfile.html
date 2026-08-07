@@ -1,0 +1,68 @@
+<title>Vdbench hook_raw_random_read_r5/logfile.html</title><pre>
+Copyright (c) 2000, 2018, Oracle and/or its affiliates. All rights reserved.
+Vdbench distribution: vdbench50407
+
+22:29:33.348 input argument scanned: '-f/home/dell/zhujiale/project3136859-386240/results/local/vdbench_rtx4090_gpu1_final_20260806T151148Z/hook_raw_random_read_r5.par'
+22:29:33.348 input argument scanned: '-o/home/dell/zhujiale/project3136859-386240/results/local/vdbench_rtx4090_gpu1_final_20260806T151148Z/hook_raw_random_read_r5'
+22:29:33.349 java.vendor                   Private Build
+22:29:33.349 java.home                     /usr/lib/jvm/java-8-openjdk-amd64/jre
+22:29:33.349 java.vm.specification.version 1.8
+22:29:33.349 java.vm.version               25.492-b09
+22:29:33.349 java.vm.vendor                Private Build
+22:29:33.349 java.specification.version    1.8
+22:29:33.349 java.class.version            52.0
+22:29:33.349 user.name                     dell
+22:29:33.349 user.dir                      /home/dell/zhujiale/project3136859-386240
+22:29:33.349 java.io.tmpdir                /tmp
+22:29:33.349 java.class.path               /home/dell/zhujiale/project3136859-386240/third_party/manual/vdbench50407/:/home/dell/zhujiale/project3136859-386240/third_party/manual/vdbench50407/classes:/home/dell/zhujiale/project3136859-386240/third_party/manual/vdbench50407/vdbench.jar
+22:29:33.349 os.name                       Linux
+22:29:33.349 os.arch                       amd64
+22:29:33.349 os.version                    6.8.0-124-generic
+22:29:33.349 sun.arch.data.model           64
+22:29:33.351 Flushing all reports
+22:29:33.481 Starting slave: /home/dell/zhujiale/project3136859-386240/third_party/manual/vdbench50407/vdbench SlaveJvm -m localhost -n localhost-10-260807-22.29.33.316 -l localhost-0 -p 5570   
+22:29:33.748 Slave localhost-0 (pid 3959227) connected to master 3959134
+22:29:33.785 All slaves are now connected
+22:29:33.853 sd=sd1,lun=/tmp/gpuc-vdbench-e8BDdy/raw/data.bin lun size: 268,435,512 bytes; 0.2500 GB (1024**3); 0.2684 GB (1000**3)
+
+Link to Run Definitions:         <A HREF="#_1407343478">randread For loops: None</A>
+
+22:29:34.094 Flushing all reports
+22:29:34.121 Waiting for synchronization of all slaves
+22:29:34.621 Synchronization of all slaves complete
+
+<a name="_1407343478"></a><i><b>22:29:35.003 Starting RD=randread; I/O rate: Uncontrolled MAX; elapsed=10 warmup=2; For loops: None</b></i>
+
+
+Aug 07, 2026    interval        i/o   MB/sec   bytes   read     resp     read    write     read    write     resp  queue  cpu%  cpu%
+                               rate  1024**2     i/o    pct     time     resp     resp      max      max   stddev  depth sys+u   sys
+22:29:36.093           1   376165.0  1469.39    4096 100.00    0.003    0.003    0.000     0.05     0.00    0.002    1.1   3.8   1.1
+22:29:37.016           2   517389.0  2021.05    4096 100.00    0.003    0.003    0.000     7.36     0.00    0.010    1.5   6.8   2.3
+22:29:38.013           3   584899.0  2284.76    4096 100.00    0.003    0.003    0.000     2.65     0.00    0.005    1.7   6.3   2.4
+22:29:39.014           4   588968.0  2300.66    4096 100.00    0.003    0.003    0.000     1.40     0.00    0.003    1.7   6.4   2.4
+22:29:40.013           5   573883.0  2241.73    4096 100.00    0.003    0.003    0.000     0.04     0.00    0.002    1.6   5.9   2.2
+22:29:41.010           6   669975.0  2617.09    4096 100.00    0.003    0.003    0.000     0.06     0.00    0.002    1.9   6.4   2.5
+22:29:42.009           7   726180.0  2836.64    4096 100.00    0.003    0.003    0.000     0.04     0.00    0.001    2.1   5.9   2.6
+22:29:43.009           8   722849.0  2823.63    4096 100.00    0.003    0.003    0.000     0.08     0.00    0.001    2.0   6.2   2.7
+22:29:44.009           9   710694.0  2776.15    4096 100.00    0.003    0.003    0.000     0.04     0.00    0.001    2.0   6.6   2.8
+22:29:45.009          10   717026.0  2800.88    4096 100.00    0.003    0.003    0.000     0.06     0.00    0.001    2.0   6.5   2.6
+22:29:46.008          11   729319.0  2848.90    4096 100.00    0.003    0.003    0.000     0.04     0.00    0.002    2.1   5.9   2.7
+22:29:47.023          12   721553.0  2818.57    4096 100.00    0.003    0.003    0.000     1.78     0.00    0.004    2.0   6.5   2.6
+22:29:47.031    avg_3-12   674534.6  2634.90    4096 100.00    0.003    0.003    0.000     2.65     0.00    0.002    1.9   6.3   2.5
+22:29:47.041 *
+22:29:47.041 ****************************************************************************************
+22:29:47.041 * Warning: total amount of i/o per second per slave (674,535) greater than 100,000.    *
+22:29:47.041 * You may need to adjust your total slave count.                                       *
+22:29:47.042 *                                                                                      *
+22:29:47.042 * See 'jvms=' in documentation for raw (SD/WD) workloads).                             *
+22:29:47.042 * See 'host=' and/or 'clients=' in documentation for file system (FSD/FWD) workloads). *
+22:29:47.042 *                                                                                      *
+22:29:47.042 * rd=randread actively used 1 slaves.                                                  *
+22:29:47.042 ****************************************************************************************
+22:29:47.042 *
+22:29:47.244 Flushing all reports
+22:29:47.245 Java Heap in MB. max:  455.500; current:   77.500; used:   19.808; free:   57.692
+22:29:47.295 Ending Reporter
+22:29:48.197 Vdbench execution completed successfully. Output directory: /home/dell/zhujiale/project3136859-386240/results/local/vdbench_rtx4090_gpu1_final_20260806T151148Z/hook_raw_random_read_r5 
+
+22:29:49.201 Java Heap in MB. max:  455.500; current:   77.500; used:   16.004; free:   61.496

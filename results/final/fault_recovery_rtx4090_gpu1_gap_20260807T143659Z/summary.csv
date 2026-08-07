@@ -1,0 +1,6 @@
+test,status,detail
+injected_enospc,PASS,original RAW and SHA preserved; temp removed
+daemon_sigkill,PASS,original RAW and SHA preserved
+stale_temp_restart,PASS,restart produced valid COMPRESSED file
+gpu_unavailable_fallback,PASS,CPU fallback SHA verified
+dev_full_enospc,PASS,kernel write failure propagated

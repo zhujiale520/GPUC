@@ -1,0 +1,6 @@
+step,status,elapsed_s
+check_env,PASS,0
+cpu_smoke,PASS,3
+docs_check,PASS,0
+gpu_build,PASS,27
+gpu_test,PASS,31

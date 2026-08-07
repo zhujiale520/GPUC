@@ -1,0 +1,2 @@
+repeat,bw_mib_s,iops,mean_us,p95_us,p99_us,p999_us,error,bw_samples,bw_cv_pct,gpu_samples,gpu_util_mean_pct,gpu_power_mean_w,gpu_power_max_w,gpu_memory_mean_mib,logical_sha256
+1,473.7919921875,3790.337177,1053.358266971,4358.144,5734.4,6914.048,0,3599,10.43908602451232,7186,53.7141664347342,80.90650988032284,83.5,1055.711383245199,08bb5ac4e56c52caeaae8a376628afd19a71296242f8fac36cd0ed14a6194e1d

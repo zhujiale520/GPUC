@@ -1,0 +1,14 @@
+run_id=20260806T142309Z
+git_commit=e5c5fb5fbf81a06470042fc447590fd8f8d7e14e
+kernel=Linux 6.8.0-124-generic #124~22.04.1-Ubuntu SMP PREEMPT_DYNAMIC Tue May 26 21:05:19 UTC  x86_64 GNU/Linux
+cpu=Intel(R) Xeon(R) Gold 6238 CPU @ 2.10GHz
+gpu=NVIDIA GeForce RTX 4090, 565.57.01, 8.9, 24564 MiB
+runtime_s=5
+repeats=5
+workset_mib=512
+block_kib=128
+batch_blocks=32
+requested_compressible_pcts=0 50 100
+target_mib_s=0 (unthrottled peak)
+data=deterministic 4 KiB repeated-byte/pseudo-random page mixture
+gpu_energy_scope=board power sampled by nvidia-smi, including idle board power

@@ -1,0 +1,3 @@
+mode,n,decomp_mib_s_mean,decomp_mib_s_ci95,h2d_ms_mean,h2d_ms_ci95,kernel_ms_mean,kernel_ms_ci95,d2h_ms_mean,d2h_ms_ci95,total_ms_mean,total_ms_ci95,worker_cpu_s_mean,worker_cpu_s_ci95
+legacy,5,1554.898800,81.721925,0.036554,0.003715,0.064616,0.001030,10.132693,0.542402,10.291440,0.556673,2.353383,0.047697
+coalesced,5,2199.323400,324.165462,0.038303,0.004932,0.065419,0.001212,7.299617,1.396816,7.461837,1.423528,2.884377,0.016873

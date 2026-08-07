@@ -1,0 +1,12 @@
+run_id=20260806T140003Z
+source_git_commit=e5c5fb5fbf81a06470042fc447590fd8f8d7e14e
+source_git_dirty=1
+kernel=Linux 6.8.0-124-generic #124~22.04.1-Ubuntu SMP PREEMPT_DYNAMIC Tue May 26 21:05:19 UTC  x86_64 GNU/Linux
+cpu=Intel(R) Xeon(R) Gold 6238 CPU @ 2.10GHz
+fresh_path=/home/dell/zhujiale/project3136859-386240/.clean-deploy-cwJw5G/repository
+excluded=.git,bin,results/local,slides,node_modules,third_party/manual
+dependency_model=bundled repository third_party exposed through read-only-equivalent hardlinks; build outputs are fresh
+copy_seconds=0
+total_seconds=61
+gpu_validation=1
+result=PASS

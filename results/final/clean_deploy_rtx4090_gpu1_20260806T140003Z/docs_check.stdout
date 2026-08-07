@@ -1,0 +1,4 @@
+make: Entering directory '/home/dell/zhujiale/project3136859-386240/.clean-deploy-cwJw5G/repository'
+python3 scripts/check_docs_links.py
+PASS: local Markdown links resolve
+make: Leaving directory '/home/dell/zhujiale/project3136859-386240/.clean-deploy-cwJw5G/repository'

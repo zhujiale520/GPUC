@@ -1,0 +1,10 @@
+run_id=20260806T145935Z
+git_commit=84a882564a3fae24a028547730cf987d7a20e2e6
+kernel=Linux 6.8.0-124-generic #124~22.04.1-Ubuntu SMP PREEMPT_DYNAMIC Tue May 26 21:05:19 UTC  x86_64 GNU/Linux
+cpu=Intel(R) Xeon(R) Gold 6238 CPU @ 2.10GHz
+gpu=NVIDIA GeForce RTX 4090, 565.57.01, 8.9, 24564 MiB
+duration_s=10
+repeats=5
+business_workers=4
+target_decomp_mib_s=4096
+samplers=pidstat -u -r -w (process); sar -u -r -B -W (system); nvidia-smi 200ms

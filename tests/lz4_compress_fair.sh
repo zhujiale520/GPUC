@@ -135,7 +135,7 @@ with open(sys.argv[3], "w") as f:
     f.write(f"GPU batch vs serial throughput speedup: {g['mib_s']/old['mib_s']:.2f}x "
             "(batch is target-limited)\n")
     f.write(f"Compression ratio equality delta: {abs(c['ratio']-g['ratio']):.9f}\n")
-    f.write("Board energy includes idle V100 power; CPU package/whole-system energy is not measured.\n")
+    f.write("Board energy includes idle GPU board power; CPU package/whole-system energy is not measured.\n")
 PY
 
 echo "[OK] LZ4 compression comparison complete: $RESULT_DIR"

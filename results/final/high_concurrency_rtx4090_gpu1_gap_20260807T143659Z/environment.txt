@@ -1,0 +1,13 @@
+run_id=20260807T143952Z
+git_commit=84a882564a3fae24a028547730cf987d7a20e2e6
+kernel=Linux 6.8.0-124-generic x86_64 GNU/Linux
+fio=fio-3.28
+size=256M
+runtime=3
+repeats=5
+direct=0
+fio_threads=1
+sample_timeout_seconds=63
+cache_mode=warm (full logical pre-read before timed runs)
+NVIDIA GeForce RTX 4090, 565.57.01, 8.9, 24564 MiB
+NVIDIA GeForce RTX 4090, 565.57.01, 8.9, 24564 MiB

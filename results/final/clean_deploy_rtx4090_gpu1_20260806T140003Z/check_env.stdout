@@ -1,0 +1,16 @@
+make: Entering directory '/home/dell/zhujiale/project3136859-386240/.clean-deploy-cwJw5G/repository'
+=== GPU Compress Environment Check ===
+--- Compiler ---
+nvcc: NVIDIA (R) Cuda compiler driver
+gcc (Ubuntu 12.3.0-1ubuntu1~22.04.3) 12.3.0
+--- GPU ---
+name, compute_cap
+NVIDIA GeForce RTX 4090, 8.9
+--- Dependencies ---
+[OK] fio
+[OK] python3
+[OK] bc
+--- Kernel Headers (for io_uring) ---
+Kernel: 6.8.0-124-generic
+========================================
+make: Leaving directory '/home/dell/zhujiale/project3136859-386240/.clean-deploy-cwJw5G/repository'

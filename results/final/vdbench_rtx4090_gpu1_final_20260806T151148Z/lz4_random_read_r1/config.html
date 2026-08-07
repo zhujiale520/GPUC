@@ -1,0 +1,282 @@
+<title>Vdbench lz4_random_read_r1/config.html</title><pre>
+Output from script /home/dell/zhujiale/project3136859-386240/third_party/manual/vdbench50407/linux/config.sh: 
+
+stderr: /bin/bash: /home/dell/anaconda3/lib/libtinfo.so.6: no version information available (required by /bin/bash)
+stderr: /bin/bash: /home/dell/anaconda3/lib/libtinfo.so.6: no version information available (required by /bin/bash)
+Fri Aug 7 22:17:13 +08 2026
+>>>>>uname -a
+Linux dell-Precision-7920-Tower 6.8.0-124-generic #124~22.04.1-Ubuntu SMP PREEMPT_DYNAMIC Tue May 26 21:05:19 UTC  x86_64 x86_64 x86_64 GNU/Linux
+Fri Aug 7 22:17:13 +08 2026
+>>>>>ifconfig -a
+Meta: flags=4305<UP,POINTOPOINT,RUNNING,NOARP,MULTICAST>  mtu 9000
+        inet 198.18.0.1  netmask 255.255.255.252  destination 198.18.0.1
+        inet6 fdfe:dcba:9876::1  prefixlen 126  scopeid 0x0<global>
+        inet6 fe80::cd9:9791:f23b:8d1c  prefixlen 64  scopeid 0x20<link>
+        unspec 00-00-00-00-00-00-00-00-00-00-00-00-00-00-00-00  txqueuelen 500  (UNSPEC)
+        RX packets 29848375  bytes 53339047943 (53.3 GB)
+        RX errors 0  dropped 0  overruns 0  frame 0
+        TX packets 35083728  bytes 55435728776 (55.4 GB)
+        TX errors 0  dropped 2 overruns 0  carrier 0  collisions 0
+
+br-76a538c7aa21: flags=4163<UP,BROADCAST,RUNNING,MULTICAST>  mtu 1500
+        inet 172.18.0.1  netmask 255.255.0.0  broadcast 172.18.255.255
+        inet6 fe80::78bd:e8ff:fe93:bcf4  prefixlen 64  scopeid 0x20<link>
+        ether 7a:bd:e8:93:bc:f4  txqueuelen 0  (Ethernet)
+        RX packets 0  bytes 0 (0.0 B)
+        RX errors 0  dropped 0  overruns 0  frame 0
+        TX packets 0  bytes 0 (0.0 B)
+        TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0
+
+br-d8fab8d97ef2: flags=4099<UP,BROADCAST,MULTICAST>  mtu 1500
+        inet 172.19.0.1  netmask 255.255.0.0  broadcast 172.19.255.255
+        ether f6:95:6a:39:4c:65  txqueuelen 0  (Ethernet)
+        RX packets 0  bytes 0 (0.0 B)
+        RX errors 0  dropped 0  overruns 0  frame 0
+        TX packets 0  bytes 0 (0.0 B)
+        TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0
+
+docker0: flags=4099<UP,BROADCAST,MULTICAST>  mtu 1500
+        inet 172.17.0.1  netmask 255.255.0.0  broadcast 172.17.255.255
+        inet6 fe80::709e:7cff:feaf:2685  prefixlen 64  scopeid 0x20<link>
+        ether 72:9e:7c:af:26:85  txqueuelen 0  (Ethernet)
+        RX packets 23998  bytes 1269473 (1.2 MB)
+        RX errors 0  dropped 0  overruns 0  frame 0
+        TX packets 68080  bytes 98198855 (98.1 MB)
+        TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0
+
+enp0s31f6: flags=4163<UP,BROADCAST,RUNNING,MULTICAST>  mtu 1500
+        inet 10.181.22.13  netmask 255.255.0.0  broadcast 10.181.255.255
+        inet6 fe80::ac3f:f30d:acb8:a833  prefixlen 64  scopeid 0x20<link>
+        inet6 2001:250:1001:a008::1e32  prefixlen 128  scopeid 0x0<global>
+        ether cc:96:e5:45:44:25  txqueuelen 1000  (Ethernet)
+        RX packets 86030092  bytes 63606680617 (63.6 GB)
+        RX errors 0  dropped 137178  overruns 0  frame 0
+        TX packets 74777386  bytes 25385924096 (25.3 GB)
+        TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0
+        device interrupt 16  memory 0x90300000-90320000  
+
+enp2s0: flags=4099<UP,BROADCAST,MULTICAST>  mtu 1500
+        ether cc:96:e5:45:43:65  txqueuelen 1000  (Ethernet)
+        RX packets 0  bytes 0 (0.0 B)
+        RX errors 0  dropped 0  overruns 0  frame 0
+        TX packets 0  bytes 0 (0.0 B)
+        TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0
+        device memory 0x90100000-9017ffff  
+
+lo: flags=73<UP,LOOPBACK,RUNNING>  mtu 65536
+        inet 127.0.0.1  netmask 255.0.0.0
+        inet6 ::1  prefixlen 128  scopeid 0x10<host>
+        loop  txqueuelen 1000  (Local Loopback)
+        RX packets 40304341  bytes 7093340730 (7.0 GB)
+        RX errors 0  dropped 0  overruns 0  frame 0
+        TX packets 40304341  bytes 7093340730 (7.0 GB)
+        TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0
+
+veth2a9c651: flags=4163<UP,BROADCAST,RUNNING,MULTICAST>  mtu 1500
+        inet6 fe80::1c9d:c2ff:fedf:71d0  prefixlen 64  scopeid 0x20<link>
+        ether 1e:9d:c2:df:71:d0  txqueuelen 0  (Ethernet)
+        RX packets 5668461  bytes 639130332 (639.1 MB)
+        RX errors 0  dropped 0  overruns 0  frame 0
+        TX packets 11063904  bytes 911486280 (911.4 MB)
+        TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0
+
+veth6fdb692: flags=4163<UP,BROADCAST,RUNNING,MULTICAST>  mtu 1500
+        inet6 fe80::6867:91ff:fe98:eeff  prefixlen 64  scopeid 0x20<link>
+        ether 6a:67:91:98:ee:ff  txqueuelen 0  (Ethernet)
+        RX packets 3  bytes 126 (126.0 B)
+        RX errors 0  dropped 0  overruns 0  frame 0
+        TX packets 2074809  bytes 87286332 (87.2 MB)
+        TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0
+
+veth79302ba: flags=4163<UP,BROADCAST,RUNNING,MULTICAST>  mtu 1500
+        inet6 fe80::7c37:1cff:fe38:b2a3  prefixlen 64  scopeid 0x20<link>
+        ether 7e:37:1c:38:b2:a3  txqueuelen 0  (Ethernet)
+        RX packets 7463  bytes 56688831 (56.6 MB)
+        RX errors 0  dropped 0  overruns 0  frame 0
+        TX packets 2081643  bytes 88439242 (88.4 MB)
+        TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0
+
+veth87c19d4: flags=4163<UP,BROADCAST,RUNNING,MULTICAST>  mtu 1500
+        inet6 fe80::b059:28ff:feef:1c7c  prefixlen 64  scopeid 0x20<link>
+        ether b2:59:28:ef:1c:7c  txqueuelen 0  (Ethernet)
+        RX packets 3  bytes 126 (126.0 B)
+        RX errors 0  dropped 0  overruns 0  frame 0
+        TX packets 2074811  bytes 87286385 (87.2 MB)
+        TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0
+
+vethf19b0c0: flags=4163<UP,BROADCAST,RUNNING,MULTICAST>  mtu 1500
+        inet6 fe80::a0c9:a6ff:fe63:3868  prefixlen 64  scopeid 0x20<link>
+        ether a2:c9:a6:63:38:68  txqueuelen 0  (Ethernet)
+        RX packets 373  bytes 20058 (20.0 KB)
+        RX errors 0  dropped 0  overruns 0  frame 0
+        TX packets 2075175  bytes 87313284 (87.3 MB)
+        TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0
+
+vethfb771b4: flags=4163<UP,BROADCAST,RUNNING,MULTICAST>  mtu 1500
+        inet6 fe80::18d2:9fff:fe73:478c  prefixlen 64  scopeid 0x20<link>
+        ether 1a:d2:9f:73:47:8c  txqueuelen 0  (Ethernet)
+        RX packets 8996834  bytes 825377345 (825.3 MB)
+        RX errors 0  dropped 0  overruns 0  frame 0
+        TX packets 7750445  bytes 783092234 (783.0 MB)
+        TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0
+
+zt557cgfjr: flags=4163<UP,BROADCAST,RUNNING,MULTICAST>  mtu 2800
+        inet 192.168.12.204  netmask 255.255.255.0  broadcast 192.168.12.255
+        inet6 fe80::a0e1:43ff:fe14:5dcc  prefixlen 64  scopeid 0x20<link>
+        ether a2:e1:43:14:5d:cc  txqueuelen 1000  (Ethernet)
+        RX packets 17879155  bytes 5516233279 (5.5 GB)
+        RX errors 0  dropped 0  overruns 0  frame 0
+        TX packets 17315881  bytes 16441792771 (16.4 GB)
+        TX errors 0  dropped 0 overruns 0  carrier 0  collisions 0
+
+Fri Aug 7 22:17:13 +08 2026
+>>>>>id
+uid=1000(dell) gid=1000(dell) groups=1000(dell),4(adm),24(cdrom),27(sudo),30(dip),46(plugdev),122(lpadmin),135(lxd),136(sambashare),137(docker)
+Fri Aug 7 22:17:13 +08 2026
+>>>>>mount
+sysfs on /sys type sysfs (rw,nosuid,nodev,noexec,relatime)
+proc on /proc type proc (rw,nosuid,nodev,noexec,relatime)
+udev on /dev type devtmpfs (rw,nosuid,relatime,size=65668696k,nr_inodes=16417174,mode=755,inode64)
+devpts on /dev/pts type devpts (rw,nosuid,noexec,relatime,gid=5,mode=620,ptmxmode=000)
+tmpfs on /run type tmpfs (rw,nosuid,nodev,noexec,relatime,size=13158812k,nr_inodes=16448513,mode=755,inode64)
+efivarfs on /sys/firmware/efi/efivars type efivarfs (rw,nosuid,nodev,noexec,relatime)
+/dev/sda2 on / type ext4 (rw,relatime,errors=remount-ro)
+securityfs on /sys/kernel/security type securityfs (rw,nosuid,nodev,noexec,relatime)
+tmpfs on /dev/shm type tmpfs (rw,nosuid,nodev,size=65794052k,nr_inodes=16448513,inode64)
+tmpfs on /run/lock type tmpfs (rw,nosuid,nodev,noexec,relatime,size=5120k,nr_inodes=16448513,inode64)
+cgroup2 on /sys/fs/cgroup type cgroup2 (rw,nosuid,nodev,noexec,relatime,nsdelegate,memory_recursiveprot)
+pstore on /sys/fs/pstore type pstore (rw,nosuid,nodev,noexec,relatime)
+bpf on /sys/fs/bpf type bpf (rw,nosuid,nodev,noexec,relatime,mode=700)
+systemd-1 on /proc/sys/fs/binfmt_misc type autofs (rw,relatime,fd=29,pgrp=1,timeout=0,minproto=5,maxproto=5,direct,pipe_ino=65542)
+hugetlbfs on /dev/hugepages type hugetlbfs (rw,relatime,pagesize=2M)
+mqueue on /dev/mqueue type mqueue (rw,nosuid,nodev,noexec,relatime)
+debugfs on /sys/kernel/debug type debugfs (rw,nosuid,nodev,noexec,relatime)
+tracefs on /sys/kernel/tracing type tracefs (rw,nosuid,nodev,noexec,relatime)
+fusectl on /sys/fs/fuse/connections type fusectl (rw,nosuid,nodev,noexec,relatime)
+configfs on /sys/kernel/config type configfs (rw,nosuid,nodev,noexec,relatime)
+ramfs on /run/credentials/systemd-sysusers.service type ramfs (ro,nosuid,nodev,noexec,relatime,mode=700)
+tmpfs on /run/qemu type tmpfs (rw,nosuid,nodev,relatime,size=65794052k,nr_inodes=16448513,mode=755,inode64)
+/var/lib/snapd/snaps/bare_5.snap on /snap/bare/5 type squashfs (ro,nodev,relatime,errors=continue,threads=single,x-gdu.hide)
+/var/lib/snapd/snaps/core20_2769.snap on /snap/core20/2769 type squashfs (ro,nodev,relatime,errors=continue,threads=single,x-gdu.hide)
+/var/lib/snapd/snaps/core20_2866.snap on /snap/core20/2866 type squashfs (ro,nodev,relatime,errors=continue,threads=single,x-gdu.hide)
+/var/lib/snapd/snaps/core22_2339.snap on /snap/core22/2339 type squashfs (ro,nodev,relatime,errors=continue,threads=single,x-gdu.hide)
+/var/lib/snapd/snaps/core22_2411.snap on /snap/core22/2411 type squashfs (ro,nodev,relatime,errors=continue,threads=single,x-gdu.hide)
+/var/lib/snapd/snaps/core24_1587.snap on /snap/core24/1587 type squashfs (ro,nodev,relatime,errors=continue,threads=single,x-gdu.hide)
+/var/lib/snapd/snaps/core24_1643.snap on /snap/core24/1643 type squashfs (ro,nodev,relatime,errors=continue,threads=single,x-gdu.hide)
+/var/lib/snapd/snaps/gnome-3-38-2004_119.snap on /snap/gnome-3-38-2004/119 type squashfs (ro,nodev,relatime,errors=continue,threads=single,x-gdu.hide)
+/var/lib/snapd/snaps/gnome-3-38-2004_143.snap on /snap/gnome-3-38-2004/143 type squashfs (ro,nodev,relatime,errors=continue,threads=single,x-gdu.hide)
+/var/lib/snapd/snaps/gnome-42-2204_247.snap on /snap/gnome-42-2204/247 type squashfs (ro,nodev,relatime,errors=continue,threads=single,x-gdu.hide)
+/var/lib/snapd/snaps/gnome-42-2204_263.snap on /snap/gnome-42-2204/263 type squashfs (ro,nodev,relatime,errors=continue,threads=single,x-gdu.hide)
+/var/lib/snapd/snaps/gtk-common-themes_1535.snap on /snap/gtk-common-themes/1535 type squashfs (ro,nodev,relatime,errors=continue,threads=single,x-gdu.hide)
+/var/lib/snapd/snaps/gnome-46-2404_153.snap on /snap/gnome-46-2404/153 type squashfs (ro,nodev,relatime,errors=continue,threads=single,x-gdu.hide)
+/var/lib/snapd/snaps/mesa-2404_1165.snap on /snap/mesa-2404/1165 type squashfs (ro,nodev,relatime,errors=continue,threads=single,x-gdu.hide)
+/var/lib/snapd/snaps/snap-store_1113.snap on /snap/snap-store/1113 type squashfs (ro,nodev,relatime,errors=continue,threads=single,x-gdu.hide)
+/var/lib/snapd/snaps/snap-store_1216.snap on /snap/snap-store/1216 type squashfs (ro,nodev,relatime,errors=continue,threads=single,x-gdu.hide)
+/var/lib/snapd/snaps/snapd_27406.snap on /snap/snapd/27406 type squashfs (ro,nodev,relatime,errors=continue,threads=single,x-gdu.hide)
+/var/lib/snapd/snaps/snapd-desktop-integration_387.snap on /snap/snapd-desktop-integration/387 type squashfs (ro,nodev,relatime,errors=continue,threads=single,x-gdu.hide)
+/var/lib/snapd/snaps/snapd-desktop-integration_391.snap on /snap/snapd-desktop-integration/391 type squashfs (ro,nodev,relatime,errors=continue,threads=single,x-gdu.hide)
+/dev/sda2 on /var/snap/firefox/common/host-hunspell type ext4 (ro,noexec,noatime,errors=remount-ro)
+/var/lib/snapd/snaps/universal-ctags_2051.snap on /snap/universal-ctags/2051 type squashfs (ro,nodev,relatime,errors=continue,threads=single,x-gdu.hide)
+/var/lib/snapd/snaps/universal-ctags_2019.snap on /snap/universal-ctags/2019 type squashfs (ro,nodev,relatime,errors=continue,threads=single,x-gdu.hide)
+/dev/sda1 on /boot/efi type vfat (rw,relatime,fmask=0077,dmask=0077,codepage=437,iocharset=iso8859-1,shortname=mixed,errors=remount-ro)
+/dev/sdb on /home/dell/sdb type ext4 (rw,relatime)
+binfmt_misc on /proc/sys/fs/binfmt_misc type binfmt_misc (rw,nosuid,nodev,noexec,relatime)
+overlay on /var/lib/docker/overlay2/cb7fc5522b0ef7929a60813c9a777079f94c75d39d70a95a23a173a57f3d2cb0/merged type overlay (rw,relatime,lowerdir=/var/lib/docker/overlay2/l/HYRU7FXPIHSK33XRGOD6YBR2Z4:/var/lib/docker/overlay2/l/OS2EEO6VFHVCYAPBV6462ZNY2E:/var/lib/docker/overlay2/l/P5NDBLZYSTMT4PDHTZB6I5J7IX:/var/lib/docker/overlay2/l/MG4EEORZHNVC6DGJPLRX3R3KNY:/var/lib/docker/overlay2/l/E2NRGAR4L3T7HUWLITGZY2KK3R:/var/lib/docker/overlay2/l/QOJZQNJRGO7LDCQXQLQBDUOEEC:/var/lib/docker/overlay2/l/PQ43W7LTGZQVDTXFBYACRBNTCA,upperdir=/var/lib/docker/overlay2/cb7fc5522b0ef7929a60813c9a777079f94c75d39d70a95a23a173a57f3d2cb0/diff,workdir=/var/lib/docker/overlay2/cb7fc5522b0ef7929a60813c9a777079f94c75d39d70a95a23a173a57f3d2cb0/work,nouserxattr)
+overlay on /var/lib/docker/overlay2/d194ccc1cecc2a9e5d5a6b4d58ad6330de525a2f9b4c7ac58dd327b9282bf611/merged type overlay (rw,relatime,lowerdir=/var/lib/docker/overlay2/l/IUBTET2HIBOHRFD67BM3SVIJZN:/var/lib/docker/overlay2/l/GZV4XXFZMSTO3M4C3LS2YAF7KR:/var/lib/docker/overlay2/l/UTJTQ3CM5QSYFUOM54XAS3H2AI:/var/lib/docker/overlay2/l/Z4ZA2IMPKLRHMF7FTKIIS36LCO:/var/lib/docker/overlay2/l/2NWK7IHUV522HYRHRPOVQ2KAKE:/var/lib/docker/overlay2/l/3CVLWRCKODOKXQQAVIUED3DH22:/var/lib/docker/overlay2/l/BNJUVZT3JIN4MEI6C7Z2N2KAGY:/var/lib/docker/overlay2/l/MTDN5POLJTARGQUFHSHY67FL6K:/var/lib/docker/overlay2/l/FKX23US2P66YRJK4KATQKYVORK,upperdir=/var/lib/docker/overlay2/d194ccc1cecc2a9e5d5a6b4d58ad6330de525a2f9b4c7ac58dd327b9282bf611/diff,workdir=/var/lib/docker/overlay2/d194ccc1cecc2a9e5d5a6b4d58ad6330de525a2f9b4c7ac58dd327b9282bf611/work,nouserxattr)
+overlay on /var/lib/docker/overlay2/1af1ec0991b81473f54a8658ef6ea2f09b43aa72c490f3fd9d3a2f9ef53b0860/merged type overlay (rw,relatime,lowerdir=/var/lib/docker/overlay2/l/SNKWQTLULG2PLQAVSQZRXS6YOB:/var/lib/docker/overlay2/l/KTHG6MWA6UHN5XVAU3EMO76ZXO:/var/lib/docker/overlay2/l/WOPZS4SLBISJILGSFEJ6RIHE7K:/var/lib/docker/overlay2/l/G4UAP2CDCP6GEQURW6UDJGXR2C:/var/lib/docker/overlay2/l/GMQRI2Q2E2C67KZ4RAG4NFGUUU:/var/lib/docker/overlay2/l/7PVN4JXWKED7PIDW5RCA5XFPWE:/var/lib/docker/overlay2/l/YXXSB7SB3Q73JPT7HNLY6KHKZM:/var/lib/docker/overlay2/l/L5NEXBKOASZ7KTXR7YEJTVTSGS:/var/lib/docker/overlay2/l/42WE3RD5IHZSBR2TLZGLCC7XNU:/var/lib/docker/overlay2/l/OYLJTUIEWHTTUL66H6LZSLTRPM:/var/lib/docker/overlay2/l/7N7WWYGP7VMVX2PG6BEU7C7LDX,upperdir=/var/lib/docker/overlay2/1af1ec0991b81473f54a8658ef6ea2f09b43aa72c490f3fd9d3a2f9ef53b0860/diff,workdir=/var/lib/docker/overlay2/1af1ec0991b81473f54a8658ef6ea2f09b43aa72c490f3fd9d3a2f9ef53b0860/work,nouserxattr)
+overlay on /var/lib/docker/overlay2/e58eeb81fa14004017bafcdb4783ae4d36898445d1c44120f093c2e3244dac83/merged type overlay (rw,relatime,lowerdir=/var/lib/docker/overlay2/l/GUADW6UK5CMF5RDHLDDXOTSUDQ:/var/lib/docker/overlay2/l/P26MCKXWYQGCRGV7CL7RGKS46X:/var/lib/docker/overlay2/l/NMS3BJBJ77ABO3B5OLCGG5PPN7:/var/lib/docker/overlay2/l/G52G5GVWE7ZL352X53SAIK5OO2:/var/lib/docker/overlay2/l/ZLJDJXDA3K7R36HKCV3SLEPTOH:/var/lib/docker/overlay2/l/VC7GLF5KSDV5ALNMANPCLLJGBZ:/var/lib/docker/overlay2/l/67UXNTZKG2ORIEFZ7VOUXB56Y6,upperdir=/var/lib/docker/overlay2/e58eeb81fa14004017bafcdb4783ae4d36898445d1c44120f093c2e3244dac83/diff,workdir=/var/lib/docker/overlay2/e58eeb81fa14004017bafcdb4783ae4d36898445d1c44120f093c2e3244dac83/work,nouserxattr)
+overlay on /var/lib/docker/overlay2/62b12870bd22520f35452e241b34e10586b3d4048fe5afc48f947d7db60bedf4/merged type overlay (rw,relatime,lowerdir=/var/lib/docker/overlay2/l/UZCNDTPP6UVXAKMAVPXXIOSXKW:/var/lib/docker/overlay2/l/DMRPRJGNRE7MF4BG6S2ITPEWRR:/var/lib/docker/overlay2/l/4WOX5247HE2SDFGF4UDWTSUXOF:/var/lib/docker/overlay2/l/EDYPD34FQZLEN646JHCWC2DUVT:/var/lib/docker/overlay2/l/FZEA6R5MT7VBDIO5EV6KA2XYH7:/var/lib/docker/overlay2/l/2BUQWDBROM5BCCIHWSGEOG4T42:/var/lib/docker/overlay2/l/A2CVNKO5Y6VDDH4ONBX26TTAYR:/var/lib/docker/overlay2/l/B6LTVRY36FBIXEJIIWS4UFZPFM,upperdir=/var/lib/docker/overlay2/62b12870bd22520f35452e241b34e10586b3d4048fe5afc48f947d7db60bedf4/diff,workdir=/var/lib/docker/overlay2/62b12870bd22520f35452e241b34e10586b3d4048fe5afc48f947d7db60bedf4/work,nouserxattr)
+overlay on /var/lib/docker/overlay2/c191ec32cf8420240be3eb4c021bb7f7c31afa102ac7d49922af064219894c7d/merged type overlay (rw,relatime,lowerdir=/var/lib/docker/overlay2/l/DYGNYGL2FYDN772ULHGQF7OUEW:/var/lib/docker/overlay2/l/2CCEVORR4NQRMBXEH35YK2GMPW:/var/lib/docker/overlay2/l/FQBHEWROO2EWXLOAXOLVX266AU:/var/lib/docker/overlay2/l/BUFMGIYCQHDUS36KYMJSEQLTNZ:/var/lib/docker/overlay2/l/O2J4TZ5MJQFMNTGVUNXIZITCC5:/var/lib/docker/overlay2/l/SJD56USHJ2WHW6WSLK7MKVSP3N:/var/lib/docker/overlay2/l/5ZULJZR4PUGTL6TEQWEQMQPUDG:/var/lib/docker/overlay2/l/IWO5ZLWTKET24QNDB7V7PMDL44:/var/lib/docker/overlay2/l/HIMG72HF4RGUSD2WQWSWCATGCF,upperdir=/var/lib/docker/overlay2/c191ec32cf8420240be3eb4c021bb7f7c31afa102ac7d49922af064219894c7d/diff,workdir=/var/lib/docker/overlay2/c191ec32cf8420240be3eb4c021bb7f7c31afa102ac7d49922af064219894c7d/work,nouserxattr)
+nsfs on /run/docker/netns/e882c87aea52 type nsfs (rw)
+nsfs on /run/docker/netns/4c72b25f0e41 type nsfs (rw)
+nsfs on /run/docker/netns/af45a05bb218 type nsfs (rw)
+nsfs on /run/docker/netns/8a1f40e96f9a type nsfs (rw)
+nsfs on /run/docker/netns/6b76a0a43706 type nsfs (rw)
+nsfs on /run/docker/netns/79d05fc76ed3 type nsfs (rw)
+tmpfs on /run/user/1000 type tmpfs (rw,nosuid,nodev,relatime,size=13158808k,nr_inodes=3289702,mode=700,uid=1000,gid=1000,inode64)
+tmpfs on /run/snapd/ns type tmpfs (rw,nosuid,nodev,noexec,relatime,size=13158812k,nr_inodes=16448513,mode=755,inode64)
+nsfs on /run/snapd/ns/snapd-desktop-integration.mnt type nsfs (rw)
+tmpfs on /run/user/1002 type tmpfs (rw,nosuid,nodev,relatime,size=13158808k,nr_inodes=3289702,mode=700,uid=1002,gid=1002,inode64)
+portal on /run/user/1002/doc type fuse.portal (rw,nosuid,nodev,relatime,user_id=1002,group_id=1002)
+gvfsd-fuse on /run/user/1002/gvfs type fuse.gvfsd-fuse (rw,nosuid,nodev,relatime,user_id=1002,group_id=1002)
+/var/lib/snapd/snaps/mesa-2404_1839.snap on /snap/mesa-2404/1839 type squashfs (ro,nodev,relatime,errors=continue,threads=single,x-gdu.hide)
+nsfs on /run/snapd/ns/mesa-2404.mnt type nsfs (rw)
+gvfsd-fuse on /run/user/1000/gvfs type fuse.gvfsd-fuse (rw,nosuid,nodev,relatime,user_id=1000,group_id=1000)
+portal on /run/user/1000/doc type fuse.portal (rw,nosuid,nodev,relatime,user_id=1000,group_id=1000)
+/var/lib/snapd/snaps/snapd_27591.snap on /snap/snapd/27591 type squashfs (ro,nodev,relatime,errors=continue,threads=single,x-gdu.hide)
+/var/lib/snapd/snaps/firefox_8702.snap on /snap/firefox/8702 type squashfs (ro,nodev,relatime,errors=continue,threads=single,x-gdu.hide)
+/var/lib/snapd/snaps/firefox_8736.snap on /snap/firefox/8736 type squashfs (ro,nodev,relatime,errors=continue,threads=single,x-gdu.hide)
+nsfs on /run/snapd/ns/firefox.mnt type nsfs (rw)
+Fri Aug 7 22:17:13 +08 2026
+>>>>>memory
+MemTotal:       1167581192 kB
+MemFree:        1102605016 kB
+MemAvailable:   1130158448 kB
+Buffers:         1818368 kB
+Cached:         29238588 kB
+SwapCached:        80888 kB
+Active:         32160324 kB
+Inactive:       10076308 kB
+Active(anon):   10232180 kB
+Inactive(anon):  1188816 kB
+Active(file):   21928144 kB
+Inactive(file):  8887492 kB
+Unevictable:     1794280 kB
+Mlocked:         1779880 kB
+SwapTotal:       2097148 kB
+SwapFree:        1636604 kB
+Zswap:                 0 kB
+Zswapped:              0 kB
+Dirty:                 0 kB
+Writeback:             0 kB
+AnonPages:      12905148 kB
+Mapped:          1923028 kB
+Shmem:             81700 kB
+KReclaimable:    2383900 kB
+Slab:            3474292 kB
+SReclaimable:    2383900 kB
+SUnreclaim:      1090392 kB
+KernelStack:       86704 kB
+PageTables:       130572 kB
+SecPageTables:         0 kB
+NFS_Unstable:          0 kB
+Bounce:                0 kB
+WritebackTmp:          0 kB
+CommitLimit:    585887744 kB
+Committed_AS:   43755088 kB
+VmallocTotal:   34359738367 kB
+VmallocUsed:      359392 kB
+VmallocChunk:          0 kB
+Percpu:           223520 kB
+HardwareCorrupted:     0 kB
+AnonHugePages:      6144 kB
+ShmemHugePages:        0 kB
+ShmemPmdMapped:        0 kB
+FileHugePages:         0 kB
+FilePmdMapped:         0 kB
+Unaccepted:            0 kB
+HugePages_Total:       0
+HugePages_Free:        0
+HugePages_Rsvd:        0
+HugePages_Surp:        0
+Hugepagesize:       2048 kB
+Hugetlb:               0 kB
+DirectMap4k:     9143912 kB
+DirectMap2M:    156143616 kB
+DirectMap1G:    1006632960 kB
+               total        used        free      shared  buff/cache   available
+Mem:      1167581192    31535320  1102605016       81700    33440856  1130158448
+Low:      1167581192    64976176  1102605016
+High:              0           0           0
+Swap:        2097148      460544     1636604
+Fri Aug 7 22:17:13 +08 2026
+>>>>>ps -ef | grep -i vdb
+dell     3943310  726088  0 22:14 ?        00:00:00 bash tests/vdbench_benchmark.sh
+dell     3946118 3943310  0 22:17 ?        00:00:00 timeout --signal=TERM --kill-after=10 72 env LD_PRELOAD=/home/dell/zhujiale/project3136859-386240/bin/libgpuhook.so GPUCOMPRESS_QUIET=1 GPUC_WHITELIST=html,txt /home/dell/zhujiale/project3136859-386240/third_party/manual/vdbench50407/vdbench -f /home/dell/zhujiale/project3136859-386240/results/local/vdbench_rtx4090_gpu1_final_20260806T151148Z/lz4_random_read_r1.par -o /home/dell/zhujiale/project3136859-386240/results/local/vdbench_rtx4090_gpu1_final_20260806T151148Z/lz4_random_read_r1
+dell     3946119 3946118  0 22:17 ?        00:00:00 /bin/bash /home/dell/zhujiale/project3136859-386240/third_party/manual/vdbench50407/vdbench -f /home/dell/zhujiale/project3136859-386240/results/local/vdbench_rtx4090_gpu1_final_20260806T151148Z/lz4_random_read_r1.par -o /home/dell/zhujiale/project3136859-386240/results/local/vdbench_rtx4090_gpu1_final_20260806T151148Z/lz4_random_read_r1
+dell     3946121 3946119  0 22:17 ?        00:00:01 java -client -Xmx512m -Xms64m -cp /home/dell/zhujiale/project3136859-386240/third_party/manual/vdbench50407/:/home/dell/zhujiale/project3136859-386240/third_party/manual/vdbench50407/classes:/home/dell/zhujiale/project3136859-386240/third_party/manual/vdbench50407/vdbench.jar Vdb.Vdbmain -f /home/dell/zhujiale/project3136859-386240/results/local/vdbench_rtx4090_gpu1_final_20260806T151148Z/lz4_random_read_r1.par -o /home/dell/zhujiale/project3136859-386240/results/local/vdbench_rtx4090_gpu1_final_20260806T151148Z/lz4_random_read_r1
+dell     3946210 3946121  0 22:17 ?        00:00:00 /bin/bash /home/dell/zhujiale/project3136859-386240/third_party/manual/vdbench50407/vdbench SlaveJvm -m localhost -n localhost-10-260807-22.17.12.670 -l localhost-0 -p 5570
+dell     3946214 3946210  0 22:17 ?        00:00:00 java -client -Xmx1024m -Xms128m -cp /home/dell/zhujiale/project3136859-386240/third_party/manual/vdbench50407/:/home/dell/zhujiale/project3136859-386240/third_party/manual/vdbench50407/classes:/home/dell/zhujiale/project3136859-386240/third_party/manual/vdbench50407/vdbench.jar Vdb.SlaveJvm SlaveJvm -m localhost -n localhost-10-260807-22.17.12.670 -l localhost-0 -p 5570
+dell     3946305 3946121  0 22:17 ?        00:00:00 /bin/bash /home/dell/zhujiale/project3136859-386240/third_party/manual/vdbench50407/linux/config.sh -o /home/dell/zhujiale/project3136859-386240/results/local/vdbench_rtx4090_gpu1_final_20260806T151148Z/lz4_random_read_r1 localhost
+dell     3946321 3946305  0 22:17 ?        00:00:00 grep -i vdb
+
