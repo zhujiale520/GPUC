@@ -23,10 +23,16 @@ REPEATS="${GPUC_REPEATS:-5}"
 BS_LIST="${GPUC_BS_LIST:-4k 16k 128k}"
 CONCURRENCY_LIST="${GPUC_CONCURRENCY_LIST:-1 4}"
 QD_LIST="${GPUC_QD_LIST:-1 8 32}"
+PHYSICAL_GPU="${GPUC_PHYSICAL_GPU:-0}"
 SAMPLE_TIMEOUT="${GPUC_SAMPLE_TIMEOUT:-$((RUNTIME + 30))}"
 HOOK="$PROJECT_DIR/bin/libgpuhook.so"
 DAEMON="$PROJECT_DIR/bin/gpu_compress_daemon"
 trap 'rm -rf -- "$TEST_DIR"' EXIT
+
+[[ "$PHYSICAL_GPU" =~ ^[0-9]+$ ]] || {
+    echo "ERROR: GPUC_PHYSICAL_GPU must be a non-negative integer." >&2
+    exit 2
+}
 
 mkdir -p "$RESULT_DIR/json" "$TEST_DIR/raw" "$TEST_DIR/sglz" "$TEST_DIR/lz4"
 make -C "$PROJECT_DIR" bin/libgpuhook.so bin/gpu_compress_daemon >/dev/null
@@ -67,7 +73,9 @@ run_id=$RUN_ID
 git_commit=$(git -C "$PROJECT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)
 kernel=$(uname -srvmo)
 fio=$(fio --version)
-gpu=$(nvidia-smi --query-gpu=name,driver_version,compute_cap --format=csv,noheader | head -1)
+gpu=$(nvidia-smi -i "$PHYSICAL_GPU" \
+  --query-gpu=index,name,uuid,driver_version,compute_cap,memory.total \
+  --format=csv,noheader | head -1)
 cpu=$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2); print $2; exit}')
 test_root=$TEST_ROOT
 filesystem=$(findmnt -no FSTYPE -T "$TEST_DIR")

@@ -11,6 +11,7 @@ TEST_DIR="$(mktemp -d /tmp/gpuc-public-dataset-XXXXXX)"
 REPEATS="${GPUC_REPEATS:-5}"
 RUNTIME="${GPUC_RUNTIME:-2}"
 BS="${GPUC_BS:-128k}"
+PHYSICAL_GPU="${GPUC_PHYSICAL_GPU:-0}"
 URL="https://www.gutenberg.org/ebooks/2600.txt.utf-8"
 CATALOG_URL="https://www.gutenberg.org/ebooks/2600"
 LICENSE_URL="https://www.gutenberg.org/policy/license"
@@ -20,6 +21,10 @@ DAEMON="$PROJECT_DIR/bin/gpu_compress_daemon"
 COLD_READER="$PROJECT_DIR/bin/test_cold_read"
 trap 'rm -rf -- "$TEST_DIR"' EXIT
 
+[[ "$PHYSICAL_GPU" =~ ^[0-9]+$ ]] || {
+    echo "ERROR: GPUC_PHYSICAL_GPU must be a non-negative integer." >&2
+    exit 2
+}
 mkdir -p "$RESULT_DIR/json" "$TEST_DIR/plain" "$TEST_DIR/raw"
 make -C "$PROJECT_DIR" bin/libgpuhook.so bin/gpu_compress_daemon \
     bin/test_cold_read >/dev/null
@@ -35,6 +40,19 @@ if [[ "$actual_sha" != "$EXPECTED_SHA256" ]]; then
     exit 1
 fi
 logical_bytes="$(stat -c %s "$SOURCE")"
+bs_bytes="$(numfmt --from=iec "${BS^^}")" || {
+    echo "ERROR: unsupported GPUC_BS value: $BS" >&2
+    exit 2
+}
+[[ "$bs_bytes" =~ ^[1-9][0-9]*$ ]] || {
+    echo "ERROR: GPUC_BS must resolve to a positive byte count." >&2
+    exit 2
+}
+timed_bytes="$((logical_bytes / bs_bytes * bs_bytes))"
+(( timed_bytes > 0 )) || {
+    echo "ERROR: dataset is smaller than one fio block." >&2
+    exit 2
+}
 cp "$SOURCE" "$TEST_DIR/plain/data.txt"
 LD_PRELOAD="$HOOK" GPUCOMPRESS_QUIET=1 \
     cp "$SOURCE" "$TEST_DIR/raw/data.txt"
@@ -48,6 +66,8 @@ license_url=$LICENSE_URL
 catalog_last_updated=2022-06-14
 catalog_rights=Public domain in the USA
 logical_bytes=$logical_bytes
+warm_fio_timed_bytes=$timed_bytes
+warm_fio_tail_excluded_bytes=$((logical_bytes - timed_bytes))
 sha256=$EXPECTED_SHA256
 verification=exact SHA-256 required before every run
 EOF
@@ -56,13 +76,16 @@ cat > "$RESULT_DIR/environment.txt" <<EOF
 run_id=$RUN_ID
 git_commit=$(git -C "$PROJECT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)
 kernel=$(uname -srvmo)
-gpu=$(nvidia-smi --query-gpu=name,driver_version,compute_cap --format=csv,noheader | head -1)
+gpu=$(nvidia-smi -i "$PHYSICAL_GPU" --query-gpu=index,name,uuid,driver_version,compute_cap,memory.total --format=csv,noheader)
+physical_gpu=$PHYSICAL_GPU
 fio=$(fio --version)
 runtime_s=$RUNTIME
 repeats=$REPEATS
 bs=$BS
+warm_fio_timed_bytes=$timed_bytes
+warm_fio_tail_excluded_bytes=$((logical_bytes - timed_bytes))
 cold_definition=POSIX_FADV_DONTNEED on the file before one complete logical read
-warm_definition=complete logical pre-read before fio time-based read
+warm_definition=complete logical pre-read before fio time-based read of complete blocks
 EOF
 
 echo "algorithm,repeat,compress_seconds,state,logical_bytes,format_bytes,allocated_bytes,allocated_ratio,logical_sha256" \
@@ -152,7 +175,7 @@ PY
         [[ "$scenario" != baseline ]] &&
             env_args=(env LD_PRELOAD="$HOOK" GPUCOMPRESS_QUIET=1)
         "${env_args[@]}" fio --name="warm_${scenario}" --filename="$path" \
-            --size="$logical_bytes" --bs="$BS" --rw=read --runtime="$RUNTIME" \
+            --size="$timed_bytes" --bs="$BS" --rw=read --runtime="$RUNTIME" \
             --time_based --direct=0 --invalidate=0 --ioengine=sync --numjobs=1 \
             --group_reporting --readonly --percentile_list=95:99:99.9 \
             --output-format=json > "$json"

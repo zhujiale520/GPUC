@@ -1,84 +1,95 @@
-# RTX 4090 实验缺口与补跑结论
+# RTX 4090 实验闭环与补跑结论
 
-## 范围
+## 范围与口径
 
-- 设备：物理 GPU 1，NVIDIA GeForce RTX 4090，驱动 565.57.01。
-- 已有最终标签：`rtx4090_gpu1_final_20260806T151148Z`。
-- 本轮补跑标签：`rtx4090_gpu1_gap_20260807T143659Z`。
-- 不重跑：H2D A/B、页锁定矩阵、offload sensitivity、资源画像、fio
-  多线程回归、一小时稳定性和 Vdbench 正式五轮。
-- V100/4090 是整机对比，不是只替换 GPU 的同机对比。CPU、内存、PCIe/SXM
-  拓扑和存储路径都可能影响结果。
+- 设备：物理 GPU 1，NVIDIA GeForce RTX 4090，驱动 565.57.01，compute
+  capability 8.9。
+- 核心批次：`rtx4090_gpu1_final_20260806T151148Z`；缺口批次：
+  `rtx4090_gpu1_gap_20260807T143659Z`；最终补齐批次为 2026-08-07 至
+  2026-08-08 的 SQLite、mmap、预读、I/O 矩阵、PG2600、PCM 和 Btrfs。
+- V100/4090 是整机对比，不是只替换 GPU 的同机 A/B。CPU、内存、PCIe/SXM
+  拓扑、内核、fio 版本和存储路径都可能影响结果。
+- 所有正向与负向结果均保留；压缩读取没有超过普通文件，不把 page cache 或
+  loop backing file 数字包装成 NVMe 性能。
 
-## 本轮补跑
+## 已完成的 4090 证据
 
-| 实验 | 样本 | 4090 主要结论 |
+| 实验 | 验收 | 4090 主要结论 |
 |---|---:|---|
-| D2H 合并 A/B | 10/10 | 合并吞吐 2199.3 MiB/s，比 legacy 高 41.4%；D2H 延迟低 28.0% |
-| LZ4 公平压缩 | 15/15 | GPU batch 比 GPU serial 快 8.20 倍；同为约 1 GiB/s 时，GPU batch 的主机 CPU 比 CPU 路径低 29.8% |
-| 128 KiB 并发扩展 | 75/75 | GPU Compressed 最佳为 16 jobs：584.8 ±43.4 MiB/s，是 1 job 的 4.15 倍；32 jobs 退化到 542.1 MiB/s |
-| cold-cache 三路径 | 15/15 | Baseline 518.4、Hook RAW 512.0、GPU Compressed 144.9 MiB/s |
-| 真实日志/ELF 扫描 | 15/15 | CPU 166.114、GPU 166.079 MiB/s，差异仅 -0.02%，GPU 没有业务吞吐优势 |
-| 故障恢复 | 5/5 | ENOSPC、SIGKILL、残留临时文件恢复、GPU 不可见 fallback、`/dev/full` 全通过 |
-| Hook 批大小 | 30/30 | batch=32 均值最高 141.7 MiB/s，但与 batch=4 的 140.6 MiB/s 的 95% CI 重叠；batch>=4 进入平台区 |
-| Hook 消融 | 35/35 | 单独关闭 batch/readahead 分别下降 34.2%/30.9%；关闭 pinned 下降 5.3%；io_uring 和 pipeline 在此场景贡献不显著 |
+| 核心卸载与资源画像 | 各 5 轮 | 4 GiB/s 高可压缩压力下，GPU 比 CPU 多保留 13.05% 业务吞吐；解压路径 CPU 时间降低 96.4% |
+| SQLite 并行业务 | 15/15 | GPU 相对 CPU QPS 提高 11.21%，p99 降低 81.66%，解压进程 CPU 时间降低 88.00%；仍比无解压 baseline 低 5.14% |
+| H2D/D2H、batch、消融 | 全部 5 轮 | pinned+coalesced H2D 达 10674.3 MiB/s；D2H 合并吞吐提高 41.4%；GPU batch 比 serial 快 8.20 倍 |
+| fio 多线程与完整矩阵 | 60/60；465/465 | 多线程退出、CRC/SHA 和 fio error 全通过；完整矩阵为 465 个 JSON、525 行指标、105 组 n=5，0 error |
+| LZ4 自适应预读 | 60/60 | 4 KiB 随机读相对 legacy 提高 31.71 倍（1 线程）和 31.97 倍（4 线程），p99 下降约 96.9%；仍远低于 Baseline |
+| mmap/userfaultfd | 60/60 | 256 MiB 单线程 `mmap()` 0.311 ms、首次 fault 165.9 ms、扫描 2305.6 ms；8 线程扫描 2323.1 ms，无扩展收益，mismatch=0 |
+| Vdbench | 50/50 | 5.04.07、4 线程、三类 workload、五轮通过，逻辑 SHA 一致 |
+| 一小时稳定性与故障恢复 | 1 小时；5/5 | 持续读 fio error=0、前后 SHA 一致；ENOSPC、SIGKILL、重启、GPU fallback、`/dev/full` 全通过 |
+| PG2600 公共数据集 | 压缩 10/10；读取 40/40 | LZ4 占用 68.76%，暖读 225.44 MiB/s，普通文件 12558.37 MiB/s；SGLZ 正确回退 RAW |
+| Btrfs 安全 loop | 60/60 | 合成/真实 corpus 各 30/30、SHA 一致、zstd extent 已验证；真实 corpus Btrfs/GPUC 占用 31.46%/48.12% |
+| PCM DRAM | 128/512 MiB 各 15/15 | 稳态区间解析已修复；但 4 GiB/s 请求下 CPU/GPU 仅达 3652.6/1392.6（128 MiB）和 3404.1/1314.1 MiB/s（512 MiB），不能作为同吞吐 DRAM A/B |
+| cold-cache、真实扫描、低压缩率、压缩峰值 | 全部 5 轮 | 均未证明压缩读取或压缩侧超过 CPU/Baseline，作为适用边界保留 |
 
-消融中的 `minimal` 比 `full` 高 10.3%，与单项消融方向相反。这是宏组合触发的
-路径交互，不能把各项 drop 当作可加和的独立贡献，也不能据此宣称“全部优化无效”。
+PG2600 的逻辑长度 3359610 B 不是 128 KiB 整数倍。fio 3.28 对 Hook 最后一个
+不完整块报 `full resid`，正式暖读统一计时前 3276800 B（25 个完整块），冷读仍
+完整读取并校验全文件 SHA；失败的首轮目录未进入 `results/final/`。
 
-## 4090 上效果最好的配置
+## 哪些实验效果最好
 
-1. 核心业务结论仍是页锁定的 4 GiB/s、100% 可压缩场景：GPU 相对 CPU
-   多保留 13.05% 业务吞吐，并减少 96.4% 解压路径 CPU 时间。
-2. 传输侧最强配置是 pinned + coalesced。128 MiB workset 下达到
-   10674.3 MiB/s，是 pageable + coalesced 的 4.27 倍。
-3. 压缩侧必须使用 GPU batch：相对 GPU serial 为 8.20 倍加速。
-4. 128 KiB 压缩读取并发最佳点是 16 jobs；32 jobs 没有继续收益。
-5. Hook 读取批大小选择 4 或 32 都合理；当前数据不足以证明 32 显著优于 4。
+1. **主结论**：页锁定的 4 GiB/s、100% 可压缩解压场景；它直接证明释放主机
+   CPU 后能保留更多业务吞吐。
+2. **真实业务补强**：SQLite 并行业务中，GPU 相对 CPU 路径 QPS +11.21%、
+   p99 -81.66%。GPU RSS 为 130840 KiB，明显高于 CPU 的 38016 KiB，因此不能
+   同时宣称主机内存容量降低。
+3. **最显著内部优化**：请求感知预读让 4 KiB 随机压缩读提高约 32 倍；这是相对
+   legacy 的内部 A/B，不代表超过普通文件。
+4. **最佳并发点**：128 KiB GPU Compressed 为 16 jobs，584.8±43.4 MiB/s；
+   32 jobs 回落。Hook batch=4 已进入平台区，不能证明继续增大必然更好。
+5. **稳定性证据**：一小时持续读、fio 60/60、Vdbench 50/50、完整矩阵 465/465
+   和故障恢复 5/5 共同构成功能—性能—稳定性闭环。
+
+## PCM 与 Btrfs 的解释边界
+
+- 4090 PCM 两个工作集均完整取得 15 个正式样本，且只汇总应用稳态内的完整
+  1 秒区间；时区错误已经修复。
+- PCM 包裹执行时 CPU/GPU 都未达到请求吞吐，GPU 饱和更早。可以报告各自实际
+  吞吐和总 IMC bandwidth，但不能用 2237.9 与 6977.4 MB/s 直接声称 GPU 在
+  “同 4 GiB/s”下降低 67.9%，因为分母不同。同吞吐 DRAM 主证据仍来自 V100。
+- 512 MiB PCM 的 `SOURCE_MANIFEST.sha256` 仅有 `pcm_dram_offload.sh` 与当前
+  文件不一致，原因是该批次结束后只新增了 `pin_workset` 环境记录；128 MiB 批次
+  与当前脚本清单完全一致，算法和测试二进制未改变。
+- Btrfs 只格式化脚本自建并验证 backing file 的 loop device。合成数据上
+  Btrfs/GPUC 占用 3.125%/6.283%；真实 corpus 为 31.46%/48.12%。
+- Btrfs 的 warm-cache 或 `invalidate=1` 结果受 page cache、loop 和系统 CPU
+  影响，不是介质吞吐；正式 NVMe 结论仍缺失。
 
 ## V100 与 4090 的同参数观察
 
-- 4090 的 GPU LZ4 压缩峰值更高：100% 可压缩时 1656.1 MiB/s，相对 V100
-  的 1300.6 MiB/s 高 27.3%。
-- GPU serial 压缩从 V100 的 55.8 提高到 4090 的 124.6 MiB/s，提升 123.2%。
-- SGLZ fio 4 线程、128 KiB 从 V100 的 173.2 提高到 4090 的
-  527.6 MiB/s，提升 204.6%。
-- 高并发 GPU Compressed 在 4/8/16/32 jobs 上比 V100 高约
-  60.4%/54.5%/53.2%/55.4%；单 job 反而低 25.1%。
-- Vdbench LZ4 顺序读从 V100 的 44.48 提高到 4090 的 137.50 MiB/s，
-  提升 209.1%。这仍远低于 Baseline，属于适用边界，不作为普遍加速证据。
-- D2H coalesced 吞吐 4090 为 2199.3 MiB/s，V100 为 4895.3 MiB/s；
-  4090 整机低 55.1%。这更像 PCIe/SXM 与主机路径差异，不能解释为 GPU
-  算力不足。
-- cold-cache GPU Compressed 在 4090 上比 V100 低 18.9%。
-- 真实扫描的 V100 和 4090 corpus SHA 不同，只能比较各机器内部的
-  CPU/GPU 相对结果，不能做严格硬件排名。
+- 4090 GPU LZ4 100% 可压缩峰值 1656.1 MiB/s，比 V100 的 1300.6 MiB/s 高
+  27.3%；GPU serial 从 55.8 提高到 124.6 MiB/s。
+- SGLZ fio 4 线程、128 KiB 从 V100 173.2 提高到 4090 527.6 MiB/s；Vdbench
+  LZ4 顺序读从 44.48 提高到 137.50 MiB/s，但两者仍低于普通文件。
+- D2H coalesced 吞吐 4090 为 2199.3 MiB/s、V100 为 4895.3 MiB/s；这反映整机
+  PCIe/SXM 和主机路径差异，不能解释为单纯 GPU 算力排名。
+- V100 自适应预读的 4 KiB 随机读提升 4.19–4.90 倍，4090 为约 32 倍；两机
+  legacy 基线和软件栈不同，只能分别解释各自内部 A/B。
 
-## 仍缺的数据
+## 仍然缺失、但不能在当前机器补齐
 
-### 优先级高
+- 鲲鹏 920/AArch64 实测；
+- 赛题指定的 RTX 3060/4060/5060（4090 只能作为跨代补充）；
+- 归属明确、允许写入的独占 NVMe 介质测试；
+- ZFS/DM 真正后端、非 NVIDIA GPU 后端；
+- RAPL/IPMI/外部功率计的 CPU package 与整机能效。
 
-1. **PCM DRAM 带宽**：当前 `third_party/manual/pcm/build/bin/pcm-memory`
-   不存在。这是“是否降低主机 DRAM 压力”唯一缺失的直接证据。
-2. **SQLite 直接读取压缩对象**：可补数据库应用层 QPS 与 p95/p99，但不影响
-   当前功能、稳定性和核心卸载结论。
-3. **mmap/userfaultfd**：V100 有 1/8 线程结果，4090 尚未复跑；仅在答辩需要
-   强调 mmap 兼容性时优先。
+## 本轮新增结果目录
 
-### 可选
-
-- 公共数据集 PG2600：补外部有效性；当前机器没有发现既有 dataset。
-- `perf` cycles/cache-miss：补 CPU 微架构解释，需要 perf 权限。
-- Btrfs、完整 93 点 I/O 矩阵、O_DIRECT 边界：成本较高，且大部分不改变
-  4090 核心结论，不建议为了“目录齐全”机械重跑。
-
-## 结果目录
-
-- `results/final/d2h_coalesce_rtx4090_gpu1_gap_20260807T143659Z`
-- `results/final/lz4_compress_fair_rtx4090_gpu1_gap_20260807T143659Z`
-- `results/final/high_concurrency_rtx4090_gpu1_gap_20260807T143659Z`
-- `results/final/cold_cache_rtx4090_gpu1_gap_20260807T143659Z`
-- `results/final/real_scan_rtx4090_gpu1_gap_20260807T143659Z`
-- `results/final/fault_recovery_rtx4090_gpu1_gap_20260807T143659Z`
-- `results/final/batch_size_rtx4090_gpu1_gap_20260807T143659Z`
-- `results/final/ablation_rtx4090_gpu1_gap_20260807T143659Z`
+- `sqlite_range_offload_rtx4090_gpu1_20260807T153922Z/`
+- `mmap_userfaultfd_rtx4090_gpu1_20260807T154208Z/`
+- `mmap_userfaultfd_threads8_rtx4090_gpu1_20260807T154304Z/`
+- `lz4_adaptive_readahead_rtx4090_gpu1_20260807T154428Z/`
+- `io_workload_matrix_rtx4090_gpu1_20260807T155002Z/`
+- `public_dataset_pg2600_rtx4090_gpu1_20260807T160500Z/`
+- `pcm_dram_512m_rtx4090_gpu1_20260807T160755Z/`
+- `pcm_dram_128m_rtx4090_gpu1_20260808T011634Z/`
+- `btrfs_zstd_rtx4090_gpu1_20260807T160755Z/`
+- `btrfs_real_cold_rtx4090_gpu1_20260807T160755Z/`

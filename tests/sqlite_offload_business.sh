@@ -11,9 +11,14 @@ ROWS="${GPUC_SQLITE_ROWS:-100000}"
 SPAN="${GPUC_SQLITE_SPAN:-256}"
 DECOMP_CPU="${GPUC_DECOMP_CPU:-0}"
 TARGET_MIB_S="${GPUC_TARGET_MIB_S:-4096}"
+PHYSICAL_GPU="${GPUC_PHYSICAL_GPU:-0}"
 export GPUC_WORKER_CPU="${GPUC_WORKER_CPU:-$DECOMP_CPU}"
 DB_PATH="$RESULT_DIR/workload.sqlite"
 FREQ_GUARD_CPU="${GPUC_FREQ_GUARD_CPU:-23}"
+[[ "$PHYSICAL_GPU" =~ ^[0-9]+$ ]] || {
+    echo "ERROR: GPUC_PHYSICAL_GPU must be a non-negative integer." >&2
+    exit 2
+}
 mkdir -p "$RESULT_DIR"
 
 make -C "$PROJECT_DIR" bin/test_cpu_offload >/dev/null
@@ -24,7 +29,9 @@ cat > "$RESULT_DIR/environment.txt" <<EOF
 run_id=$RUN_ID
 git_commit=$(git -C "$PROJECT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)
 kernel=$(uname -srvmo)
-gpu=$(nvidia-smi --query-gpu=name,driver_version,compute_cap,memory.total --format=csv,noheader | head -1)
+gpu=$(nvidia-smi -i "$PHYSICAL_GPU" \
+  --query-gpu=index,name,uuid,driver_version,compute_cap,memory.total \
+  --format=csv,noheader | head -1)
 cpu=$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/,"",$2); print $2; exit}')
 duration=$DURATION
 repeats=$REPEATS
@@ -34,6 +41,8 @@ business_workers=$WORKERS
 decomp_cpu=$DECOMP_CPU
 target_decomp_mib_s=$TARGET_MIB_S
 gpu_worker_cpu=$GPUC_WORKER_CPU
+workset_mib=${GPUC_WORKSET_MIB:-16}
+pin_workset=${GPUC_PIN_WORKSET:-auto}
 frequency_guard_cpu=$FREQ_GUARD_CPU
 workload=SQLite read-only indexed range aggregates (span=$SPAN); 512-byte payload
 EOF

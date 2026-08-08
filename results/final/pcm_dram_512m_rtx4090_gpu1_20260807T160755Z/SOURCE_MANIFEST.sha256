@@ -1,0 +1,4 @@
+c3a1151c60a47423eaa7b2bbcf58c259bbe3b4e9fbb7ff654803f6a0bd96883c  /home/dell/zhujiale/project3136859-386240/tests/test_cpu_offload.cpp
+6c8f741d53d943b09d218c1014605d3584a5b8a05149c5840f6226df3b1c61d5  /home/dell/zhujiale/project3136859-386240/tests/pcm_dram_offload.sh
+a83129906c91a8d96ba7533a40c7529be6f907d0298424a651f24649743efb20  /home/dell/zhujiale/project3136859-386240/src/gpu_lz4.cu
+6fceee930931c6f87636cc8ef4ee0cf303ef86a0eda73283ba2547d0fd3e3f78  /home/dell/zhujiale/project3136859-386240/src/cpu_lz4.c

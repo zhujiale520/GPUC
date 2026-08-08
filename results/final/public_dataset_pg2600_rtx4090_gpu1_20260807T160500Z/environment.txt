@@ -1,0 +1,13 @@
+run_id=20260807T160500Z
+git_commit=85cb3c184355c563d290b712337a0bdf51ac7326
+kernel=Linux 6.8.0-124-generic #124~22.04.1-Ubuntu SMP PREEMPT_DYNAMIC Tue May 26 21:05:19 UTC  x86_64 GNU/Linux
+gpu=1, NVIDIA GeForce RTX 4090, GPU-590312dc-798c-eef5-dbed-221a121925aa, 565.57.01, 8.9, 24564 MiB
+physical_gpu=1
+fio=fio-3.28
+runtime_s=2
+repeats=5
+bs=128k
+warm_fio_timed_bytes=3276800
+warm_fio_tail_excluded_bytes=82810
+cold_definition=POSIX_FADV_DONTNEED on the file before one complete logical read
+warm_definition=complete logical pre-read before fio time-based read of complete blocks

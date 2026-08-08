@@ -10,6 +10,12 @@ RUN_ID="$(date -u +%Y%m%dT%H%M%SZ)"
 RESULTDIR="${GPUC_RESULT_DIR:-$PROJECT_DIR/results/local/mmap_$RUN_ID}"
 SIZES="${GPUC_MMAP_SIZES:-64M 256M}"
 REPEATS="${GPUC_REPEATS:-5}"
+PHYSICAL_GPU="${GPUC_PHYSICAL_GPU:-0}"
+
+[[ "$PHYSICAL_GPU" =~ ^[0-9]+$ ]] || {
+    echo "ERROR: GPUC_PHYSICAL_GPU must be a non-negative integer." >&2
+    exit 2
+}
 
 cleanup() {
     rm -rf "$TESTDIR"
@@ -34,7 +40,9 @@ gcc -O3 -Wall -Wextra -pthread "$PROJECT_DIR/tests/test_mmap_ondemand.c" -o "$TE
     echo "mmap_mode=${GPUC_MMAP_MODE:-auto}"
     echo "mmap_threads=${GPUC_MMAP_THREADS:-1}"
     echo "unprivileged_userfaultfd=$(cat /proc/sys/vm/unprivileged_userfaultfd 2>/dev/null || echo unavailable)"
-    nvidia-smi --query-gpu=name,driver_version,compute_cap --format=csv,noheader 2>&1 || true
+    nvidia-smi -i "$PHYSICAL_GPU" \
+        --query-gpu=index,name,uuid,driver_version,compute_cap,memory.total \
+        --format=csv,noheader 2>&1 || true
 } > "$RESULTDIR/environment.txt"
 echo "size,scenario,repeat,mmap_ms,first_fault_us,scan_ms,pages,threads,checksum,mismatches,state" > "$RESULTDIR/results.csv"
 

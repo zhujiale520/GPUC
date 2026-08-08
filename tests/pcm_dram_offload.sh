@@ -17,6 +17,7 @@ TARGET_MIB_S="${GPUC_TARGET_MIB_S:-4096}"
 WORKSET_MIB="${GPUC_WORKSET_MIB:-512}"
 BATCH_BLOCKS="${GPUC_BATCH_BLOCKS:-128}"
 COMPRESSIBLE_PCT="${GPUC_COMPRESSIBLE_PCT:-100}"
+PHYSICAL_GPU="${GPUC_PHYSICAL_GPU:-0}"
 export GPUC_WORKER_CPU="${GPUC_WORKER_CPU:-$DECOMP_CPU}"
 
 if [[ "$EUID" -ne 0 ]]; then
@@ -37,6 +38,10 @@ fi
     echo "ERROR: GPUC_COMPRESSIBLE_PCT must be an integer from 0 to 100." >&2
     exit 2
 }
+[[ "$PHYSICAL_GPU" =~ ^[0-9]+$ ]] || {
+    echo "ERROR: GPUC_PHYSICAL_GPU must be a non-negative integer." >&2
+    exit 2
+}
 
 mkdir -p "$RESULT_DIR/raw"
 
@@ -52,7 +57,9 @@ trap restore_owner EXIT
     echo "git_commit=$(git -C "$PROJECT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
     echo "kernel=$(uname -srvmo)"
     echo "cpu=$(lscpu | awk -F: '/Model name/{gsub(/^[ \t]+/, "", $2); print $2; exit}')"
-    echo "gpu=$(nvidia-smi --query-gpu=name,driver_version,compute_cap --format=csv,noheader | head -1)"
+    echo "gpu=$(nvidia-smi -i "$PHYSICAL_GPU" \
+        --query-gpu=index,name,uuid,driver_version,compute_cap,memory.total \
+        --format=csv,noheader | head -1)"
     echo "pcm_commit=$(git -C "$PROJECT_DIR/third_party/manual/pcm" rev-parse HEAD 2>/dev/null || echo unknown)"
     echo "duration_s=$DURATION"
     echo "repeats=$REPEATS"
@@ -62,6 +69,7 @@ trap restore_owner EXIT
     echo "gpu_worker_cpu=$GPUC_WORKER_CPU"
     echo "workset_mib=$WORKSET_MIB"
     echo "batch_blocks=$BATCH_BLOCKS"
+    echo "pin_workset=${GPUC_PIN_WORKSET:-auto}"
     echo "requested_compressible_pct=$COMPRESSIBLE_PCT"
     echo "data=deterministic 4 KiB repeated-byte/pseudo-random page mixture"
     echo "scope=whole-system IMC bandwidth; only complete steady-state 1s intervals"
@@ -88,9 +96,12 @@ for label, value in csv.reader(open(phase_path)):
 samples = []
 for row in rows:
     try:
+        # pcm-memory emits wall-clock time in the host's local timezone,
+        # while the benchmark phase file contains Unix epoch seconds.  Treat
+        # the parsed wall clock as local time before comparing the two.
         timestamp = datetime.datetime.strptime(
             f"{row[0].strip()} {row[1].strip()}", "%Y-%m-%d %H:%M:%S.%f"
-        ).replace(tzinfo=datetime.timezone.utc).timestamp()
+        ).astimezone().timestamp()
         tail = [float(value.strip()) for value in row[-3:]]
     except (ValueError, IndexError):
         continue

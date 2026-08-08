@@ -1,0 +1,3 @@
+[daemon] Using LZ4 compression backend (nvCOMP)
+[daemon] Compressing: /tmp/gpuc-lz4-ra-w6MNJ8/lz4/data.bin (268435456 bytes, 2048 blocks)
+[daemon] Done: /tmp/gpuc-lz4-ra-w6MNJ8/lz4/data.bin

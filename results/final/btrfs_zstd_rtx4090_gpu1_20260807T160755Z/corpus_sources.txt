@@ -1,0 +1,1 @@
+mode=synthetic; deterministic per-page storage request records

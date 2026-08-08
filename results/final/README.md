@@ -30,6 +30,13 @@ compute capability 8.9，驱动 565.57.01。每个子目录的 `environment.txt`
 | `stability_1h_rtx4090_gpu1_final_20260806T151148Z/` | 512 MiB、128 KiB、4 jobs、持续一小时 | fio error=0，前后逻辑 SHA 一致 |
 | `vdbench_rtx4090_gpu1_final_20260806T151148Z/` | Vdbench 5.04.07、4 线程、三类 workload、五轮 | 50/50 样本通过且逻辑 SHA 一致 |
 | `batch_size_rtx4090_gpu1_gap_20260807T143659Z/`、`ablation_rtx4090_gpu1_gap_20260807T143659Z/` | batch=1/2/4/8/16/32 与七变体消融 | batch≥4 进入平台区；单独关闭 batch/readahead 分别下降 34.2%/30.9% |
+| `sqlite_range_offload_rtx4090_gpu1_20260807T153922Z/` | SQLite range aggregate 与 4 GiB/s CPU/GPU 解压并行，各五轮 | GPU 相对 CPU QPS +11.21%、p99 -81.66%、解压进程 CPU 时间 -88.00%；仍低于无解压 baseline |
+| `mmap_userfaultfd_rtx4090_gpu1_20260807T154208Z/`、`mmap_userfaultfd_threads8_rtx4090_gpu1_20260807T154304Z/` | 64/256 MiB、1/8 扫描线程、每组三路径五轮 | 60/60 mismatch=0；256 MiB 的 8 线程完整扫描没有优于单线程 |
+| `lz4_adaptive_readahead_rtx4090_gpu1_20260807T154428Z/` | legacy/adaptive × 三 workload × 1/4 线程 × 五轮 | 60/60 error=0；4 KiB 随机读提高约 31.7–32.0 倍、p99 降约 96.9%，但仍低于 Baseline |
+| `io_workload_matrix_rtx4090_gpu1_20260807T155002Z/` | 4/16/128 KiB、读/随机读/写/随机写/70:30、1/4 线程、Baseline QD 1/8/32 | 465/465 JSON、525 行指标、105 组 n=5，fio error=0；压缩读绝对性能仍为负 |
+| `public_dataset_pg2600_rtx4090_gpu1_20260807T160500Z/` | 固定 SHA 的 Gutenberg #2600，压缩及冷/暖读各五轮 | 10/10 压缩、40/40 读取；LZ4 占用 68.76%，暖读 225.44 MiB/s，远低于 Baseline |
+| `pcm_dram_128m_rtx4090_gpu1_20260808T011634Z/`、`pcm_dram_512m_rtx4090_gpu1_20260807T160755Z/` | Intel PCM 全系统 IMC、128/512 MiB、三场景各五轮 | 15/15 稳态样本均通过，但 CPU/GPU 均未达到请求吞吐，不能作为同 4 GiB/s DRAM A/B |
+| `btrfs_zstd_rtx4090_gpu1_20260807T160755Z/`、`btrfs_real_cold_rtx4090_gpu1_20260807T160755Z/` | 安全 loop 的合成暖缓存与真实 corpus 文件级失效，各 30 样本 | 60/60、SHA 一致、zstd extent 已验证；真实 corpus Btrfs/GPUC 占用 31.46%/48.12% |
 
 ## V100 有效结果
 
@@ -90,6 +97,10 @@ COMPRESSED 读取都慢于对应 Baseline，因此即使离线压缩成本按 0 
 - 512 MiB稳态Intel PCM代表组已完成；GPU相对CPU总DRAM差随吞吐/可压缩率
   从−0.11%扩大到−47.42%，不能只展示最高档并外推；GPU RSS高5.80%–8.92%，
   仍不能主张容量节省或消除写回。
+- RTX 4090 PCM 的 128/512 MiB 组虽然各完成 15/15 稳态样本，但 PCM 包裹执行
+  下 CPU/GPU 实际吞吐分别只有 3652.6/1392.6 和 3404.1/1314.1 MiB/s。
+  两条路径分母不同，不能把总 IMC 数字直接解释为同吞吐降幅；同吞吐 DRAM 主证据
+  仍使用 V100 正式组。
 - cycles、instructions 和通用 cache 事件已完成；精确型号化
   `LLC-load-misses` 在本机不受支持，不能用通用 cache-misses 冒充。
 - `stat` 的格式长度包含稀疏逻辑区，不等于磁盘占用；空间结论使用
@@ -97,6 +108,9 @@ COMPRESSED 读取都慢于对应 Baseline，因此即使离线压缩成本按 0 
 - Btrfs合成暖缓存基线以`compsize -b`和`filefrag encoded`验证extent压缩；
   真实corpus另有`invalidate=1`文件页缓存失效结果。两者都在loop上，均不能当作
   介质或NVMe吞吐。
+- PG2600 暖态 fio 统一计时 25 个完整 128 KiB block；冷读仍校验完整文件。
+  这是为适配 fio 3.28 的非整块尾部行为，不应与 V100 的 fio 3.16 尾块语义
+  混作严格跨机性能排名。
 - SQLite直接读取证明只读兼容性，不证明性能收益；旧目录算法标签错误已作废。
   真实LZ4混合分流虽比GPU-only快94.58%，但实际使用了CPU且仍比普通文件慢99%以上。
 - `results/final/high_concurrency_v100_20260725/` 是保留的历史无效结果，

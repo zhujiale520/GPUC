@@ -12,6 +12,7 @@ RUNTIME="${GPUC_RUNTIME:-5}"
 REPEATS="${GPUC_REPEATS:-5}"
 DATA_MODE="${GPUC_DATA_MODE:-synthetic}"
 CACHE_MODE="${GPUC_CACHE_MODE:-warm}"
+PHYSICAL_GPU="${GPUC_PHYSICAL_GPU:-0}"
 REAL_SOURCES="${GPUC_REAL_SOURCES:-/var/lib/dpkg/status /usr/bin/bash}"
 HOOK="$PROJECT_DIR/bin/libgpuhook.so"
 DAEMON="$PROJECT_DIR/bin/gpu_compress_daemon"
@@ -35,6 +36,10 @@ fi
 [[ "$SIZE_MIB" =~ ^[1-9][0-9]*$ && "$RUNTIME" =~ ^[1-9][0-9]*$ &&
    "$REPEATS" =~ ^[1-9][0-9]*$ ]] || {
     echo "ERROR: GPUC_SIZE_MIB, GPUC_RUNTIME and GPUC_REPEATS must be positive integers." >&2
+    exit 2
+}
+[[ "$PHYSICAL_GPU" =~ ^[0-9]+$ ]] || {
+    echo "ERROR: GPUC_PHYSICAL_GPU must be a non-negative integer." >&2
     exit 2
 }
 [[ "$DATA_MODE" == synthetic || "$DATA_MODE" == real ]] || {
@@ -163,7 +168,8 @@ BTRFS_ZSTD_BYTES="$(awk '$1=="zstd" {print $3}' "$RESULT_DIR/btrfs_compsize.txt"
     echo "git_commit=$(git -C "$PROJECT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)"
     echo "kernel=$(uname -srvmo)"
     echo "cpu=$(lscpu | sed -n 's/^Model name:[[:space:]]*//p' | head -1)"
-    echo "gpu=$(nvidia-smi --query-gpu=name,driver_version,compute_cap --format=csv,noheader | head -1)"
+    echo "gpu=$(nvidia-smi -i "$PHYSICAL_GPU" --query-gpu=index,name,uuid,driver_version,compute_cap,memory.total --format=csv,noheader)"
+    echo "physical_gpu=$PHYSICAL_GPU"
     echo "btrfs=$(mkfs.btrfs --version)"
     echo "fio=$(fio --version)"
     echo "source_mib=$SIZE_MIB"
