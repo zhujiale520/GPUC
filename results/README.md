@@ -1,22 +1,29 @@
-# Experiment result layout
+# 实验结果目录说明
 
-Automated benchmarks write local runs to `results/local/<experiment>_<UTC timestamp>/`.
-That directory is ignored by Git so repeated local runs do not pollute the worktree.
-
-For a result used in the final report, copy the complete run directory to:
+自动化测试产生的本地结果统一写入：
 
 ```text
-results/final/<experiment>/<run_id>/
+results/local/<实验名称>_<UTC 时间戳>/
 ```
 
-Each committed final run must include:
+`results/local/` 已加入 Git 忽略规则，重复运行实验不会污染工作区。
 
-- `environment.txt`: Git commit, kernel, GPU/driver, CUDA/fio version and parameters;
-- raw fio JSON or equivalent tool output;
-- `runs.csv`: one row per repetition;
-- `summary.csv`: sample count, mean, standard deviation and 95% confidence interval;
-- checksums and GPUC state for every input file;
-- a short `README.md` explaining the exact command and whether the run is warm-cache,
-  cold-cache or `O_DIRECT`.
+用于正式报告和答辩的数据保存在：
 
-Do not commit a chart without the raw data used to generate it.
+```text
+results/final/<实验名称>/<运行编号>/
+```
+
+每组正式实验结果应完整保留以下内容：
+
+- `environment.txt`：Git 提交、内核、CPU、GPU、驱动、CUDA、fio 版本和实验参数；
+- fio JSON、Vdbench 输出、PCM CSV 或其他工具的原始结果；
+- `runs.csv`：每次重复实验一行；
+- `summary.csv`：样本数、均值、标准差和 95% 置信区间；
+- 输入文件的校验和、逻辑大小、物理占用和 GPUC 状态；
+- 简短的 `README.md`：记录完整执行命令、数据集、缓存状态，以及 buffered、
+  cold-cache 或 `O_DIRECT` 等实验口径。
+
+正式图表应能够追溯到对应的原始数据、运行参数和生成脚本。项目最终结果的总索引
+位于 [`final/README.md`](final/README.md)，完整分析见
+[`../docs/实验结果报告.md`](../docs/实验结果报告.md)。

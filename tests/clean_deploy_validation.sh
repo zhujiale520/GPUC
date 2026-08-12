@@ -16,7 +16,7 @@ mkdir -p "$RESULT_DIR"
 
 start_epoch="$(date +%s)"
 rsync -a --link-dest="$PROJECT_DIR" \
-    --exclude=.git --exclude=bin --exclude=results/local --exclude=slides \
+    --exclude=.git --exclude=bin --exclude=results/local --exclude=ppt --exclude=video \
     --exclude=node_modules --exclude=third_party/manual --exclude='.clean-deploy-*' \
     "$PROJECT_DIR/" "$COPY_DIR/"
 copy_epoch="$(date +%s)"
@@ -28,7 +28,7 @@ copy_epoch="$(date +%s)"
     echo "kernel=$(uname -srvmo)"
     echo "cpu=$(lscpu | sed -n 's/^Model name:[[:space:]]*//p' | head -1)"
     echo "fresh_path=$COPY_DIR"
-    echo "excluded=.git,bin,results/local,slides,node_modules,third_party/manual"
+    echo "excluded=.git,bin,results/local,ppt,video,node_modules,third_party/manual"
     echo "dependency_model=bundled repository third_party exposed through read-only-equivalent hardlinks; build outputs are fresh"
     echo "copy_seconds=$((copy_epoch-start_epoch))"
 } > "$RESULT_DIR/environment.txt"

@@ -22,7 +22,7 @@
   自提交 io_uring 不在透明覆盖范围
 
 压缩完成后的 COMPRESSED/INLINE 文件采用明确的**只读归档模型**，破坏性修改返回
-`EROFS`。完整边界见 [支持矩阵](docs/SUPPORT_MATRIX.md)。
+`EROFS`。完整设计、实现与能力边界见[项目设计方案](docs/项目设计方案.md)。
 
 ---
 
@@ -156,34 +156,24 @@ ftruncate / truncate / sendfile
 
 ---
 
-## 性能数据
+## 最终实验结论
 
-### fio 顺序读 128k（Tesla V100, 512MB, page cache 命中）
+正式结果来自 Tesla V100 与 RTX 4090，完整统计和边界见
+[实验结果报告](docs/实验结果报告.md)及
+[4090 缺口分析](results/final/RTX4090_GAP_ANALYSIS_20260807.md)。
 
-| 场景 | zero | rand | rep |
-|------|------|------|-----|
-| Baseline | 450.9 MB/s | 448.0 MB/s | 451.5 MB/s |
-| Hook RAW | 451.7 MB/s | 443.0 MB/s | 447.2 MB/s |
-| **GPU Compressed** | **458.3 MB/s** | **433.0 MB/s** | **442.4 MB/s** |
+| 证据 | RTX 4090 结果 | 正确表述 |
+|---|---|---|
+| 4 GiB/s 高可压缩解压压力 | GPU 相对 CPU 多保留 13.05% 业务吞吐；解压进程 CPU 时间降低 96.4% | GPU 卸载在该工作点减轻主机 CPU 竞争 |
+| SQLite 并行业务 | QPS +11.21%，p99 -81.66%，但仍低于无解压 baseline 5.14% | 释放 CPU 可改善并行业务，不等于数据库文件本身被 GPU 加速 |
+| fio / Vdbench | fio 完整矩阵 465/465；Vdbench 50/50；逻辑 SHA 一致 | 两套工具验证端到端功能、退出和正确性 |
+| 长期与故障 | 一小时读 error=0、前后 SHA 一致；故障恢复 5/5 | 支持持续稳定和确定性恢复；掉电/GPU reset 为隔离环境扩展项 |
+| mmap | 60/60 mismatch=0；256 MiB 单/8线程扫描约 2.31/2.32 s | userfaultfd 兼容已验证，扫描没有线程扩展收益 |
+| 4 KiB 随机压缩读 | 请求感知预读相对 legacy 提高约 31.7–32.0 倍 | 消除了固定 32-block 放大，但绝对性能仍低于普通文件 |
 
-### 多线程并发读取（zero 数据, 128KB bs）
-
-| 并发数 | Baseline | Hook RAW | GPU Compressed | 扩展比 |
-|-------|---------|---------|---------------|--------|
-| jobs=1 | 456.3 MB/s | 466.3 MB/s | 466.3 MB/s | 1.00x |
-| jobs=4 | 1098.0 MB/s | 1101.8 MB/s | 1090.9 MB/s | 2.34x |
-| jobs=8 | 1985.0 MB/s | 1997.2 MB/s | 1991.8 MB/s | 4.27x |
-| jobs=16 | 3768.1 MB/s | 3792.1 MB/s | **3797.7 MB/s** | **8.14x** |
-
-### 压缩效果
-
-| 数据类型 | SGLZ | LZ4 (nvCOMP) |
-|---------|------|--------------|
-| 全零数据 | **3.2%** | **3.2%** |
-| 可压缩重复模式 | **3.2%** | — |
-| Linux headers（文本类，~35 MB） | **82.5%** | **38.6%** |
-| 混合数据 | **53.1%** | — |
-| 随机数据 | **100% (fallback)** | **100% (fallback)** |
+低压缩率、压缩侧峰值、PG2600、Btrfs 与 4090 PCM 中的负结果均作为适用边界
+保留；本项目不声称压缩文件读取普遍快于普通文件，也不声称已经实现生产级
+DM/Btrfs/ZFS 压缩层。
 
 ---
 
@@ -195,12 +185,12 @@ ftruncate / truncate / sendfile
 │   ├── gpu_compress_api.h   # C API（GPU/CPU 后端）
 │   └── lz4_minimal.h        # liblz4 最小函数声明（避免安装 dev 包）
 ├── src/
-│   ├── hook.c               # LD_PRELOAD 拦截层 (~2700 行)
-│   ├── gpu_compress.cu      # CUDA SGLZ 压缩/解压 (~580 行)
-│   ├── gpu_lz4.cu           # CUDA LZ4 压缩/解压 (~260 行)
-│   ├── cpu_compress.c       # CPU SGLZ 压缩/解压 (~212 行)
+│   ├── hook.c               # LD_PRELOAD 拦截层 (~3600 行)
+│   ├── gpu_compress.cu      # CUDA SGLZ 压缩/解压 (~716 行)
+│   ├── gpu_lz4.cu           # CUDA LZ4 压缩/解压 (~1040 行)
+│   ├── cpu_compress.c       # CPU SGLZ 压缩/解压 (~279 行)
 │   ├── cpu_lz4.c            # CPU LZ4 解压 (~100 行)
-│   ├── daemon.c             # 离线压缩 Daemon (~580 行)
+│   ├── daemon.c             # 离线压缩 Daemon (~728 行)
 │   ├── cpu_daemon.c         # CPU 版 Daemon
 │   └── gpu_compress.cuh     # CUDA 内部头文件
 ├── tests/
@@ -232,20 +222,20 @@ ftruncate / truncate / sendfile
 │   ├── test_integration.sh            # 集成测试
 │   └── test_mixed_compressibility.sh  # 混合可压缩性测试
 ├── docs/
-│   ├── DESIGN.md                      # 项目研发设计思路
-│   ├── IMPLEMENTATION.md              # 实现描述与代码说明
-│   ├── ISSUES_AND_SOLUTIONS.md        # 研发过程中的问题与解决方法
-│   ├── REPRODUCIBILITY.md             # 实验复现指南
-│   ├── SUPPORT_MATRIX.md              # 支持范围与限制统一口径
-│   ├── EXPERIMENTAL_REPORT.md         # 全面性能测试数据
-│   ├── CODE_GUIDE.md                  # 代码结构导读
-│   ├── SUBMISSION_REQUIREMENTS.md     # 大赛官方提交要求
-│   ├── architecture.md                # 系统架构与数据流
-│   ├── architecture.png               # 架构图
-│   ├── deployment.md                  # 部署与二次开发指南
-│   ├── improvement_plan.md            # 优化路线图
-│   ├── THIRD_PARTY.md                 # 第三方来源与依赖说明
-│   └── AI_TOOL_DECLARATION.md         # AI 工具使用声明
+│   ├── 项目设计方案.md                # 设计、实现、代码、问题与来源说明
+│   ├── 项目设计方案.docx              # 可编辑 Word 版本
+│   ├── 实验结果报告.md                # V100 与 RTX 4090 完整实验结果
+│   ├── 实验结果报告.docx              # 可编辑 Word 版本
+│   ├── 实验复现指南.md                # 环境、构建与实验复现步骤
+│   ├── 实验复现指南.docx              # 可编辑 Word 版本
+│   ├── architecture.png               # 答辩用浅色架构图
+│   └── architecture.svg               # 可编辑矢量架构图
+├── ppt/
+│   ├── PPT_OUTLINE.md                 # 最终答辩 PPT 逐页制作大纲
+│   └── *.pptx / *.pdf                 # 保留的历史答辩稿
+├── video/
+│   ├── README.md                      # 视频目录说明
+│   └── VIDEO_SCRIPT.md                # 最终演示视频脚本
 ├── scripts/
 │   ├── check_env.sh           # 新主机环境检查
 │   ├── demo.sh                # 一键演示
@@ -259,38 +249,21 @@ ftruncate / truncate / sendfile
 
 ---
 
-## 文档链接
+## 文档与答辩材料
 
-### 设计开发文档
-
-- [docs/DESIGN.md](docs/DESIGN.md) — 项目研发设计思路与创新点
-- [docs/IMPLEMENTATION.md](docs/IMPLEMENTATION.md) — 实现描述与核心代码说明
-- [docs/ISSUES_AND_SOLUTIONS.md](docs/ISSUES_AND_SOLUTIONS.md) — 研发过程中的问题与解决方法
-- [docs/REPRODUCIBILITY.md](docs/REPRODUCIBILITY.md) — 实验复现指南
-- [docs/SUPPORT_MATRIX.md](docs/SUPPORT_MATRIX.md) — 支持矩阵、只读模型和故障边界
-- [docs/architecture.md](docs/architecture.md) — 系统架构与数据流
-- [docs/deployment.md](docs/deployment.md) — 部署与二次开发指南
-- [docs/improvement_plan.md](docs/improvement_plan.md) — 后续优化计划
-
-### 合规与声明
-
-- [docs/THIRD_PARTY.md](docs/THIRD_PARTY.md) — 第三方来源与依赖说明
-- [docs/AI_TOOL_DECLARATION.md](docs/AI_TOOL_DECLARATION.md) — AI 工具使用声明
-- [LICENSE](LICENSE) — 源代码许可证（Apache-2.0）
-- [LICENSE-docs](LICENSE-docs) — 文档许可证（CC BY-SA 4.0）
-
-### 实验与参考材料
-
-- [docs/EXPERIMENTAL_REPORT.md](docs/EXPERIMENTAL_REPORT.md) — 全面性能测试数据
-- [docs/CODE_GUIDE.md](docs/CODE_GUIDE.md) — 代码结构导读
-- [docs/SUBMISSION_REQUIREMENTS.md](docs/SUBMISSION_REQUIREMENTS.md) — 大赛官方提交要求
+- [项目设计方案](docs/项目设计方案.md) / [Word 版](docs/项目设计方案.docx) — 设计思路、实现与代码说明、研发问题与解决方法、第三方及 AI 使用说明
+- [实验结果报告](docs/实验结果报告.md) / [Word 版](docs/实验结果报告.docx) — V100 与 RTX 4090 的完整数据、统计口径和适用范围
+- [实验复现指南](docs/实验复现指南.md) / [Word 版](docs/实验复现指南.docx) — 环境检查、构建、功能验证和实验复现入口
+- [PPT 制作大纲](ppt/PPT_OUTLINE.md) — 队员分工、开发进度、技术路线和答辩证据编排
+- [演示视频脚本](video/VIDEO_SCRIPT.md) — 运行环境、源码与功能演示、正式结果说明
+- [LICENSE](LICENSE) / [LICENSE-docs](LICENSE-docs) — 源代码与文档许可证
 
 ---
 
 ## 技术平台
 
-- GPU: RTX3060/4060/5060 (测试环境: Tesla V100-SXM2-32GB)
-- CPU: x86_64 (测试环境) / 华为鲲鹏 920 (目标平台)
+- GPU: 已测试 Tesla V100-SXM2-32GB 与 GeForce RTX 4090；RTX 3060/4060/5060 为赛题指定但尚未实测
+- CPU: 已测试 x86_64；华为鲲鹏 920/AArch64 为目标平台但尚未实测
 - 编程框架: CUDA SDK 12.8
 - 文件系统: ext4
 
@@ -304,7 +277,7 @@ ftruncate / truncate / sendfile
 | 压缩对象修改 | COMPRESSED/INLINE 只读，破坏性修改返回 `EROFS` |
 | `mmap` | 支持只读 `MAP_PRIVATE` 完整解除；共享/固定/部分 munmap/跨 fork 不支持 |
 | `O_DIRECT` | 新版对齐格式已支持，要求用户缓冲区页对齐；正式 NVMe 性能未测 |
-| 单 GPU | 当前只使用 `cudaSetDevice(0)` |
+| GPU 选择 | `CUDA_VISIBLE_DEVICES` 可选择一个 GPU；不支持并发多 GPU 分片 |
 | GPU 供应商 | 当前只支持 NVIDIA CUDA；其他供应商后端暂缓 |
 | GPU 共享性能 | GPU 高负载时实时性能下降约 82%（458 vs 80 MB/s） |
 
@@ -322,8 +295,8 @@ ftruncate / truncate / sendfile
 
 - **源代码**：采用 [Apache License 2.0](LICENSE)。
 - **技术文档 / 答辩材料**：采用 [CC BY-SA 4.0](LICENSE-docs)。
-- **第三方依赖与基础版本说明**：见 [docs/THIRD_PARTY.md](docs/THIRD_PARTY.md)。
-- **AI 工具使用声明**：见 [docs/AI_TOOL_DECLARATION.md](docs/AI_TOOL_DECLARATION.md)。
+- **第三方依赖与非本队来源**：见[项目设计方案](docs/项目设计方案.md)中的“非本队来源与第三方说明”。
+- **AI 工具使用说明**：见 [docs/AI_TOOL_DECLARATION.md](docs/AI_TOOL_DECLARATION.md)。
 - **原创性声明**：本项目为原创，未基于往届作品或开源项目。
 
 ---

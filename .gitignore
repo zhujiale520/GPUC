@@ -31,12 +31,13 @@ results/local/
 results/final/**/workload.sqlite
 
 # Temporary files
-tmp/*
-!tmp/管理员补充实验命令.md
+tmp/
 temp/
 *.gpuctmp
 *.tmp
 deps/
+video/raw/
+video/project/
 
 # Workload tool binaries (compiled from .cc)
 tests/workload_tools/leveldb_simple_bench
