@@ -38,6 +38,7 @@ temp/
 deps/
 video/raw/
 video/project/
+/video/*.mp4
 
 # Workload tool binaries (compiled from .cc)
 tests/workload_tools/leveldb_simple_bench
