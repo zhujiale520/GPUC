@@ -1,0 +1,4 @@
+mode,coalesce,batch,logical_mib,iterations,checked_blocks,compress_mib_s,decompress_mib_s,status
+baseline,0,32,1024,3,24576,845.929,688.415,PASS
+optimized,1,32,1024,3,24576,985.727,718.622,PASS
+stress,1,32,4096,4,131072,983.700,718.654,PASS

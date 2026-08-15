@@ -80,7 +80,7 @@ TARGETS    = $(BINDIR)/libgpuhook.so $(BINDIR)/libcpuhook.so \
              $(BINDIR)/gpu_compress_daemon $(BINDIR)/cpu_compress_daemon \
              $(BINDIR)/test_cpu_vs_gpu $(GPU_LZ4_TARGETS) $(BINDIR)/scan_workload \
              $(BINDIR)/test_compress $(BINDIR)/test_hook $(BINDIR)/test_cold_read \
-             $(BINDIR)/test_odirect_compressed
+             $(BINDIR)/test_odirect_compressed $(BINDIR)/benchmark_sglz_transport
 
 .PHONY: all corex clean test dirs unit-test integration-test check-env check-gpu-deps check-corex-deps cpu-only smoke-test sanitizer-test coverage-test docs-check
 
@@ -215,6 +215,13 @@ endif
 $(BINDIR)/test_cpu_vs_gpu: $(GPU_DEP_TARGET) dirs $(SRCDIR)/test_cpu_vs_gpu.c $(SRCDIR)/gpu_compress.cu $(SRCDIR)/cpu_compress.c $(SRCDIR)/cpu_lz4.c $(GPU_LZ4_SRC)
 ifeq ($(GPU_PLATFORM),corex)
 	$(COREX_CXX) $(COREXFLAGS) -x c $(SRCDIR)/test_cpu_vs_gpu.c $(SRCDIR)/cpu_compress.c $(SRCDIR)/cpu_lz4.c $(GPU_LZ4_SRC) -x ivcore $(SRCDIR)/gpu_compress.cu -o $@ $(COREX_LINK) $(LDFLAGS)
+else
+	$(NVCC) $(NVCCFLAGS) $(filter-out dirs check-gpu-deps check-corex-deps,$^) -o $@ $(GPU_EXTRA_LINK) $(LDFLAGS)
+endif
+
+$(BINDIR)/benchmark_sglz_transport: $(GPU_DEP_TARGET) dirs tests/benchmark_sglz_transport.c $(SRCDIR)/gpu_compress.cu $(GPU_LZ4_SRC)
+ifeq ($(GPU_PLATFORM),corex)
+	$(COREX_CXX) $(COREXFLAGS) -x c tests/benchmark_sglz_transport.c $(GPU_LZ4_SRC) -x ivcore $(SRCDIR)/gpu_compress.cu -o $@ $(COREX_LINK) $(LDFLAGS)
 else
 	$(NVCC) $(NVCCFLAGS) $(filter-out dirs check-gpu-deps check-corex-deps,$^) -o $@ $(GPU_EXTRA_LINK) $(LDFLAGS)
 endif

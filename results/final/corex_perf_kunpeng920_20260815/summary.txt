@@ -1,0 +1,14 @@
+correctness=PASS
+baseline_compress_mib_s=845.929
+optimized_compress_mib_s=985.727
+compress_speedup=1.165
+baseline_decompress_mib_s=688.415
+optimized_decompress_mib_s=718.622
+decompress_speedup=1.044
+stress_checked_blocks=131072
+stress_logical_mib=16384
+stress_status=PASS
+large_file_e2e=PASS
+large_file_mib=1024
+large_file_reads=3
+project_test=PASS

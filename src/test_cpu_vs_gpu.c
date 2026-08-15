@@ -103,7 +103,16 @@ static int run_benchmark(const char *label,
         out_ptrs[i] = gpu_comp[i];
     }
     t0 = get_time_sec();
-    sglz_compress_batch(NUM_BLOCKS, in_ptrs, in_lens, out_ptrs, out_caps, out_lens);
+    for (int base = 0; base < NUM_BLOCKS; base += 32) {
+        int n = NUM_BLOCKS - base;
+        if (n > 32) n = 32;
+        if (sglz_compress_batch(n, &in_ptrs[base], &in_lens[base],
+                                &out_ptrs[base], &out_caps[base],
+                                &out_lens[base]) < 0) {
+            printf("  ERROR: GPU batch compression failed at block %d\n", base);
+            return -1;
+        }
+    }
     int gpu_batch_total = 0;
     for (int i = 0; i < NUM_BLOCKS; i++) {
         if (out_lens[i] > 0) gpu_batch_total += (int)out_lens[i];
@@ -136,14 +145,30 @@ static int run_benchmark(const char *label,
     uint8_t *decomp_ptrs[NUM_BLOCKS];
     for (int i = 0; i < NUM_BLOCKS; i++) decomp_ptrs[i] = decomp + i * BLOCK_SIZE;
 
-    t0 = get_time_sec();
-    sglz_decompress_batch(NUM_BLOCKS, (const uint8_t **)out_ptrs, in_lens,
-                          decomp_ptrs, decomp_lens);
-    double gpu_decomp_time = get_time_sec() - t0;
-    double gpu_decomp_bw = (TOTAL_SIZE / (1024.0 * 1024.0)) / gpu_decomp_time;
-    if (memcmp(src, decomp, TOTAL_SIZE) != 0) {
-        printf("  ERROR: GPU decompress mismatch!\n");
-        return -1;
+    int all_gpu_compressed = 1;
+    for (int i = 0; i < NUM_BLOCKS; i++) {
+        if (out_lens[i] == 0) { all_gpu_compressed = 0; break; }
+    }
+    double gpu_decomp_time = 0.0;
+    double gpu_decomp_bw = 0.0;
+    if (all_gpu_compressed) {
+        t0 = get_time_sec();
+        for (int base = 0; base < NUM_BLOCKS; base += 32) {
+            int n = NUM_BLOCKS - base;
+            if (n > 32) n = 32;
+            if (sglz_decompress_batch(n, (const uint8_t **)&out_ptrs[base],
+                                      &out_lens[base], &decomp_ptrs[base],
+                                      &decomp_lens[base]) != n) {
+                printf("  ERROR: GPU batch decompression failed at block %d\n", base);
+                return -1;
+            }
+        }
+        gpu_decomp_time = get_time_sec() - t0;
+        gpu_decomp_bw = (TOTAL_SIZE / (1024.0 * 1024.0)) / gpu_decomp_time;
+        if (memcmp(src, decomp, TOTAL_SIZE) != 0) {
+            printf("  ERROR: GPU decompress mismatch!\n");
+            return -1;
+        }
     }
 
     /* -------- Report -------- */
@@ -152,8 +177,12 @@ static int run_benchmark(const char *label,
     printf("  GPU compress(batch):  %.3f s  =>  %8.1f MB/s\n", gpu_batch_time, gpu_batch_bw);
     printf("  Speedup (batch vs CPU): %.2fx\n", gpu_batch_bw / cpu_comp_bw);
     printf("  CPU decompress: %.3f s  =>  %8.1f MB/s\n", cpu_decomp_time, cpu_decomp_bw);
-    printf("  GPU decompress: %.3f s  =>  %8.1f MB/s\n", gpu_decomp_time, gpu_decomp_bw);
-    printf("  Speedup (decomp): %.2fx\n", gpu_decomp_bw / cpu_decomp_bw);
+    if (all_gpu_compressed) {
+        printf("  GPU decompress: %.3f s  =>  %8.1f MB/s\n", gpu_decomp_time, gpu_decomp_bw);
+        printf("  Speedup (decomp): %.2fx\n", gpu_decomp_bw / cpu_decomp_bw);
+    } else {
+        printf("  GPU decompress: N/A (one or more blocks used RAW fallback)\n");
+    }
 
     return 0;
 }

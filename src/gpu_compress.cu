@@ -14,6 +14,7 @@
 #include "gpu_compress_api.h"
 #include <cuda_runtime.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* 每个 chunk 在输出 buffer 中占用的固定 slot 大小 */
@@ -259,6 +260,20 @@ static void *g_d_compress_out = nullptr;
 static void *g_d_compress_in_lens = nullptr;
 static void *g_d_compress_out_lens = nullptr;
 
+/* Pinned host staging makes the batch path use one H2D and one D2H transfer
+ * instead of up to 32 small DMA submissions.  Keep a malloc fallback for
+ * runtimes that cannot reserve pinned memory. */
+static uint8_t *g_h_compress_in = nullptr;
+static uint8_t *g_h_compress_out = nullptr;
+static size_t *g_h_compress_in_lens = nullptr;
+static uint32_t *g_h_compress_chunk_lens = nullptr;
+static int g_h_compress_pinned = 0;
+
+static int sglz_coalesced_transfer_enabled(void) {
+    const char *value = getenv("GPUC_SGLZ_COALESCE");
+    return !value || strcmp(value, "0") != 0;
+}
+
 int sglz_init(void) {
     if (g_initialized) return 0;
     cudaError_t err = cudaSetDevice(0);
@@ -351,6 +366,33 @@ int sglz_init(void) {
         sglz_fini();
         return -1;
     }
+    size_t host_in_size = (size_t)SGLZ_MAX_BATCH_BLOCKS * SGLZ_BLOCK_SIZE;
+    size_t host_out_size = (size_t)SGLZ_MAX_BATCH_BLOCKS * SGLZ_NCHUNKS * SGLZ_SLOT_SIZE;
+    size_t host_lens_size = SGLZ_MAX_BATCH_BLOCKS * sizeof(size_t);
+    size_t host_chunk_lens_size = (size_t)SGLZ_MAX_BATCH_BLOCKS * SGLZ_NCHUNKS * sizeof(uint32_t);
+    if (cudaHostAlloc((void **)&g_h_compress_in, host_in_size, cudaHostAllocDefault) == cudaSuccess &&
+        cudaHostAlloc((void **)&g_h_compress_out, host_out_size, cudaHostAllocDefault) == cudaSuccess &&
+        cudaHostAlloc((void **)&g_h_compress_in_lens, host_lens_size, cudaHostAllocDefault) == cudaSuccess &&
+        cudaHostAlloc((void **)&g_h_compress_chunk_lens, host_chunk_lens_size, cudaHostAllocDefault) == cudaSuccess) {
+        g_h_compress_pinned = 1;
+    } else {
+        (void)cudaGetLastError();
+        if (g_h_compress_in) cudaFreeHost(g_h_compress_in);
+        if (g_h_compress_out) cudaFreeHost(g_h_compress_out);
+        if (g_h_compress_in_lens) cudaFreeHost(g_h_compress_in_lens);
+        if (g_h_compress_chunk_lens) cudaFreeHost(g_h_compress_chunk_lens);
+        g_h_compress_in = (uint8_t *)malloc(host_in_size);
+        g_h_compress_out = (uint8_t *)malloc(host_out_size);
+        g_h_compress_in_lens = (size_t *)malloc(host_lens_size);
+        g_h_compress_chunk_lens = (uint32_t *)malloc(host_chunk_lens_size);
+        g_h_compress_pinned = 0;
+    }
+    if (!g_h_compress_in || !g_h_compress_out || !g_h_compress_in_lens ||
+        !g_h_compress_chunk_lens) {
+        fprintf(stderr, "[sglz] host staging allocation failed\n");
+        sglz_fini();
+        return -1;
+    }
     g_initialized = 1;
     return 0;
 }
@@ -370,6 +412,22 @@ void sglz_fini(void) {
     if (g_d_compress_out) { cudaFree(g_d_compress_out); g_d_compress_out = nullptr; }
     if (g_d_compress_in_lens) { cudaFree(g_d_compress_in_lens); g_d_compress_in_lens = nullptr; }
     if (g_d_compress_out_lens) { cudaFree(g_d_compress_out_lens); g_d_compress_out_lens = nullptr; }
+    if (g_h_compress_pinned) {
+        if (g_h_compress_in) cudaFreeHost(g_h_compress_in);
+        if (g_h_compress_out) cudaFreeHost(g_h_compress_out);
+        if (g_h_compress_in_lens) cudaFreeHost(g_h_compress_in_lens);
+        if (g_h_compress_chunk_lens) cudaFreeHost(g_h_compress_chunk_lens);
+    } else {
+        free(g_h_compress_in);
+        free(g_h_compress_out);
+        free(g_h_compress_in_lens);
+        free(g_h_compress_chunk_lens);
+    }
+    g_h_compress_in = nullptr;
+    g_h_compress_out = nullptr;
+    g_h_compress_in_lens = nullptr;
+    g_h_compress_chunk_lens = nullptr;
+    g_h_compress_pinned = 0;
     g_initialized = 0;
 }
 
@@ -446,7 +504,7 @@ static int do_decompress_block(const uint8_t *h_in, uint8_t *h_out,
 
 int sglz_compress_block(const uint8_t *in_buf, uint8_t *out_buf, size_t out_cap) {
     (void)out_cap;
-    if (!g_initialized) sglz_init();
+    if (!g_initialized && sglz_init() != 0) return -1;
 
     size_t out_len = 0;
     do_compress_block(in_buf, out_buf, SGLZ_BLOCK_SIZE, &out_len);
@@ -459,7 +517,7 @@ int sglz_compress_block(const uint8_t *in_buf, uint8_t *out_buf, size_t out_cap)
 
 int sglz_decompress_block(const uint8_t *in_buf, size_t in_len,
                           uint8_t *out_buf, size_t out_len) {
-    if (!g_initialized) sglz_init();
+    if (!g_initialized && sglz_init() != 0) return -1;
     (void)in_len;
     do_decompress_block(in_buf, out_buf, out_len);
     return 0;
@@ -472,7 +530,7 @@ int sglz_compress_batch(int n,
                         const uint8_t **in_bufs, const size_t *in_lens,
                         uint8_t **out_bufs, const size_t *out_caps,
                         size_t *out_lens) {
-    if (!g_initialized) sglz_init();
+    if (!g_initialized && sglz_init() != 0) return -1;
     if (n <= 0) return 0;
     if (n > SGLZ_MAX_BATCH_BLOCKS) return -1;
 
@@ -482,13 +540,23 @@ int sglz_compress_batch(int n,
     size_t *d_in_lens = (size_t *)g_d_compress_in_lens;
     uint32_t *d_chunk_lens = (uint32_t *)g_d_compress_out_lens;
 
-    /* 异步拷贝所有输入 */
+    int coalesced = sglz_coalesced_transfer_enabled();
     for (int i = 0; i < n; i++) {
-        size_t len = in_lens[i];
-        if (len > SGLZ_BLOCK_SIZE) len = SGLZ_BLOCK_SIZE;
-        cudaMemcpyAsync(d_in + i * SGLZ_BLOCK_SIZE, in_bufs[i], len, cudaMemcpyHostToDevice, g_streams[0]);
+        size_t len = in_lens[i] > SGLZ_BLOCK_SIZE ? SGLZ_BLOCK_SIZE : in_lens[i];
+        g_h_compress_in_lens[i] = len;
+        if (coalesced) {
+            memcpy(g_h_compress_in + (size_t)i * SGLZ_BLOCK_SIZE, in_bufs[i], len);
+        } else {
+            cudaMemcpyAsync(d_in + (size_t)i * SGLZ_BLOCK_SIZE, in_bufs[i], len,
+                            cudaMemcpyHostToDevice, g_streams[0]);
+        }
     }
-    cudaMemcpyAsync(d_in_lens, in_lens, n * sizeof(size_t), cudaMemcpyHostToDevice, g_streams[0]);
+    if (coalesced) {
+        cudaMemcpyAsync(d_in, g_h_compress_in, (size_t)n * SGLZ_BLOCK_SIZE,
+                        cudaMemcpyHostToDevice, g_streams[0]);
+    }
+    cudaMemcpyAsync(d_in_lens, g_h_compress_in_lens, n * sizeof(size_t),
+                    cudaMemcpyHostToDevice, g_streams[0]);
     cudaMemsetAsync(d_chunk_lens, 0,
                     (size_t)n * SGLZ_NCHUNKS * sizeof(uint32_t), g_streams[0]);
 
@@ -498,28 +566,34 @@ int sglz_compress_batch(int n,
     int num_blocks = (total_chunks + threads_per_block - 1) / threads_per_block;
     size_t shared_mem = threads_per_block * SGLZ_HASH_SIZE * sizeof(int);
     sglz_compress_chunks_kernel<<<num_blocks, threads_per_block, shared_mem, g_streams[0]>>>(d_in, d_out, d_in_lens, d_chunk_lens, total_chunks);
+    cudaMemcpyAsync(g_h_compress_chunk_lens, d_chunk_lens,
+                    (size_t)n * SGLZ_NCHUNKS * sizeof(uint32_t),
+                    cudaMemcpyDeviceToHost, g_streams[0]);
+    if (coalesced) {
+        cudaMemcpyAsync(g_h_compress_out, d_out,
+                        (size_t)n * SGLZ_NCHUNKS * SGLZ_SLOT_SIZE,
+                        cudaMemcpyDeviceToHost, g_streams[0]);
+    }
     cudaError_t err = cudaStreamSynchronize(g_streams[0]);
     if (err != cudaSuccess) {
-        fprintf(stderr, "[sglz] batch compress kernel failed: %s\n", cudaGetErrorString(err));
+        fprintf(stderr, "[sglz] batch compress failed: %s\n", cudaGetErrorString(err));
         return -1;
     }
-
-    /* 拷回每个 chunk 的长度并按 128 KiB block 求和。 */
-    uint32_t *h_chunk_lens = (uint32_t *)malloc(
-        (size_t)n * SGLZ_NCHUNKS * sizeof(uint32_t));
-    if (!h_chunk_lens) return -1;
-    cudaMemcpy(h_chunk_lens, d_chunk_lens,
-               (size_t)n * SGLZ_NCHUNKS * sizeof(uint32_t),
-               cudaMemcpyDeviceToHost);
 
     int success = 0;
     for (int i = 0; i < n; i++) {
         size_t comp_size = 0;
         for (int chunk = 0; chunk < SGLZ_NCHUNKS; chunk++)
-            comp_size += h_chunk_lens[i * SGLZ_NCHUNKS + chunk];
+            comp_size += g_h_compress_chunk_lens[i * SGLZ_NCHUNKS + chunk];
         if (comp_size > 0 && comp_size < in_lens[i] && comp_size <= out_caps[i]) {
-            cudaMemcpy(out_bufs[i], d_out + i * SGLZ_NCHUNKS * SGLZ_SLOT_SIZE,
-                       SGLZ_NCHUNKS * SGLZ_SLOT_SIZE, cudaMemcpyDeviceToHost);
+            if (coalesced) {
+                memcpy(out_bufs[i],
+                       g_h_compress_out + (size_t)i * SGLZ_NCHUNKS * SGLZ_SLOT_SIZE,
+                       SGLZ_NCHUNKS * SGLZ_SLOT_SIZE);
+            } else {
+                cudaMemcpy(out_bufs[i], d_out + (size_t)i * SGLZ_NCHUNKS * SGLZ_SLOT_SIZE,
+                           SGLZ_NCHUNKS * SGLZ_SLOT_SIZE, cudaMemcpyDeviceToHost);
+            }
             out_lens[i] = comp_size;
             success++;
         } else {
@@ -527,7 +601,6 @@ int sglz_compress_batch(int n,
         }
     }
 
-    free(h_chunk_lens);
     return success;
 }
 
@@ -537,7 +610,7 @@ int sglz_compress_batch(int n,
 int sglz_decompress_batch(int n,
                           const uint8_t **in_bufs, const size_t *in_lens,
                           uint8_t **out_bufs, const size_t *out_lens) {
-    if (!g_initialized) sglz_init();
+    if (!g_initialized && sglz_init() != 0) return -1;
     if (n <= 0) return 0;
     if (n > SGLZ_MAX_BATCH_BLOCKS) return -1;
     (void)in_lens;
@@ -557,12 +630,19 @@ int sglz_decompress_batch(int n,
     int threads_per_block = SGLZ_THREADS_PER_BLOCK;
     int num_blocks = (total_chunks + threads_per_block - 1) / threads_per_block;
     sglz_decompress_chunks_kernel<<<num_blocks, threads_per_block, 0, g_streams[0]>>>(d_in, d_out, d_out_lens, total_chunks);
-    cudaStreamSynchronize(g_streams[0]);
-
-    for (int i = 0; i < n; i++) {
-        cudaMemcpy(out_bufs[i], d_out + i * SGLZ_BLOCK_SIZE, out_lens[i], cudaMemcpyDeviceToHost);
+    if (sglz_coalesced_transfer_enabled()) {
+        for (int i = 0; i < n; i++) {
+            cudaMemcpyAsync(out_bufs[i], d_out + (size_t)i * SGLZ_BLOCK_SIZE,
+                            out_lens[i], cudaMemcpyDeviceToHost, g_streams[0]);
+        }
+        if (cudaStreamSynchronize(g_streams[0]) != cudaSuccess) return -1;
+    } else {
+        if (cudaStreamSynchronize(g_streams[0]) != cudaSuccess) return -1;
+        for (int i = 0; i < n; i++) {
+            if (cudaMemcpy(out_bufs[i], d_out + (size_t)i * SGLZ_BLOCK_SIZE,
+                           out_lens[i], cudaMemcpyDeviceToHost) != cudaSuccess) return -1;
+        }
     }
-
     return n;
 }
 
@@ -573,7 +653,7 @@ int sglz_decompress_batch_compact(int n,
                                    const uint8_t *in_buf, size_t in_total_len,
                                    const int *chunk_offsets,
                                    uint8_t **out_bufs, const size_t *out_lens) {
-    if (!g_initialized) sglz_init();
+    if (!g_initialized && sglz_init() != 0) return -1;
     if (n <= 0) return 0;
     if (n > SGLZ_MAX_BATCH_BLOCKS) return -1;
     /* 复用预分配的 device 内存池（stream 0，同步路径） */
@@ -595,14 +675,23 @@ int sglz_decompress_batch_compact(int n,
     int num_blocks = (total_chunks + threads_per_block - 1) / threads_per_block;
     sglz_decompress_compact_kernel<<<num_blocks, threads_per_block, 0, g_streams[0]>>>(
         d_in, d_out, d_offsets, d_out_lens, total_chunks);
-    cudaError_t err = cudaStreamSynchronize(g_streams[0]);
-    if (err != cudaSuccess) {
-        fprintf(stderr, "[COMPACT] kernel sync failed: %s\n", cudaGetErrorString(err));
-        return -1;
+    cudaError_t err;
+    if (sglz_coalesced_transfer_enabled()) {
+        for (int i = 0; i < n; i++) {
+            cudaMemcpyAsync(out_bufs[i], d_out + (size_t)i * SGLZ_BLOCK_SIZE,
+                            out_lens[i], cudaMemcpyDeviceToHost, g_streams[0]);
+        }
+        err = cudaStreamSynchronize(g_streams[0]);
+    } else {
+        err = cudaStreamSynchronize(g_streams[0]);
+        for (int i = 0; err == cudaSuccess && i < n; i++) {
+            err = cudaMemcpy(out_bufs[i], d_out + (size_t)i * SGLZ_BLOCK_SIZE,
+                             out_lens[i], cudaMemcpyDeviceToHost);
+        }
     }
-
-    for (int i = 0; i < n; i++) {
-        cudaMemcpy(out_bufs[i], d_out + i * SGLZ_BLOCK_SIZE, out_lens[i], cudaMemcpyDeviceToHost);
+    if (err != cudaSuccess) {
+        fprintf(stderr, "[COMPACT] kernel/D2H failed: %s\n", cudaGetErrorString(err));
+        return -1;
     }
 
     return n;
@@ -616,7 +705,7 @@ int sglz_decompress_batch_compact_async(int n,
                                            const int *chunk_offsets,
                                            const size_t *out_lens,
                                            int stream_id) {
-    if (!g_initialized) sglz_init();
+    if (!g_initialized && sglz_init() != 0) return -1;
     if (n <= 0) return 0;
     if (n > SGLZ_MAX_BATCH_BLOCKS) return -1;
     if (stream_id < 0 || stream_id >= SGLZ_NUM_STREAMS) return -1;
@@ -652,16 +741,26 @@ int sglz_decompress_batch_compact_wait(int stream_id, int n,
                                           uint8_t **out_bufs, const size_t *out_lens) {
     if (stream_id < 0 || stream_id >= SGLZ_NUM_STREAMS) return -1;
     cudaStream_t stream = g_streams[stream_id];
-    cudaError_t err = cudaStreamSynchronize(stream);
+    uint8_t *d_out = (uint8_t *)g_d_batch_out[stream_id];
+    cudaError_t err;
+    if (sglz_coalesced_transfer_enabled()) {
+        for (int i = 0; i < n; i++) {
+            cudaMemcpyAsync(out_bufs[i], d_out + (size_t)i * SGLZ_BLOCK_SIZE,
+                            out_lens[i], cudaMemcpyDeviceToHost, stream);
+        }
+        err = cudaStreamSynchronize(stream);
+    } else {
+        err = cudaStreamSynchronize(stream);
+        for (int i = 0; err == cudaSuccess && i < n; i++) {
+            err = cudaMemcpy(out_bufs[i], d_out + (size_t)i * SGLZ_BLOCK_SIZE,
+                             out_lens[i], cudaMemcpyDeviceToHost);
+        }
+    }
     if (err != cudaSuccess) {
         fprintf(stderr, "[COMPACT] stream %d sync failed: %s\n", stream_id, cudaGetErrorString(err));
         return -1;
     }
 
-    uint8_t *d_out = (uint8_t *)g_d_batch_out[stream_id];
-    for (int i = 0; i < n; i++) {
-        cudaMemcpy(out_bufs[i], d_out + i * SGLZ_BLOCK_SIZE, out_lens[i], cudaMemcpyDeviceToHost);
-    }
     return n;
 }
 
@@ -681,6 +780,13 @@ void gpu_compress_fini(void) {
 
 int gpu_compress_128k(const uint8_t *in, uint8_t *out, size_t out_cap) {
     return sglz_compress_block(in, out, out_cap);
+}
+
+int gpu_compress_batch(int n,
+                       const uint8_t **in_bufs, const size_t *in_lens,
+                       uint8_t **out_bufs, const size_t *out_caps,
+                       size_t *out_lens) {
+    return sglz_compress_batch(n, in_bufs, in_lens, out_bufs, out_caps, out_lens);
 }
 
 int gpu_decompress_128k(const uint8_t *in, size_t in_len, uint8_t *out, size_t out_len) {

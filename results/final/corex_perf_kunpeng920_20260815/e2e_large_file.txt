@@ -1,0 +1,5 @@
+logical_mib=1024
+reads=3
+daemon_seconds=6
+sha256=49bc20df15e412a64472421e13fe86ff1c5165e18b2afccf160d4dc19fe68a14
+status=PASS

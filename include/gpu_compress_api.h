@@ -23,6 +23,10 @@ extern "C" {
 int  gpu_compress_init(void);
 void gpu_compress_fini(void);
 int gpu_compress_128k(const uint8_t *in, uint8_t *out, size_t out_cap);
+int gpu_compress_batch(int n,
+                       const uint8_t **in_bufs, const size_t *in_lens,
+                       uint8_t **out_bufs, const size_t *out_caps,
+                       size_t *out_lens);
 int gpu_decompress_128k(const uint8_t *in, size_t in_len, uint8_t *out, size_t out_len);
 int gpu_decompress_batch(int n,
                          const uint8_t **in_bufs, const size_t *in_lens,
@@ -100,6 +104,8 @@ int gpu_decompress_batch_compact_async(int n,
                                         int stream_id);
 int gpu_decompress_batch_compact_wait(int stream_id, int n,
                                        uint8_t **out_bufs, const size_t *out_lens);
+int gpu_tls_alloc_pinned(void **ptr, size_t size);
+void gpu_tls_free_pinned(void *ptr);
 int cpu_decompress_batch_compact_async(int n,
                                         const uint8_t *in_buf, size_t in_total_len,
                                         const int *chunk_offsets,

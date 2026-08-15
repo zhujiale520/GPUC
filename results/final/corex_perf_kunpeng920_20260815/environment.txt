@@ -1,0 +1,16 @@
+date=2026-08-15
+cpu=Kunpeng-920
+architecture=aarch64
+os=openEuler 22.03 LTS-SP1
+kernel=5.10.0-136.108.0.188.oe2203sp1.aarch64
+gpu=Iluvatar MR-V100 32 GiB
+corex=4.4.0
+corex_arch=ivcore11
+compiler=CoreX Clang 18.1.8
+source_base_commit=c4dbec2766dca747eff9402b5d70de797130ea7f
+perf_mib=1024
+perf_iterations=3
+stress_mib=4096
+stress_iterations=4
+e2e_mib=1024
+e2e_reads=3
