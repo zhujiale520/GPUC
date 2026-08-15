@@ -16,7 +16,7 @@ results/final/<实验名称>/<运行编号>/
 
 每组正式实验结果应完整保留以下内容：
 
-- `environment.txt`：Git 提交、内核、CPU、GPU、驱动、CUDA、fio 版本和实验参数；
+- `environment.txt`：Git 提交、内核、CPU、GPU、驱动、CUDA/CoreX、fio 版本和实验参数；
 - fio JSON、Vdbench 输出、PCM CSV 或其他工具的原始结果；
 - `runs.csv`：每次重复实验一行；
 - `summary.csv`：样本数、均值、标准差和 95% 置信区间；
@@ -27,3 +27,7 @@ results/final/<实验名称>/<运行编号>/
 正式图表应能够追溯到对应的原始数据、运行参数和生成脚本。项目最终结果的总索引
 位于 [`final/README.md`](final/README.md)，完整分析见
 [`../docs/实验结果报告.md`](../docs/实验结果报告.md)。
+
+国产平台正式证据包括 `domestic_poc_kunpeng920_corex_20260815/` 与
+`corex_perf_kunpeng920_20260815/`，分别记录鲲鹏/CoreX 功能闭环以及传输 A/B、
+16 GiB round-trip 和 1 GiB 文件压力验证。

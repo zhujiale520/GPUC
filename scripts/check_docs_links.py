@@ -3,6 +3,7 @@
 from pathlib import Path
 import re
 import sys
+from urllib.parse import unquote
 
 ROOT = Path(__file__).resolve().parents[1]
 LINK = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
@@ -17,10 +18,14 @@ for doc in ROOT.rglob("*.md"):
     text = doc.read_text(encoding="utf-8", errors="replace")
     for line_no, line in enumerate(text.splitlines(), 1):
         for raw in LINK.findall(line):
-            target = raw.strip().split(maxsplit=1)[0].strip("<>")
+            raw = raw.strip()
+            if raw.startswith("<") and ">" in raw:
+                target = raw[1:raw.index(">")]
+            else:
+                target = raw.split(maxsplit=1)[0]
             if not target or target.startswith(("#", "http://", "https://", "mailto:")):
                 continue
-            path_part = target.split("#", 1)[0]
+            path_part = unquote(target.split("#", 1)[0])
             if not path_part:
                 continue
             candidate = (doc.parent / path_part).resolve()

@@ -1,4 +1,4 @@
-# V100 与 RTX 4090 决赛实验结果索引
+# V100、RTX 4090 与鲲鹏/CoreX 决赛实验结果索引
 
 本目录只收录完成正确性校验、具有环境记录和原始 CSV/JSON 的结果。P0 新实验以
 checkpoint `035e42b02a5a2a929c14c0de8fa1f1a5e86088b8` 为起点，随后加入对齐格式与
@@ -10,6 +10,20 @@ V100 原始平台为 Tesla V100-SXM2-32GB（compute capability 7.0），驱动
 compute capability 8.9，驱动 565.57.01。每个子目录的 `environment.txt`
 是该实验的权威环境记录；跨机器比较同时包含 CPU、内存、PCIe/SXM 和存储路径
 差异，不能解释为只替换 GPU 的同机 A/B。
+
+国产平台为 openEuler 22.03 LTS-SP1、2 路 64 核 Kunpeng-920/AArch64，GPU 由
+`ixsmi` 识别为 Iluvatar MR-V100 32 GiB，使用 CoreX 4.4.0 Clang 和 `ivcore11`。
+国产结果与 NVIDIA 结果用于跨平台可行性和功能覆盖，不用于 GPU 型号性能排名。
+
+## 鲲鹏 920 + CoreX 有效结果
+
+| 目录 | 口径 | 主要结论 |
+|---|---|---|
+| `domestic_poc_kunpeng920_corex_20260815/` | AArch64 CPU build/smoke/e2e，CoreX kernel/SGLZ/完整项目测试，16 MiB 端到端 | CPU/GPU 功能闭环全部 PASS；透明读取内容与 SHA 一致 |
+| `corex_perf_kunpeng920_20260815/` | 同一二进制逐块/合并传输 A/B，32-block batch；16 GiB round-trip；1 GiB 文件三次读取 | 压缩 1.165x、解压 1.044x；131072 blocks 字节一致；大文件 SHA 一致 |
+
+CoreX 吞吐包含 Host 打包、H2D、Kernel、D2H 和输出散布，不包含磁盘 I/O。当前机器
+尚未安装 fio，因此国产平台结果不替代真实 NVMe、多进程并发或整机能效测试。
 
 ## RTX 4090 有效结果
 
