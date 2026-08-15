@@ -42,7 +42,11 @@ check_gpu() {
             ((PASS++))
         else
             echo -e "${YELLOW}[WARN]${NC} ixsmi exists but no accessible CoreX GPU was found"
-            echo -e "${YELLOW}[WARN]${NC} Check /dev GPU mappings when running inside a container"
+            if tr '\0' ' ' </proc/1/cmdline 2>/dev/null | grep -q 'bwrap.*--dev /dev'; then
+                echo -e "${YELLOW}[INFO]${NC} Codex/bwrap isolates /dev; rerun in the host shell"
+            else
+                echo -e "${YELLOW}[WARN]${NC} Check /dev GPU mappings when running inside a container"
+            fi
             ((WARN++))
         fi
     elif which nvidia-smi >/dev/null 2>&1; then
@@ -63,7 +67,24 @@ check_gpu() {
         ((WARN++))
     fi
 
-    if which nvcc >/dev/null 2>&1; then
+    if [ "$gpu_platform" = "corex" ]; then
+        local corex_home="${COREX_HOME:-/usr/local/corex-4.4.0}"
+        local probe_dir
+        probe_dir=$(mktemp -d)
+        printf '%s\n' '__global__ void k(void) {}' 'int main(void) { k<<<1,1>>>(); return 0; }' > "$probe_dir/probe.cu"
+        if [ -x "$corex_home/bin/clang++" ] && \
+           "$corex_home/bin/clang++" -x ivcore --cuda-path="$corex_home" \
+             --offload-arch=ivcore11 -c "$probe_dir/probe.cu" \
+             -o "$probe_dir/probe.o" >/dev/null 2>&1 && \
+           [ -s "$probe_dir/probe.o" ]; then
+            echo -e "${GREEN}[PASS]${NC} CoreX Clang can compile ivcore11 CUDA source"
+            ((PASS++))
+        else
+            echo -e "${RED}[FAIL]${NC} CoreX Clang cannot compile ivcore11 CUDA source"
+            ((FAIL++))
+        fi
+        rm -rf "$probe_dir"
+    elif which nvcc >/dev/null 2>&1; then
         local probe_dir
         probe_dir=$(mktemp -d)
         printf '%s\n' '__global__ void k(void) {}' 'int main(void) { k<<<1,1>>>(); return 0; }' > "$probe_dir/probe.cu"
@@ -73,9 +94,6 @@ check_gpu() {
             ((PASS++))
         else
             echo -e "${RED}[FAIL]${NC} nvcc exists but cannot generate an object file"
-            if [ "$gpu_platform" = "corex" ]; then
-                echo -e "${YELLOW}[INFO]${NC} Install/mount the CoreX compiler component; a version-only shim is insufficient"
-            fi
             ((FAIL++))
         fi
         rm -rf "$probe_dir"

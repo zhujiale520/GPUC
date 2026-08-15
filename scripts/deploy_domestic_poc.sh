@@ -2,6 +2,9 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+COREX_HOME="${COREX_HOME:-/usr/local/corex-4.4.0}"
+export PATH="$COREX_HOME/bin:$PATH"
+export LD_LIBRARY_PATH="$COREX_HOME/lib64${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
 TEST_ROOT="${GPUC_TEST_ROOT:-$PROJECT_DIR}"
 STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 RESULT_DIR="${GPUC_RESULT_DIR:-$PROJECT_DIR/results/local/domestic_poc_$STAMP}"
@@ -61,16 +64,39 @@ GPU_REASON=""
 if ! command -v ixsmi >/dev/null 2>&1; then
     GPU_REASON="ixsmi not found"
 elif ! ixsmi >/dev/null 2>&1; then
-    GPU_REASON="CoreX GPU is not accessible (check device-node mapping)"
-elif ! make -C "$PROJECT_DIR" corex; then
-    GPU_REASON="CoreX CUDA compiler is incomplete or unavailable"
-else
-    if "$PROJECT_DIR/bin/test_compress"; then
-        echo "gpu_sglz_unit=PASS" >> "$RESULT_DIR/summary.txt"
-        echo "[PASS] CoreX SGLZ GPU unit test"
-        exit 0
+    if tr '\0' ' ' </proc/1/cmdline 2>/dev/null | grep -q 'bwrap.*--dev /dev'; then
+        GPU_REASON="Codex/bwrap isolates /dev; rerun this script in the host shell"
+    else
+        GPU_REASON="CoreX GPU is not accessible (check device-node mapping)"
     fi
-    GPU_REASON="CoreX SGLZ unit test failed"
+elif ! make -C "$PROJECT_DIR" corex; then
+    GPU_REASON="CoreX Clang/ivcore build failed"
+else
+    ixsmi -q > "$RESULT_DIR/ixsmi.txt"
+    if ! "$PROJECT_DIR/bin/test_compress"; then
+        GPU_REASON="CoreX SGLZ unit test failed"
+    else
+        GPU_DIR="$WORK_DIR/gpu"
+        GPU_MANAGED="$GPU_DIR/managed.bin"
+        mkdir -p "$GPU_DIR"
+        LD_PRELOAD="$PROJECT_DIR/bin/libgpuhook.so" GPUCOMPRESS_QUIET=1 \
+            "$PROJECT_DIR/bin/test_hook" write "$GPU_MANAGED" 16777216
+        "$PROJECT_DIR/bin/gpu_compress_daemon" "$GPU_DIR"
+        LD_PRELOAD="$PROJECT_DIR/bin/libgpuhook.so" GPUCOMPRESS_QUIET=1 \
+            "$PROJECT_DIR/bin/test_hook" read "$GPU_MANAGED" 16777216
+        GPU_SHA="$(LD_PRELOAD="$PROJECT_DIR/bin/libgpuhook.so" GPUCOMPRESS_QUIET=1 \
+            dd if="$GPU_MANAGED" of=/dev/stdout bs=1M status=none | \
+            sha256sum | awk '{print $1}')"
+        if [ "$GPU_SHA" != "$SOURCE_SHA" ]; then
+            GPU_REASON="CoreX GPU logical SHA mismatch"
+        else
+            GPU_MODEL="$(awk -F: '/Product Name/{sub(/^[[:space:]]+/, "", $2); print $2; exit}' "$RESULT_DIR/ixsmi.txt")"
+            printf 'gpu_sglz_unit=PASS\ngpu_e2e_sha=PASS\ngpu_model=%s\ncorex_arch=ivcore11\n' \
+                "$GPU_MODEL" >> "$RESULT_DIR/summary.txt"
+            echo "[PASS] CoreX SGLZ unit + GPU daemon + transparent read + SHA"
+            exit 0
+        fi
+    fi
 fi
 
 printf 'gpu_sglz_unit=BLOCKED\ngpu_reason=%s\n' "$GPU_REASON" >> "$RESULT_DIR/summary.txt"

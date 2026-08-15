@@ -264,7 +264,7 @@ DM/Btrfs/ZFS 压缩层。
 - [项目设计方案](docs/项目设计方案.md) / [Word 版](docs/项目设计方案.docx) — 设计思路、实现与代码说明、研发问题与解决方法、第三方及 AI 使用说明
 - [实验结果报告](docs/实验结果报告.md) / [Word 版](docs/实验结果报告.docx) — V100 与 RTX 4090 的完整数据、统计口径和适用范围
 - [实验复现指南](docs/实验复现指南.md) / [Word 版](docs/实验复现指南.docx) — 环境检查、构建、功能验证和实验复现入口
-- [国产平台部署指南](docs/国产平台部署指南.md) — 鲲鹏 920、CoreX SGLZ 构建、最小验收与当前阻塞项
+- [国产平台部署指南](docs/国产平台部署指南.md) — 鲲鹏 920、CoreX/ivcore11 构建和完整最小验收
 - [PPT 制作大纲](ppt/PPT_OUTLINE.md) — 队员分工、开发进度、技术路线和答辩证据编排
 - [演示视频脚本](video/VIDEO_SCRIPT.md) — 运行环境、源码与功能演示、正式结果说明
 - [LICENSE](LICENSE) / [LICENSE-docs](LICENSE-docs) — 源代码与文档许可证
@@ -273,9 +273,9 @@ DM/Btrfs/ZFS 压缩层。
 
 ## 技术平台
 
-- GPU: 已测试 Tesla V100-SXM2-32GB 与 GeForce RTX 4090；天数智芯设备已完成 PCIe/驱动识别，CoreX GPU 运行仍待设备节点与完整编译器
+- GPU: 已测试 Tesla V100-SXM2-32GB、GeForce RTX 4090 与 Iluvatar MR-V100 32GB；CoreX SGLZ 单元及端到端 SHA 已通过
 - CPU: 已测试 x86_64 与华为鲲鹏 920/AArch64；鲲鹏上 CPU build、smoke 和端到端 SHA 均通过
-- 编程框架: NVIDIA CUDA SDK 12.8；天数智芯 CoreX 4.4.0 CUDA 兼容接口（SGLZ 构建入口已加入）
+- 编程框架: NVIDIA CUDA SDK 12.8；天数智芯 CoreX 4.4.0 Clang/ivcore11 CUDA 兼容接口
 - 文件系统: ext4
 
 ---

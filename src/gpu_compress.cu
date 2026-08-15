@@ -150,7 +150,7 @@ __device__ int sglz_decompress_chunk_device(const uint8_t *src, uint8_t *dst, in
 __global__ void sglz_compress_chunks_kernel(const uint8_t *in_buf,
                                             uint8_t *out_buf,
                                             const size_t *in_lens,
-                                            size_t *out_lens,
+                                            uint32_t *chunk_lens,
                                             int total_chunks) {
     extern __shared__ int shared_hash[];
 
@@ -171,13 +171,17 @@ __global__ void sglz_compress_chunks_kernel(const uint8_t *in_buf,
 
     if (chunk_len <= 0) {
         *(uint16_t *)dst = 2;
+        chunk_lens[chunk_id] = 0;
         return;
     }
 
     int hash_stride = blockDim.x;
     int *hash_tbl = &shared_hash[threadIdx.x];
     int comp_size = sglz_compress_chunk_device(src, dst, chunk_len, hash_tbl, hash_stride);
-    atomicAdd((unsigned long long *)(out_lens + block_id), (unsigned long long)comp_size);
+    /* CoreX ivcore11 does not provide CUDA atomicAdd compatibility for this
+     * kernel.  Each thread owns one chunk, so publish its length independently
+     * and reduce the 32 values on the host. */
+    chunk_lens[chunk_id] = (uint32_t)comp_size;
 }
 
 __global__ void sglz_decompress_chunks_kernel(const uint8_t *in_buf,
@@ -340,7 +344,8 @@ int sglz_init(void) {
         sglz_fini();
         return -1;
     }
-    err = cudaMalloc(&g_d_compress_out_lens, SGLZ_MAX_BATCH_BLOCKS * sizeof(size_t));
+    err = cudaMalloc(&g_d_compress_out_lens,
+                     SGLZ_MAX_BATCH_BLOCKS * SGLZ_NCHUNKS * sizeof(uint32_t));
     if (err != cudaSuccess) {
         fprintf(stderr, "[sglz] cudaMalloc(compress_out_lens) failed: %s\n", cudaGetErrorString(err));
         sglz_fini();
@@ -376,23 +381,31 @@ static int do_compress_block(const uint8_t *h_in, uint8_t *h_out,
     uint8_t *d_in = nullptr;
     uint8_t *d_out = nullptr;
     size_t *d_in_len = nullptr;
-    size_t *d_out_len = nullptr;
+    uint32_t *d_chunk_lens = nullptr;
 
     cudaMalloc(&d_in, SGLZ_BLOCK_SIZE);
     cudaMalloc(&d_out, SGLZ_NCHUNKS * SGLZ_SLOT_SIZE);
     cudaMalloc(&d_in_len, sizeof(size_t));
-    cudaMalloc(&d_out_len, sizeof(size_t));
+    cudaMalloc(&d_chunk_lens, SGLZ_NCHUNKS * sizeof(uint32_t));
 
     cudaMemcpyAsync(d_in, h_in, in_len, cudaMemcpyHostToDevice, g_streams[0]);
     cudaMemcpyAsync(d_in_len, &in_len, sizeof(size_t), cudaMemcpyHostToDevice, g_streams[0]);
-    cudaMemsetAsync(d_out_len, 0, sizeof(size_t), g_streams[0]);
+    cudaMemsetAsync(d_chunk_lens, 0, SGLZ_NCHUNKS * sizeof(uint32_t), g_streams[0]);
 
     size_t shared_mem = SGLZ_NCHUNKS * SGLZ_HASH_SIZE * sizeof(int);
-    sglz_compress_chunks_kernel<<<1, SGLZ_NCHUNKS, shared_mem, g_streams[0]>>>(d_in, d_out, d_in_len, d_out_len, SGLZ_NCHUNKS);
-    cudaStreamSynchronize(g_streams[0]);
+    sglz_compress_chunks_kernel<<<1, SGLZ_NCHUNKS, shared_mem, g_streams[0]>>>(d_in, d_out, d_in_len, d_chunk_lens, SGLZ_NCHUNKS);
+    cudaError_t err = cudaStreamSynchronize(g_streams[0]);
+    if (err != cudaSuccess) {
+        fprintf(stderr, "[sglz] compress kernel failed: %s\n", cudaGetErrorString(err));
+        cudaFree(d_in); cudaFree(d_out); cudaFree(d_in_len); cudaFree(d_chunk_lens);
+        return -1;
+    }
 
     size_t h_out_len = 0;
-    cudaMemcpy(&h_out_len, d_out_len, sizeof(size_t), cudaMemcpyDeviceToHost);
+    uint32_t h_chunk_lens[SGLZ_NCHUNKS];
+    cudaMemcpy(h_chunk_lens, d_chunk_lens, sizeof(h_chunk_lens), cudaMemcpyDeviceToHost);
+    for (int chunk = 0; chunk < SGLZ_NCHUNKS; chunk++)
+        h_out_len += h_chunk_lens[chunk];
 
     if (h_out_len > 0) {
         cudaMemcpy(h_out, d_out, SGLZ_NCHUNKS * SGLZ_SLOT_SIZE, cudaMemcpyDeviceToHost);
@@ -401,7 +414,7 @@ static int do_compress_block(const uint8_t *h_in, uint8_t *h_out,
     cudaFree(d_in);
     cudaFree(d_out);
     cudaFree(d_in_len);
-    cudaFree(d_out_len);
+    cudaFree(d_chunk_lens);
 
     *out_len = h_out_len;
     return 0;
@@ -467,7 +480,7 @@ int sglz_compress_batch(int n,
     uint8_t *d_in = (uint8_t *)g_d_compress_in;
     uint8_t *d_out = (uint8_t *)g_d_compress_out;
     size_t *d_in_lens = (size_t *)g_d_compress_in_lens;
-    size_t *d_out_lens = (size_t *)g_d_compress_out_lens;
+    uint32_t *d_chunk_lens = (uint32_t *)g_d_compress_out_lens;
 
     /* 异步拷贝所有输入 */
     for (int i = 0; i < n; i++) {
@@ -476,23 +489,34 @@ int sglz_compress_batch(int n,
         cudaMemcpyAsync(d_in + i * SGLZ_BLOCK_SIZE, in_bufs[i], len, cudaMemcpyHostToDevice, g_streams[0]);
     }
     cudaMemcpyAsync(d_in_lens, in_lens, n * sizeof(size_t), cudaMemcpyHostToDevice, g_streams[0]);
-    cudaMemsetAsync(d_out_lens, 0, n * sizeof(size_t), g_streams[0]);
+    cudaMemsetAsync(d_chunk_lens, 0,
+                    (size_t)n * SGLZ_NCHUNKS * sizeof(uint32_t), g_streams[0]);
 
     /* 启动一个 kernel 处理所有 chunks */
     int total_chunks = n * SGLZ_NCHUNKS;
     int threads_per_block = SGLZ_COMPRESS_TPB;
     int num_blocks = (total_chunks + threads_per_block - 1) / threads_per_block;
     size_t shared_mem = threads_per_block * SGLZ_HASH_SIZE * sizeof(int);
-    sglz_compress_chunks_kernel<<<num_blocks, threads_per_block, shared_mem, g_streams[0]>>>(d_in, d_out, d_in_lens, d_out_lens, total_chunks);
-    cudaStreamSynchronize(g_streams[0]);
+    sglz_compress_chunks_kernel<<<num_blocks, threads_per_block, shared_mem, g_streams[0]>>>(d_in, d_out, d_in_lens, d_chunk_lens, total_chunks);
+    cudaError_t err = cudaStreamSynchronize(g_streams[0]);
+    if (err != cudaSuccess) {
+        fprintf(stderr, "[sglz] batch compress kernel failed: %s\n", cudaGetErrorString(err));
+        return -1;
+    }
 
-    /* 拷回输出长度 */
-    size_t *h_out_lens = (size_t *)malloc(n * sizeof(size_t));
-    cudaMemcpy(h_out_lens, d_out_lens, n * sizeof(size_t), cudaMemcpyDeviceToHost);
+    /* 拷回每个 chunk 的长度并按 128 KiB block 求和。 */
+    uint32_t *h_chunk_lens = (uint32_t *)malloc(
+        (size_t)n * SGLZ_NCHUNKS * sizeof(uint32_t));
+    if (!h_chunk_lens) return -1;
+    cudaMemcpy(h_chunk_lens, d_chunk_lens,
+               (size_t)n * SGLZ_NCHUNKS * sizeof(uint32_t),
+               cudaMemcpyDeviceToHost);
 
     int success = 0;
     for (int i = 0; i < n; i++) {
-        size_t comp_size = h_out_lens[i];
+        size_t comp_size = 0;
+        for (int chunk = 0; chunk < SGLZ_NCHUNKS; chunk++)
+            comp_size += h_chunk_lens[i * SGLZ_NCHUNKS + chunk];
         if (comp_size > 0 && comp_size < in_lens[i] && comp_size <= out_caps[i]) {
             cudaMemcpy(out_bufs[i], d_out + i * SGLZ_NCHUNKS * SGLZ_SLOT_SIZE,
                        SGLZ_NCHUNKS * SGLZ_SLOT_SIZE, cudaMemcpyDeviceToHost);
@@ -503,7 +527,7 @@ int sglz_compress_batch(int n,
         }
     }
 
-    free(h_out_lens);
+    free(h_chunk_lens);
     return success;
 }
 

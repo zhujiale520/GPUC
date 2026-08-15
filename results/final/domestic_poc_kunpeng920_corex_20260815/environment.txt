@@ -12,8 +12,12 @@ gpu_pci_id=1e3e:0002
 gpu_kernel_driver=iluvatar
 gpu_driver_version=4.4.0
 corex_sdk_release=4.4.0
-gpu_device_nodes=missing
-ixsmi_status=No supported GPUs were found
-corex_nvcc_status=version-only shim; object-file probe failed
+gpu_device_nodes=/dev/iluvatar0 (239:0), /dev/itrctl (238:0)
+ixsmi_status=PASS
+gpu_model=Iluvatar MR-V100
+gpu_memory_mib=32768
+corex_compiler=CoreX Clang 18.1.8
+corex_device_arch=ivcore11
+corex_compile_mode=-x ivcore --offload-arch=ivcore11
 fio=missing
 filesystem=ext4 (test data); /tmp is tmpfs

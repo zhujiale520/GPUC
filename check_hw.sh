@@ -27,10 +27,15 @@ lspci -nnk | grep -A3 -E 'VGA|3D|Display|Processing accelerators' || true
 
 section "CoreX 驱动与设备节点"
 lsmod | grep -E 'iluvatar|corex' || echo "[FAIL] 未发现 iluvatar/corex 内核模块"
-if compgen -G '/dev/iluvatar*' >/dev/null || compgen -G '/dev/ix*' >/dev/null; then
-    ls -l /dev/iluvatar* /dev/ix* 2>/dev/null
+if compgen -G '/dev/iluvatar*' >/dev/null || compgen -G '/dev/ix*' >/dev/null || \
+   [ -e /dev/itrctl ]; then
+    ls -l /dev/iluvatar* /dev/ix* /dev/itrctl 2>/dev/null
 else
-    echo "[FAIL] 未发现 CoreX GPU 设备节点；容器部署时需要映射宿主机 GPU 设备"
+    if tr '\0' ' ' </proc/1/cmdline 2>/dev/null | grep -q 'bwrap.*--dev /dev'; then
+        echo "[WARN] Codex/bwrap 使用隔离 /dev；请在宿主机 Shell 复查，不代表 GPU 未安装"
+    else
+        echo "[FAIL] 未发现 CoreX GPU 设备节点；容器部署时需要映射宿主机 GPU 设备"
+    fi
 fi
 
 section "GPU 状态 (ixsmi)"
@@ -41,19 +46,21 @@ else
 fi
 
 section "CoreX 编译工具链"
-if [ -x "$COREX_HOME/bin/nvcc" ]; then
-    "$COREX_HOME/bin/nvcc" --version 2>&1 | sed -n '1,8p'
+if [ -x "$COREX_HOME/bin/clang++" ]; then
+    "$COREX_HOME/bin/clang++" --version 2>&1 | sed -n '1,4p'
     probe_dir="$(mktemp -d)"
     printf '%s\n' '__global__ void k(void) {}' 'int main(void) { k<<<1,1>>>(); return 0; }' > "$probe_dir/probe.cu"
-    if "$COREX_HOME/bin/nvcc" -arch=sm_70 -c "$probe_dir/probe.cu" -o "$probe_dir/probe.o" >/dev/null 2>&1 && \
+    if "$COREX_HOME/bin/clang++" -x ivcore --cuda-path="$COREX_HOME" \
+       --offload-arch=ivcore11 -c "$probe_dir/probe.cu" \
+       -o "$probe_dir/probe.o" >/dev/null 2>&1 && \
        [ -s "$probe_dir/probe.o" ]; then
-        echo "[PASS] CoreX CUDA 编译器可生成目标文件"
+        echo "[PASS] CoreX Clang/ivcore11 可生成目标文件"
     else
-        echo "[FAIL] nvcc 不能生成目标文件，可能只是版本占位脚本或编译组件未安装"
+        echo "[FAIL] CoreX Clang 无法编译 ivcore11 CUDA 源码"
     fi
     rm -rf "$probe_dir"
 else
-    echo "[FAIL] 未找到 $COREX_HOME/bin/nvcc"
+    echo "[FAIL] 未找到 $COREX_HOME/bin/clang++"
 fi
 
 section "GPU 温度与功耗"
