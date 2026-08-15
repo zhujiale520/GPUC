@@ -4,6 +4,8 @@
 
 NVCC       ?= nvcc
 GCC        ?= gcc
+GPU_PLATFORM ?= nvidia
+COREX_HOME ?= /usr/local/corex-4.4.0
 
 # ----------------------------------------------------------
 # 自动检测 GPU 计算能力（优先 nvidia-smi）
@@ -13,9 +15,12 @@ GCC        ?= gcc
 GPU_ARCH_DETECTED := $(shell nvidia-smi --query-gpu=compute_cap --format=csv,noheader 2>/dev/null \
 	| awk -F. '/^[0-9]+\.[0-9]+/ { gsub(/[^0-9]/, "", $$2); print $$1 $$2; exit }')
 GPU_ARCH ?= $(GPU_ARCH_DETECTED)
+REQUESTED_GOALS := $(if $(MAKECMDGOALS),$(MAKECMDGOALS),all)
 ifeq ($(strip $(GPU_ARCH)),)
     GPU_ARCH := 70
+ifneq ($(filter all corex test unit-test integration-test,$(REQUESTED_GOALS)),)
     $(warning GPU auto-detect failed, defaulting to sm_70. Override with: make GPU_ARCH=75)
+endif
 endif
 # Ablation study flags: pass via make ABLATION_FLAGS="-DGPUC_NO_BATCH"
 ABLATION_FLAGS ?=
@@ -38,7 +43,22 @@ else
 LZ4_LINK    = -Xlinker -l:liblz4.so.1
 endif
 
-NVCCFLAGS  = -arch=sm_$(GPU_ARCH) -O3 -I./include $(NVCOMP_FLAGS) -Xcompiler -Wno-maybe-uninitialized -Wno-deprecated-gpu-targets $(ABLATION_FLAGS)
+ifeq ($(GPU_PLATFORM),corex)
+GPU_DEP_TARGET = check-corex-deps
+GPU_LZ4_SRC    = $(SRCDIR)/gpu_lz4_stub.c
+GPU_LZ4_TARGETS =
+GPU_EXTRA_FLAGS = -I$(COREX_HOME)/include
+GPU_EXTRA_LINK  = -L$(COREX_HOME)/lib64 -Xlinker -rpath -Xlinker $(COREX_HOME)/lib64
+else
+GPU_DEP_TARGET = check-gpu-deps
+GPU_LZ4_SRC    = $(SRCDIR)/gpu_lz4.cu
+GPU_LZ4_TARGETS = $(BINDIR)/test_lz4_cpu_gpu $(BINDIR)/test_cpu_offload \
+                  $(BINDIR)/benchmark_lz4_compress
+GPU_EXTRA_FLAGS = $(NVCOMP_FLAGS)
+GPU_EXTRA_LINK  = $(NVCOMP_LINK)
+endif
+
+NVCCFLAGS  = -arch=sm_$(GPU_ARCH) -O3 -I./include $(GPU_EXTRA_FLAGS) -Xcompiler -Wno-maybe-uninitialized -Wno-deprecated-gpu-targets $(ABLATION_FLAGS)
 LDFLAGS    = -lpthread $(LZ4_LINK)
 
 SRCDIR     = src
@@ -48,21 +68,25 @@ BINDIR     = bin
 # 所有编译产物
 TARGETS    = $(BINDIR)/libgpuhook.so $(BINDIR)/libcpuhook.so \
              $(BINDIR)/gpu_compress_daemon $(BINDIR)/cpu_compress_daemon \
-             $(BINDIR)/test_cpu_vs_gpu $(BINDIR)/test_lz4_cpu_gpu $(BINDIR)/test_cpu_offload \
-             $(BINDIR)/benchmark_lz4_compress $(BINDIR)/scan_workload \
+             $(BINDIR)/test_cpu_vs_gpu $(GPU_LZ4_TARGETS) $(BINDIR)/scan_workload \
              $(BINDIR)/test_compress $(BINDIR)/test_hook $(BINDIR)/test_cold_read \
              $(BINDIR)/test_odirect_compressed
 
-.PHONY: all clean test dirs unit-test integration-test check-env check-gpu-deps cpu-only smoke-test sanitizer-test coverage-test docs-check
+.PHONY: all corex clean test dirs unit-test integration-test check-env check-gpu-deps check-corex-deps cpu-only smoke-test sanitizer-test coverage-test docs-check
 
 # ----------------------------------------------------------
 # 默认目标
 # ----------------------------------------------------------
-all: check-gpu-deps dirs $(TARGETS)
+all: $(GPU_DEP_TARGET) dirs $(TARGETS)
 	@echo "========================================"
-	@echo "  Build complete! GPU arch: sm_$(GPU_ARCH)"
+	@echo "  Build complete! Platform: $(GPU_PLATFORM), GPU arch: sm_$(GPU_ARCH)"
 	@echo "  Run 'make test' to verify."
 	@echo "========================================"
+
+# 天数智芯 CoreX 使用 CUDA 兼容接口，但不提供 NVIDIA nvCOMP。
+# 因此该目标构建自研 SGLZ GPU 后端，并保留 CPU LZ4 读取回退。
+corex:
+	$(MAKE) -B GPU_PLATFORM=corex NVCC=$(COREX_HOME)/bin/nvcc all
 
 dirs:
 	@mkdir -p $(BINDIR)
@@ -78,6 +102,25 @@ check-gpu-deps:
 		echo "Run: bash scripts/setup_dependencies.sh"; \
 		exit 1; \
 	}
+
+check-corex-deps:
+	@test -f "$(COREX_HOME)/include/cuda_runtime.h" || { \
+		echo "[MISSING] CoreX CUDA-compatible headers under $(COREX_HOME)/include"; \
+		exit 1; \
+	}
+	@test -f "$(COREX_HOME)/lib64/libcudart.so" || { \
+		echo "[MISSING] CoreX runtime library: $(COREX_HOME)/lib64/libcudart.so"; \
+		exit 1; \
+	}
+	@tmp=$$(mktemp -d); \
+	printf '%s\n' '__global__ void k(void) {}' 'int main(void) { k<<<1,1>>>(); return 0; }' > "$$tmp/probe.cu"; \
+	if ! "$(NVCC)" -arch=sm_$(GPU_ARCH) -c "$$tmp/probe.cu" -o "$$tmp/probe.o" >/dev/null 2>&1 || \
+	   test ! -s "$$tmp/probe.o"; then \
+		echo "[MISSING] A functional CoreX CUDA compiler is required: $(NVCC)"; \
+		echo "The installed nvcc may be a version-only shim; install/mount the CoreX compiler package."; \
+		rm -rf "$$tmp"; exit 1; \
+	fi; \
+	rm -rf "$$tmp"
 
 cpu-only: dirs $(BINDIR)/libcpuhook.so $(BINDIR)/cpu_compress_daemon \
 	$(BINDIR)/test_hook $(BINDIR)/scan_workload
@@ -119,14 +162,14 @@ check-env:
 # ----------------------------------------------------------
 # LD_PRELOAD 共享库（GPU 默认，支持 GPUCOMPRESS_BACKEND=cpu 切换）
 # ----------------------------------------------------------
-$(BINDIR)/libgpuhook.so: check-gpu-deps dirs $(SRCDIR)/hook.c $(SRCDIR)/gpu_compress.cu $(SRCDIR)/cpu_compress.c $(SRCDIR)/cpu_lz4.c $(SRCDIR)/gpu_lz4.cu
-	$(NVCC) -shared -Xcompiler -fPIC $(NVCCFLAGS) $(filter-out dirs check-gpu-deps,$^) -o $@ -ldl $(NVCOMP_LINK) $(LDFLAGS)
+$(BINDIR)/libgpuhook.so: $(GPU_DEP_TARGET) dirs $(SRCDIR)/hook.c $(SRCDIR)/gpu_compress.cu $(SRCDIR)/cpu_compress.c $(SRCDIR)/cpu_lz4.c $(GPU_LZ4_SRC)
+	$(NVCC) -shared -Xcompiler -fPIC $(NVCCFLAGS) $(filter-out dirs check-gpu-deps check-corex-deps,$^) -o $@ -ldl $(GPU_EXTRA_LINK) $(LDFLAGS)
 
 # ----------------------------------------------------------
 # 离线压缩后台程序 (GPU)
 # ----------------------------------------------------------
-$(BINDIR)/gpu_compress_daemon: check-gpu-deps dirs $(SRCDIR)/daemon.c $(SRCDIR)/gpu_compress.cu $(SRCDIR)/gpu_lz4.cu
-	$(NVCC) $(NVCCFLAGS) $(filter-out dirs check-gpu-deps,$^) -o $@ $(NVCOMP_LINK) $(LDFLAGS)
+$(BINDIR)/gpu_compress_daemon: $(GPU_DEP_TARGET) dirs $(SRCDIR)/daemon.c $(SRCDIR)/gpu_compress.cu $(GPU_LZ4_SRC)
+	$(NVCC) $(NVCCFLAGS) $(filter-out dirs check-gpu-deps check-corex-deps,$^) -o $@ $(GPU_EXTRA_LINK) $(LDFLAGS)
 
 # ----------------------------------------------------------
 # LD_PRELOAD 共享库（纯 CPU 版本，无 CUDA 依赖）
@@ -143,14 +186,14 @@ $(BINDIR)/cpu_compress_daemon: dirs $(SRCDIR)/cpu_daemon.c $(SRCDIR)/cpu_compres
 # ----------------------------------------------------------
 # 单元测试：压缩/解压一致性
 # ----------------------------------------------------------
-$(BINDIR)/test_compress: check-gpu-deps dirs $(SRCDIR)/test_compress.c $(SRCDIR)/gpu_compress.cu $(SRCDIR)/gpu_lz4.cu
-	$(NVCC) $(NVCCFLAGS) $(filter-out dirs check-gpu-deps,$^) -o $@ $(NVCOMP_LINK) $(LDFLAGS)
+$(BINDIR)/test_compress: $(GPU_DEP_TARGET) dirs $(SRCDIR)/test_compress.c $(SRCDIR)/gpu_compress.cu $(GPU_LZ4_SRC)
+	$(NVCC) $(NVCCFLAGS) $(filter-out dirs check-gpu-deps check-corex-deps,$^) -o $@ $(GPU_EXTRA_LINK) $(LDFLAGS)
 
 # ----------------------------------------------------------
 # CPU vs GPU 性能对比测试
 # ----------------------------------------------------------
-$(BINDIR)/test_cpu_vs_gpu: check-gpu-deps dirs $(SRCDIR)/test_cpu_vs_gpu.c $(SRCDIR)/gpu_compress.cu $(SRCDIR)/cpu_compress.c $(SRCDIR)/cpu_lz4.c $(SRCDIR)/gpu_lz4.cu
-	$(NVCC) $(NVCCFLAGS) $(filter-out dirs check-gpu-deps,$^) -o $@ $(NVCOMP_LINK) $(LDFLAGS)
+$(BINDIR)/test_cpu_vs_gpu: $(GPU_DEP_TARGET) dirs $(SRCDIR)/test_cpu_vs_gpu.c $(SRCDIR)/gpu_compress.cu $(SRCDIR)/cpu_compress.c $(SRCDIR)/cpu_lz4.c $(GPU_LZ4_SRC)
+	$(NVCC) $(NVCCFLAGS) $(filter-out dirs check-gpu-deps check-corex-deps,$^) -o $@ $(GPU_EXTRA_LINK) $(LDFLAGS)
 
 $(BINDIR)/test_lz4_cpu_gpu: check-gpu-deps dirs tests/test_lz4_cpu_gpu.c $(SRCDIR)/cpu_lz4.c $(SRCDIR)/gpu_lz4.cu
 	$(NVCC) $(NVCCFLAGS) $(filter-out dirs check-gpu-deps,$^) -o $@ $(NVCOMP_LINK) $(LDFLAGS)

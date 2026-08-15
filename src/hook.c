@@ -189,6 +189,20 @@ static int gpuc_raw_fstat(int fd, struct stat *st) {
 #endif
 }
 
+/* AArch64 does not expose the legacy unlink syscall.  Use unlinkat there,
+ * and keep this helper below the interposition layer to avoid recursion. */
+static int gpuc_raw_unlink(const char *path) {
+#ifdef SYS_unlink
+    return (int)syscall(SYS_unlink, path);
+#elif defined(SYS_unlinkat)
+    return (int)syscall(SYS_unlinkat, AT_FDCWD, path, 0);
+#else
+    (void)path;
+    errno = ENOSYS;
+    return -1;
+#endif
+}
+
 /* -------- Backend 函数指针（支持 CPU/GPU 运行时切换）-------- */
 static int  (*g_backend_compress_init)(void);
 static void (*g_backend_compress_fini)(void);
@@ -2684,7 +2698,7 @@ int rename(const char *oldpath, const char *newpath) {
 
     if (real_lseek64(fd_src, (off64_t)hdr.header_size, SEEK_SET) < 0) {
         real_close(fd_src); real_close(fd_dst);
-        syscall(SYS_unlink, tmp_path);
+        gpuc_raw_unlink(tmp_path);
         return -1;
     }
 
@@ -2692,7 +2706,7 @@ int rename(const char *oldpath, const char *newpath) {
     while ((nr = real_read(fd_src, buf, sizeof(buf))) > 0) {
         if (real_write(fd_dst, buf, (size_t)nr) != nr) {
             real_close(fd_src); real_close(fd_dst);
-            syscall(SYS_unlink, tmp_path);
+            gpuc_raw_unlink(tmp_path);
             return -1;
         }
     }
@@ -2705,7 +2719,7 @@ int rename(const char *oldpath, const char *newpath) {
         fsync(fd_dst) != 0) {
         int saved = errno;
         real_close(fd_src); real_close(fd_dst);
-        syscall(SYS_unlink, tmp_path);
+        gpuc_raw_unlink(tmp_path);
         errno = saved;
         return -1;
     }
@@ -2714,12 +2728,12 @@ int rename(const char *oldpath, const char *newpath) {
 
     if (real_rename(tmp_path, newpath) != 0) {
         int saved = errno;
-        syscall(SYS_unlink, tmp_path);
+        gpuc_raw_unlink(tmp_path);
         errno = saved;
         return -1;
     }
     fsync_parent_dir(newpath);
-    syscall(SYS_unlink, oldpath);
+    gpuc_raw_unlink(oldpath);
     fsync_parent_dir(oldpath);
     return 0;
 }

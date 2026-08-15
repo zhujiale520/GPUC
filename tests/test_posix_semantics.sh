@@ -2,7 +2,8 @@
 set -euo pipefail
 
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-TEST_DIR="$(mktemp -d /tmp/gpuc-posix-XXXXXX)"
+TEST_ROOT="${GPUC_TEST_ROOT:-/tmp}"
+TEST_DIR="$(mktemp -d "$TEST_ROOT/gpuc-posix-XXXXXX")"
 trap 'rm -rf -- "$TEST_DIR"' EXIT
 
 gcc -O2 -Wall -Wextra "$PROJECT_DIR/tests/test_posix_semantics.c" \
