@@ -1,4 +1,4 @@
-# GPUC：基于 GPU 的服务资源卸载技术探索
+# GPUC：基于 GPU 的透明存储压缩卸载系统
 
 ## 题目信息
 
@@ -20,11 +20,20 @@ GPUC 是一个面向透明存储压缩的用户态 GPU 卸载原型。在不修�
 - NVIDIA Tesla V100：功能、性能、资源、Vdbench、PCM 和边界实验；
 - NVIDIA GeForce RTX 4090：核心同吞吐卸载、SQLite、fio、Vdbench、一小时稳定性和
   故障恢复；
-- 华为鲲鹏 920/AArch64 + 天数智芯 CoreX：CPU/GPU 原生构建、SGLZ 单元与端到端
+- 华为鲲鹏 920/AArch64 + 智铠 100/CoreX：CPU/GPU 原生构建、SGLZ 单元与端到端
   透明读写、数据搬运 A/B、16 GiB round-trip 和 1 GiB 大文件压力验证。
 
 当前 COMPRESSED/INLINE 文件采用明确的只读归档模型，破坏性修改返回 `EROFS`。
 完整设计与能力边界见[项目设计方案](docs/项目设计方案.md)。
+
+## 决赛交付状态
+
+截至 2026 年 8 月 16 日，项目设计方案、实验结果报告、实验复现指南、
+国产平台部署指南和答辩 PPT 均已完成定稿。仓库同时保留 Markdown、Word、
+PDF 与 PPTX 版本，便于在线查看、格式编辑和答辩展示。
+
+作品演示视频作为独立交付物另行提交，不与本次文档和 PPT 定稿 commit
+混合。
 
 ## 系统架构
 
@@ -57,7 +66,7 @@ GPUC 是一个面向透明存储压缩的用户态 GPU 卸载原型。在不修�
 - **SGLZ（Simple GPU Lempel–Ziv）**：本队自主实现的 CUDA LZ77 变体，将一个
   128 KiB block 划分为 32 个 4 KiB chunk；同时提供 CPU 兼容实现；
 - **LZ4**：NVIDIA 平台可选 nvCOMP LZ4，CPU 回退使用 liblz4；
-- **CoreX SGLZ**：在 `ivcore11` 上使用 CoreX Clang 编译，不依赖 NVIDIA nvCOMP；
+- **智铠 100/CoreX SGLZ**：在 `ivcore11` 上使用 CoreX Clang 编译，不依赖 NVIDIA nvCOMP；
 - **统一格式与接口**：对象算法由持久化 Header 决定，同一 SGLZ 文件格式可在
   x86_64/NVIDIA、鲲鹏 920 CPU 和 CoreX GPU 路径间复用。
 
@@ -87,9 +96,9 @@ GPUC 是一个面向透明存储压缩的用户态 GPU 卸载原型。在不修�
 | RTX 4090，稳定与恢复 | 连续一小时读取 error=0、前后 SHA 一致；确定性软件故障 5/5 | 支持持续读取与软件故障恢复；不代表真实掉电/GPU reset |
 | V100，同吞吐 PCM | 约 4 GiB/s 下 GPU/CPU 总主机 DRAM 为 4569.51/8745.46 MB/s | 特定高压缩率工作点中总带宽降低 47.75%，不等于内存容量下降 |
 | 鲲鹏 920 CPU 路径 | AArch64 原生构建、smoke、2000 个格式 fuzz 和 16 MiB 端到端 SHA 全部通过 | 文件格式、Hook、Daemon 与 CPU 回退可跨 x86_64/AArch64 复用 |
-| 鲲鹏 920 + CoreX 功能闭环 | SGLZ kernel、原有 CoreX 测试、16 MiB GPU 端到端 SHA 全部通过 | 国产 CPU/GPU 上完成自研 SGLZ 透明压缩读取闭环 |
-| 鲲鹏 920 + CoreX 传输优化 | 32-block batch 下压缩 845.929→985.727 MiB/s（1.165x），解压 688.415→718.622 MiB/s（1.044x） | 吞吐包含打包、H2D、Kernel、D2H 和散布，不包含磁盘 I/O |
-| 鲲鹏 920 + CoreX 压力 | 累计 16 GiB/131072 blocks round-trip PASS；1 GiB 文件连续透明读取 3 次 SHA 一致 | 证明热路径和大文件正确性，不替代真实 NVMe、并发或整机能效测试 |
+| 鲲鹏 920 + 智铠 100 功能闭环 | SGLZ kernel、CoreX 测试、16 MiB GPU 端到端 SHA 全部通过 | 国产 CPU/GPU 上完成自研 SGLZ 透明压缩读取闭环 |
+| 鲲鹏 920 + 智铠 100 传输优化 | 32-block batch 下压缩 845.929→985.727 MiB/s（1.165x），解压 688.415→718.622 MiB/s（1.044x） | 吞吐包含打包、H2D、Kernel、D2H 和散布，不包含磁盘 I/O |
+| 鲲鹏 920 + 智铠 100 压力 | 累计 16 GiB/131072 blocks round-trip PASS；1 GiB 文件连续透明读取 3 次 SHA 一致 | 证明热路径和大文件正确性，不替代真实 NVMe、并发或整机能效测试 |
 
 压缩文件的绝对 fio/Vdbench 吞吐仍低于普通文件路径，4 KiB 随机读、低压缩率和
 压缩侧峰值也不是当前优势；这些负结果均保留在正式结果目录中。
@@ -109,10 +118,11 @@ bash scripts/demo.sh
 LZ4 GPU 后端需要与 CUDA 版本匹配的 NVIDIA nvCOMP；默认 SGLZ 后端不依赖 nvCOMP。
 具体依赖和推荐实验入口见[实验复现指南](docs/实验复现指南.md)。
 
-### 鲲鹏 920 + 天数智芯 CoreX 平台
+### 鲲鹏 920 + 智铠 100/CoreX 平台
 
-当前实测环境为 openEuler 22.03 LTS-SP1、2 路 64 核 Kunpeng-920、CoreX 4.4.0，
-`ixsmi` 识别 GPU 为 Iluvatar MR-V100 32 GiB，设备架构为 `ivcore11`。
+当前实测环境为 openEuler 22.03 LTS-SP1、2 路 64 核 Kunpeng-920、智铠 100
+32 GiB 和 CoreX 4.4.0；`ixsmi` 将 GPU 识别为 Iluvatar MR-V100，设备架构为
+`ivcore11`。
 
 ```bash
 # 硬件、驱动、设备节点和编译器检查
@@ -157,14 +167,14 @@ LD_PRELOAD="$PWD/bin/libgpuhook.so" GPUCOMPRESS_QUIET=1 \
 │   ├── 项目设计方案.{md,docx,pdf}
 │   ├── 实验结果报告.{md,docx,pdf}
 │   ├── 实验复现指南.{md,docx,pdf}
-│   ├── 国产平台部署指南.md
+│   ├── 国产平台部署指南.{md,docx,pdf}
 │   ├── AI 工具使用说明.md
 │   └── 架构图.png
 ├── results/
 │   ├── README.md
-│   └── final/                     # V100、RTX 4090、鲲鹏/CoreX 正式证据
+│   └── final/                     # V100、RTX 4090、鲲鹏/智铠 100 正式证据
 ├── ppt/                           # 最终答辩 PPTX/PDF
-├── video/                         # 最终演示视频及本地原始素材
+├── video/                         # 演示视频（作为独立交付物）
 ├── Makefile
 ├── README.md
 ├── LICENSE
@@ -175,14 +185,14 @@ LD_PRELOAD="$PWD/bin/libgpuhook.so" GPUCOMPRESS_QUIET=1 \
 
 - [项目设计方案](docs/项目设计方案.md)：设计思路、实现、代码说明、问题解决、实验、
   第三方来源和团队分工；
-- [实验结果报告](docs/实验结果报告.md)：V100、RTX 4090 与鲲鹏/CoreX 的核心结果、
+- [实验结果报告](docs/实验结果报告.md)：V100、RTX 4090 与鲲鹏 920/智铠 100 的核心结果、
   统计口径和边界；
 - [实验复现指南](docs/实验复现指南.md)：NVIDIA 平台的环境、构建和推荐实验入口；
-- [国产平台部署指南](docs/国产平台部署指南.md)：鲲鹏 920/CoreX 构建、功能验收、
+- [国产平台部署指南](docs/国产平台部署指南.md)：鲲鹏 920/智铠 100 构建、功能验收、
   性能 A/B 和压力验证；
 - [AI 工具使用说明](docs/AI%20工具使用说明.md)：AI 辅助范围与人工复核方式；
 - [答辩 PPT](<ppt/GPUC 项目答辩 — 基于 GPU 的透明存储压缩卸载系统.pptx>)；
-- [演示视频](video/演示视频.mp4)。
+- 作品演示视频：独立交付，不纳入本次文档/PPT 定稿 commit。
 
 ## 当前能力边界
 
@@ -193,7 +203,7 @@ LD_PRELOAD="$PWD/bin/libgpuhook.so" GPUCOMPRESS_QUIET=1 \
 | `mmap` | 支持只读 `MAP_PRIVATE`；不支持共享写、固定映射和完整跨 fork 语义 |
 | `O_DIRECT` | 新版 4 KiB 对齐 COMPRESSED 格式支持；正式独占 NVMe 性能尚未完成 |
 | NVIDIA 后端 | V100/RTX 4090 上 SGLZ 与 nvCOMP LZ4 已验证 |
-| 国产后端 | 鲲鹏 920 CPU 与 CoreX `ivcore11` SGLZ 已验证；不使用 NVIDIA nvCOMP LZ4 |
+| 国产后端 | 鲲鹏 920 CPU 与智铠 100/CoreX `ivcore11` SGLZ 已验证；不使用 NVIDIA nvCOMP LZ4 |
 | 多 GPU | 一次使用单个可见设备，尚未实现跨 GPU 分片 |
 | 生产接入层 | 当前是用户态机制原型，尚未实现 DM、ublk、Btrfs encoded I/O 或 ZFS 后端 |
 
